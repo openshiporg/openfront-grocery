@@ -5,7 +5,7 @@
 
 import React from 'react'
 import Link from 'next/link'
-import { PlusIcon, Database } from 'lucide-react'
+import { PlusIcon, Database, ClipboardList, PackageCheck, Truck, Store, Warehouse, Repeat } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { PageContainer } from '../../components/PageContainer'
@@ -105,12 +105,59 @@ export async function HomePage() {
     }
   }
 
+  const countByPath = Object.fromEntries(
+    enhancedLists.map((list: any) => [list.path, countData[list.key] ?? null])
+  )
+
+  const operationalCards = [
+    {
+      title: 'Orders',
+      description: 'Incoming grocery orders waiting for fulfillment attention.',
+      value: countByPath.order,
+      href: '/dashboard/platform/orders',
+      icon: ClipboardList,
+    },
+    {
+      title: 'Fulfillment queue',
+      description: 'Use order volume as the primary picking and packing signal.',
+      value: countByPath.order,
+      href: '/dashboard/platform/fulfillment',
+      icon: PackageCheck,
+    },
+    {
+      title: 'Delivery routes',
+      description: 'Dispatch and route planning for scheduled deliveries.',
+      value: countByPath.deliveryRoute,
+      href: '/dashboard/platform/delivery',
+      icon: Truck,
+    },
+    {
+      title: 'Pickup slots',
+      description: 'Curbside availability and pickup handoff readiness.',
+      value: countByPath.pickupSlot,
+      href: '/dashboard/platform/pickup',
+      icon: Store,
+    },
+    {
+      title: 'Inventory lots',
+      description: 'Lot-level stock, freshness, and receiving visibility.',
+      value: countByPath.inventoryLot,
+      href: '/dashboard/platform/inventory',
+      icon: Warehouse,
+    },
+    {
+      title: 'Subscriptions',
+      description: 'Recurring grocery demand and repeat purchase activity.',
+      value: countByPath.subscription,
+      href: '/dashboard/platform/subscriptions',
+      icon: Repeat,
+    },
+  ]
+
   const header = (
     <div className="flex flex-col">
       <h1 className="text-lg font-semibold md:text-2xl">Dashboard</h1>
-      {enhancedLists.length > 0 && (
-        <p className="text-muted-foreground">{enhancedLists.length} Models</p>
-      )}
+      <p className="text-muted-foreground">Grocery operations, catalog health, and storefront support</p>
     </div>
   )
 
@@ -128,7 +175,36 @@ export async function HomePage() {
 
   return (
     <PageContainer title="Dashboard" header={header} breadcrumbs={breadcrumbs}>
-      <div className="w-full max-w-4xl p-4 md:p-6 flex flex-col gap-4">
+      <div className="w-full max-w-6xl p-4 md:p-6 flex flex-col gap-8">
+        <div>
+          <h2 className="tracking-wide uppercase font-medium mb-3 text-muted-foreground text-sm">
+            Grocery operations
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
+            {operationalCards.map((card) => {
+              const Icon = card.icon
+              return (
+                <Link key={card.title} href={card.href}>
+                  <Card className="bg-gradient-to-bl from-background to-muted/80 shadow-xs hover:bg-muted transition-colors h-full">
+                    <CardContent className="p-5 flex flex-col gap-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">{card.title}</p>
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">{card.description}</p>
+                        </div>
+                        <Icon className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <div className="text-2xl font-semibold text-foreground">
+                        {card.value === null || card.value === undefined ? '—' : card.value}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+
         <div className="mb-4">
           <h2 className="tracking-wide uppercase font-medium mb-2 text-muted-foreground text-sm">
             Data Models

@@ -11,70 +11,780 @@ generator client {
   provider = "prisma-client-js"
 }
 
+model Address {
+  id                         String   @id @default(cuid())
+  firstName                  String   @default("")
+  lastName                   String   @default("")
+  company                    String   @default("")
+  address1                   String   @default("")
+  address2                   String   @default("")
+  city                       String   @default("")
+  province                   String   @default("")
+  postalCode                 String   @default("")
+  phone                      String   @default("")
+  user                       User?    @relation("Address_user", fields: [userId], references: [id])
+  userId                     String?  @map("user")
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @default(now()) @updatedAt
+  from_Order_shippingAddress Order[]  @relation("Order_shippingAddress")
+  from_Order_billingAddress  Order[]  @relation("Order_billingAddress")
+
+  @@index([userId])
+}
+
+model BackInStockAlert {
+  id         String    @id @default(cuid())
+  user       User?     @relation("BackInStockAlert_user", fields: [userId], references: [id])
+  userId     String?   @map("user")
+  product    String    @default("")
+  notifiedAt DateTime?
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @default(now()) @updatedAt
+
+  @@index([userId])
+  @@index([product])
+}
+
+model Cart {
+  id              String           @id @default(cuid())
+  customer        User?            @relation("Cart_customer", fields: [customerId], references: [id])
+  customerId      String?          @map("customer")
+  sessionId       String           @default("")
+  items           CartItem[]       @relation("CartItem_cart")
+  paymentSessions PaymentSession[] @relation("PaymentSession_cart")
+  itemCount       Int?             @default(0)
+  subtotal        Float?           @default(0)
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @default(now()) @updatedAt
+
+  @@index([customerId])
+  @@index([sessionId])
+}
+
+model CartItem {
+  id                     String                              @id @default(cuid())
+  cart                   Cart?                               @relation("CartItem_cart", fields: [cartId], references: [id])
+  cartId                 String?                             @map("cart")
+  product                Product?                            @relation("CartItem_product", fields: [productId], references: [id])
+  productId              String?                             @map("product")
+  quantity               Int                                 @default(1)
+  subtotal               Float?                              @default(0)
+  substitutionPreference CartItemSubstitutionPreferenceType? @default(allow)
+  addedAt                DateTime                            @default(now())
+  createdAt              DateTime                            @default(now())
+  updatedAt              DateTime                            @default(now()) @updatedAt
+
+  @@index([cartId])
+  @@index([productId])
+}
+
+model Coupon {
+  id                String                 @id @default(cuid())
+  code              String                 @unique @default("")
+  discountType      CouponDiscountTypeType @default(percentage)
+  discountValue     Float?
+  minPurchase       Float?                 @default(0)
+  maxUses           Int?                   @default(0)
+  currentUses       Int?                   @default(0)
+  validFrom         DateTime?
+  validTo           DateTime?
+  productCategories Json?
+  excludedProducts  Json?
+  isActive          Boolean                @default(true)
+  userCoupons       UserCoupon[]           @relation("UserCoupon_coupon")
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @default(now()) @updatedAt
+}
+
+model Department {
+  id               String                         @id @default(cuid())
+  name             String                         @default("")
+  handle           String                         @unique @default("")
+  description      String                         @default("")
+  imageUrl         String                         @default("")
+  sortOrder        Int?                           @default(0)
+  isActive         Boolean                        @default(true)
+  temperatureZone  DepartmentTemperatureZoneType? @default(ambient)
+  requiredLicenses Json                           @default("[]")
+  manager          User?                          @relation("Department_manager", fields: [managerId], references: [id])
+  managerId        String?                        @map("manager")
+  products         Product[]                      @relation("Product_departmentRef")
+  createdAt        DateTime                       @default(now())
+  updatedAt        DateTime                       @default(now()) @updatedAt
+
+  @@index([managerId])
+}
+
+model DeliveryRoute {
+  id          String                      @id @default(cuid())
+  date        DateTime
+  timeWindow  DeliveryRouteTimeWindowType
+  stops       Json?
+  status      DeliveryRouteStatusType?    @default(planning)
+  startedAt   DateTime?
+  completedAt DateTime?
+  driver      User?                       @relation("DeliveryRoute_driver", fields: [driverId], references: [id])
+  driverId    String?                     @map("driver")
+  orders      Order[]                     @relation("Order_deliveryRoute")
+  createdAt   DateTime                    @default(now())
+  updatedAt   DateTime                    @default(now()) @updatedAt
+
+  @@index([driverId])
+}
+
+model DeliverySlot {
+  id              String   @id @default(cuid())
+  date            DateTime
+  startTime       String   @default("")
+  endTime         String   @default("")
+  capacity        Int      @default(10)
+  currentBookings Int?     @default(0)
+  isActive        Boolean  @default(true)
+  deliveryFee     Int?     @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  @@index([date])
+}
+
+model FavoriteProduct {
+  id          String   @id @default(cuid())
+  user        User?    @relation("FavoriteProduct_user", fields: [userId], references: [id])
+  userId      String?  @map("user")
+  product     String   @default("")
+  favoritedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@index([userId])
+  @@index([product])
+}
+
+model InventoryLot {
+  id                              String          @id @default(cuid())
+  lotNumber                       String          @unique @default("")
+  expirationDate                  DateTime
+  receivedDate                    DateTime        @default(now())
+  quantity                        Int
+  quantityRemaining               Int
+  costPerUnit                     Float
+  location                        String          @default("")
+  product                         Product?        @relation("InventoryLot_product", fields: [productId], references: [id])
+  productId                       String?         @map("product")
+  supplier                        Supplier?       @relation("InventoryLot_supplier", fields: [supplierId], references: [id])
+  supplierId                      String?         @map("supplier")
+  createdAt                       DateTime        @default(now())
+  updatedAt                       DateTime        @default(now()) @updatedAt
+  from_OrderLineItem_inventoryLot OrderLineItem[] @relation("OrderLineItem_inventoryLot")
+
+  @@index([productId])
+  @@index([supplierId])
+}
+
+model LoyaltyProgram {
+  id                String   @id @default(cuid())
+  name              String   @default("")
+  pointsPerDollar   Float    @default(1)
+  tierConfiguration Json?
+  redemptionRules   Json?
+  expirationRules   Json?
+  tierBenefits      Json?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @default(now()) @updatedAt
+}
+
+model LoyaltyTransaction {
+  id              String                     @id @default(cuid())
+  user            User?                      @relation("LoyaltyTransaction_user", fields: [userId], references: [id])
+  userId          String?                    @map("user")
+  points          Int
+  type            LoyaltyTransactionTypeType
+  description     String                     @default("")
+  order           Order?                     @relation("LoyaltyTransaction_order", fields: [orderId], references: [id])
+  orderId         String?                    @map("order")
+  balanceAfter    Int
+  transactionDate DateTime                   @default(now())
+  expiresAt       DateTime?
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @default(now()) @updatedAt
+
+  @@index([userId])
+  @@index([orderId])
+}
+
+model NotificationPreference {
+  id             String   @id @default(cuid())
+  user           User?    @relation("NotificationPreference_user", fields: [userId], references: [id])
+  userId         String?  @map("user")
+  orderUpdates   Boolean  @default(true)
+  deliveryAlerts Boolean  @default(true)
+  priceDrops     Boolean  @default(false)
+  backInStock    Boolean  @default(false)
+  weeklyDeals    Boolean  @default(false)
+  channels       Json?    @default("[\"email\"]")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt
+
+  @@index([userId])
+}
+
+model Order {
+  id                            String                           @id @default(cuid())
+  displayId                     Int
+  email                         String                           @default("")
+  status                        OrderStatusType                  @default(pending)
+  taxRate                       Float?
+  canceledAt                    DateTime?
+  metadata                      Json?
+  noNotification                Boolean                          @default(false)
+  deliveryDate                  DateTime
+  deliveryTimeWindow            OrderDeliveryTimeWindowType
+  deliveryInstructions          String                           @default("")
+  substitutionPreference        OrderSubstitutionPreferenceType? @default(best_match)
+  user                          User?                            @relation("Order_user", fields: [userId], references: [id])
+  userId                        String?                          @map("user")
+  shippingAddress               Address?                         @relation("Order_shippingAddress", fields: [shippingAddressId], references: [id])
+  shippingAddressId             String?                          @map("shippingAddress")
+  billingAddress                Address?                         @relation("Order_billingAddress", fields: [billingAddressId], references: [id])
+  billingAddressId              String?                          @map("billingAddress")
+  lineItems                     OrderLineItem[]                  @relation("OrderLineItem_order")
+  deliveryRoute                 DeliveryRoute?                   @relation("Order_deliveryRoute", fields: [deliveryRouteId], references: [id])
+  deliveryRouteId               String?                          @map("deliveryRoute")
+  createdAt                     DateTime                         @default(now())
+  updatedAt                     DateTime                         @default(now()) @updatedAt
+  from_LoyaltyTransaction_order LoyaltyTransaction[]             @relation("LoyaltyTransaction_order")
+  from_Payment_order            Payment[]                        @relation("Payment_order")
+
+  @@index([userId])
+  @@index([shippingAddressId])
+  @@index([billingAddressId])
+  @@index([deliveryRouteId])
+}
+
+model OrderItemSubstitution {
+  id                 String    @id @default(cuid())
+  orderItem          String    @default("")
+  originalProduct    String    @default("")
+  substitutedProduct String    @default("")
+  reason             String    @default("")
+  customerApproved   Boolean   @default(false)
+  approvedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @default(now()) @updatedAt
+}
+
+model OrderLineItem {
+  id             String        @id @default(cuid())
+  title          String        @default("")
+  sku            String        @default("")
+  quantity       Int
+  unitPrice      Float
+  thumbnail      String        @default("")
+  metadata       Json?
+  order          Order?        @relation("OrderLineItem_order", fields: [orderId], references: [id])
+  orderId        String?       @map("order")
+  product        Product?      @relation("OrderLineItem_product", fields: [productId], references: [id])
+  productId      String?       @map("product")
+  inventoryLot   InventoryLot? @relation("OrderLineItem_inventoryLot", fields: [inventoryLotId], references: [id])
+  inventoryLotId String?       @map("inventoryLot")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @default(now()) @updatedAt
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([inventoryLotId])
+}
+
+model ParkingSpot {
+  id           String   @id @default(cuid())
+  spotNumber   String   @unique @default("")
+  description  String   @default("")
+  isAccessible Boolean  @default(false)
+  isAvailable  Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+}
+
+model Payment {
+  id                String           @id @default(cuid())
+  amount            Decimal          @postgresql.Decimal(10, 2)
+  status            String           @default("pending")
+  paymentMethod     String?          @default("credit_card")
+  providerPaymentId String           @unique @default("")
+  providerChargeId  String           @default("")
+  providerRefundId  String           @default("")
+  providerData      Json?            @default("{}")
+  cardLast4         String           @default("")
+  cardBrand         String           @default("")
+  deliveryTipAmount Decimal?         @default("0.00") @postgresql.Decimal(10, 2)
+  processedAt       DateTime?
+  errorMessage      String           @default("")
+  notes             String           @default("")
+  order             Order?           @relation("Payment_order", fields: [orderId], references: [id])
+  orderId           String?          @map("order")
+  paymentProvider   PaymentProvider? @relation("Payment_paymentProvider", fields: [paymentProviderId], references: [id])
+  paymentProviderId String?          @map("paymentProvider")
+  processedBy       User?            @relation("Payment_processedBy", fields: [processedById], references: [id])
+  processedById     String?          @map("processedBy")
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @default(now()) @updatedAt
+
+  @@index([orderId])
+  @@index([paymentProviderId])
+  @@index([processedById])
+}
+
+model PaymentProvider {
+  id                          String           @id @default(cuid())
+  name                        String           @default("")
+  code                        String           @unique @default("")
+  isInstalled                 Boolean          @default(true)
+  credentials                 Json?            @default("{}")
+  metadata                    Json?            @default("{}")
+  createPaymentFunction       String           @default("manual")
+  capturePaymentFunction      String           @default("manual")
+  refundPaymentFunction       String           @default("manual")
+  getPaymentStatusFunction    String           @default("manual")
+  generatePaymentLinkFunction String           @default("manual")
+  handleWebhookFunction       String           @default("manual")
+  payments                    Payment[]        @relation("Payment_paymentProvider")
+  sessions                    PaymentSession[] @relation("PaymentSession_paymentProvider")
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @default(now()) @updatedAt
+}
+
+model PaymentSession {
+  id                String           @id @default(cuid())
+  isSelected        Boolean          @default(false)
+  isInitiated       Boolean          @default(false)
+  amount            Decimal          @default("0.00") @postgresql.Decimal(10, 2)
+  data              Json?            @default("{}")
+  idempotencyKey    String           @default("")
+  cart              Cart?            @relation("PaymentSession_cart", fields: [cartId], references: [id])
+  cartId            String?          @map("cart")
+  paymentProvider   PaymentProvider? @relation("PaymentSession_paymentProvider", fields: [paymentProviderId], references: [id])
+  paymentProviderId String?          @map("paymentProvider")
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @default(now()) @updatedAt
+
+  @@index([cartId])
+  @@index([paymentProviderId])
+}
+
+model PickupSlot {
+  id            String   @id @default(cuid())
+  date          DateTime
+  startTime     String   @default("")
+  endTime       String   @default("")
+  maxOrders     Int      @default(10)
+  currentOrders Int?     @default(0)
+  isAvailable   Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+}
+
+model POItem {
+  id               String         @id @default(cuid())
+  quantity         Int
+  unitCost         Float
+  quantityReceived Int?           @default(0)
+  purchaseOrder    PurchaseOrder? @relation("POItem_purchaseOrder", fields: [purchaseOrderId], references: [id])
+  purchaseOrderId  String?        @map("purchaseOrder")
+  product          Product?       @relation("POItem_product", fields: [productId], references: [id])
+  productId        String?        @map("product")
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @default(now()) @updatedAt
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+}
+
+model PriceAlert {
+  id           String    @id @default(cuid())
+  user         User?     @relation("PriceAlert_user", fields: [userId], references: [id])
+  userId       String?   @map("user")
+  product      String    @default("")
+  targetPrice  Decimal   @postgresql.Decimal(12, 2)
+  currentPrice Decimal?  @postgresql.Decimal(12, 2)
+  isTriggered  Boolean   @default(false)
+  notifiedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+
+  @@index([userId])
+  @@index([product])
+}
+
+model Product {
+  id                         String                    @id @default(cuid())
+  title                      String                    @default("")
+  description                Json                      @default("[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\"}]}]")
+  handle                     String                    @unique @default("")
+  sku                        String                    @default("")
+  status                     ProductStatusType         @default(draft)
+  metadata                   Json?
+  price                      Float?
+  compareAtPrice             Float?
+  costPrice                  Float?
+  inStock                    Boolean                   @default(true)
+  stockQuantity              Int?                      @default(0)
+  lowStockThreshold          Int?                      @default(10)
+  imageUrl                   String                    @default("")
+  thumbnailUrl               String                    @default("")
+  department                 ProductDepartmentType?
+  isPerishable               Boolean                   @default(false)
+  shelfLife                  Int?
+  pricingMethod              ProductPricingMethodType? @default(unit)
+  unitOfMeasure              ProductUnitOfMeasureType? @default(each)
+  organicCertified           Boolean                   @default(false)
+  allergens                  Json                      @default("[]")
+  supplier                   Supplier?                 @relation("Product_supplier", fields: [supplierId], references: [id])
+  supplierId                 String?                   @map("supplier")
+  departmentRef              Department?               @relation("Product_departmentRef", fields: [departmentRefId], references: [id])
+  departmentRefId            String?                   @map("departmentRef")
+  inventoryLots              InventoryLot[]            @relation("InventoryLot_product")
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @default(now()) @updatedAt
+  from_CartItem_product      CartItem[]                @relation("CartItem_product")
+  from_OrderLineItem_product OrderLineItem[]           @relation("OrderLineItem_product")
+  from_POItem_product        POItem[]                  @relation("POItem_product")
+
+  @@index([supplierId])
+  @@index([departmentRefId])
+}
+
+model PurchaseOrder {
+  id                   String                   @id @default(cuid())
+  poNumber             String                   @unique @default("")
+  orderDate            DateTime                 @default(now())
+  expectedDeliveryDate DateTime?
+  status               PurchaseOrderStatusType? @default(draft)
+  totalAmount          Float?
+  receivedAt           DateTime?
+  notes                String                   @default("")
+  supplier             Supplier?                @relation("PurchaseOrder_supplier", fields: [supplierId], references: [id])
+  supplierId           String?                  @map("supplier")
+  items                POItem[]                 @relation("POItem_purchaseOrder")
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @default(now()) @updatedAt
+
+  @@index([supplierId])
+}
+
+model Recipe {
+  id           String                @id @default(cuid())
+  name         String                @default("")
+  description  String                @default("")
+  instructions String                @default("")
+  prepTime     Int?
+  cookTime     Int?
+  servings     Int?
+  difficulty   RecipeDifficultyType? @default(medium)
+  image        String                @default("")
+  categories   Json?
+  ingredients  RecipeIngredient[]    @relation("RecipeIngredient_recipe")
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @default(now()) @updatedAt
+}
+
+model RecipeIngredient {
+  id         String   @id @default(cuid())
+  recipe     Recipe?  @relation("RecipeIngredient_recipe", fields: [recipeId], references: [id])
+  recipeId   String?  @map("recipe")
+  product    String   @default("")
+  quantity   Float
+  unit       String   @default("")
+  notes      String   @default("")
+  isOptional Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@index([recipeId])
+}
+
+model Role {
+  id                  String   @id @default(cuid())
+  name                String   @default("")
+  canManageProducts   Boolean  @default(false)
+  canManageOrders     Boolean  @default(false)
+  canManagePayments   Boolean  @default(false)
+  canManageInventory  Boolean  @default(false)
+  canManageSuppliers  Boolean  @default(false)
+  canManageDelivery   Boolean  @default(false)
+  canManageUsers      Boolean  @default(false)
+  canManageOnboarding Boolean  @default(false)
+  canAccessDashboard  Boolean  @default(false)
+  assignedTo          User[]   @relation("User_role")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now()) @updatedAt
+}
+
+model ShoppingList {
+  id        String             @id @default(cuid())
+  user      User?              @relation("ShoppingList_user", fields: [userId], references: [id])
+  userId    String?            @map("user")
+  name      String             @default("")
+  isDefault Boolean            @default(false)
+  items     ShoppingListItem[] @relation("ShoppingListItem_list")
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @default(now()) @updatedAt
+
+  @@index([userId])
+}
+
+model ShoppingListItem {
+  id        String        @id @default(cuid())
+  list      ShoppingList? @relation("ShoppingListItem_list", fields: [listId], references: [id])
+  listId    String?       @map("list")
+  product   String        @default("")
+  quantity  Int           @default(1)
+  unit      String        @default("")
+  checked   Boolean       @default(false)
+  notes     String        @default("")
+  addedAt   DateTime      @default(now())
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @default(now()) @updatedAt
+
+  @@index([listId])
+}
+
+model Subscription {
+  id               String                    @id @default(cuid())
+  user             User?                     @relation("Subscription_user", fields: [userId], references: [id])
+  userId           String?                   @map("user")
+  product          String                    @default("")
+  quantity         Int                       @default(1)
+  frequency        SubscriptionFrequencyType @default(weekly)
+  nextDeliveryDate DateTime?
+  discount         Float?                    @default(0)
+  isActive         Boolean                   @default(true)
+  pausedUntil      DateTime?
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @default(now()) @updatedAt
+
+  @@index([userId])
+  @@index([product])
+}
+
+model SubstitutionPreference {
+  id                      String   @id @default(cuid())
+  user                    User?    @relation("SubstitutionPreference_user", fields: [userId], references: [id])
+  userId                  String?  @map("user")
+  allowSubstitutions      Boolean  @default(true)
+  preferSimilarBrand      Boolean  @default(true)
+  preferSimilarSize       Boolean  @default(true)
+  contactBeforeSubstitute Boolean  @default(false)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @default(now()) @updatedAt
+
+  @@index([userId])
+}
+
+model Supplier {
+  id             String                   @id @default(cuid())
+  name           String                   @default("")
+  contactName    String                   @default("")
+  email          String                   @default("")
+  phone          String                   @default("")
+  paymentTerms   SupplierPaymentTermType? @default(net_30)
+  deliveryDays   Json                     @default("[]")
+  minimumOrder   Float?
+  products       Product[]                @relation("Product_supplier")
+  inventoryLots  InventoryLot[]           @relation("InventoryLot_supplier")
+  purchaseOrders PurchaseOrder[]          @relation("PurchaseOrder_supplier")
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @default(now()) @updatedAt
+}
+
 model User {
-  id                      String    @id @default(cuid())
-  name                    String    @default("")
-  email                   String    @unique @default("")
-  password                String
-  role                    Role?     @relation("User_role", fields: [roleId], references: [id])
-  roleId                  String?   @map("role")
-  tasks                   Todo[]    @relation("Todo_assignedTo")
-  passwordResetToken      String?
-  passwordResetIssuedAt   DateTime?
-  passwordResetRedeemedAt DateTime?
+  id                               String                    @id @default(cuid())
+  name                             String                    @default("")
+  email                            String                    @unique @default("")
+  password                         String
+  role                             Role?                     @relation("User_role", fields: [roleId], references: [id])
+  roleId                           String?                   @map("role")
+  onboardingStatus                 UserOnboardingStatusType? @default(not_started)
+  createdAt                        DateTime                  @default(now())
+  updatedAt                        DateTime                  @default(now()) @updatedAt
+  passwordResetToken               String?
+  passwordResetIssuedAt            DateTime?
+  passwordResetRedeemedAt          DateTime?
+  from_Address_user                Address[]                 @relation("Address_user")
+  from_BackInStockAlert_user       BackInStockAlert[]        @relation("BackInStockAlert_user")
+  from_Cart_customer               Cart[]                    @relation("Cart_customer")
+  from_Department_manager          Department[]              @relation("Department_manager")
+  from_DeliveryRoute_driver        DeliveryRoute[]           @relation("DeliveryRoute_driver")
+  from_FavoriteProduct_user        FavoriteProduct[]         @relation("FavoriteProduct_user")
+  from_LoyaltyTransaction_user     LoyaltyTransaction[]      @relation("LoyaltyTransaction_user")
+  from_NotificationPreference_user NotificationPreference[]  @relation("NotificationPreference_user")
+  from_Order_user                  Order[]                   @relation("Order_user")
+  from_Payment_processedBy         Payment[]                 @relation("Payment_processedBy")
+  from_PriceAlert_user             PriceAlert[]              @relation("PriceAlert_user")
+  from_ShoppingList_user           ShoppingList[]            @relation("ShoppingList_user")
+  from_Subscription_user           Subscription[]            @relation("Subscription_user")
+  from_SubstitutionPreference_user SubstitutionPreference[]  @relation("SubstitutionPreference_user")
+  from_UserCoupon_user             UserCoupon[]              @relation("UserCoupon_user")
 
   @@index([roleId])
 }
 
-model Role {
-  id                 String  @id @default(cuid())
-  name               String  @default("")
-  canCreateTodos     Boolean @default(false)
-  canManageAllTodos  Boolean @default(false)
-  canSeeOtherPeople  Boolean @default(false)
-  canEditOtherPeople Boolean @default(false)
-  canManagePeople    Boolean @default(false)
-  canManageRoles     Boolean @default(false)
-  canAccessDashboard Boolean @default(false)
-  assignedTo         User[]  @relation("User_role")
+model UserCoupon {
+  id        String    @id @default(cuid())
+  user      User?     @relation("UserCoupon_user", fields: [userId], references: [id])
+  userId    String?   @map("user")
+  coupon    Coupon?   @relation("UserCoupon_coupon", fields: [couponId], references: [id])
+  couponId  String?   @map("coupon")
+  clippedAt DateTime? @default(now())
+  usedAt    DateTime?
+  used      Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+
+  @@index([userId])
+  @@index([couponId])
 }
 
-model Todo {
-  id                   String      @id @default(cuid())
-  label                String      @default("")
-  description          Json        @default("[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\"}]}]")
-  isComplete           Boolean     @default(false)
-  status               String?     @default("todo")
-  priority             Int?        @default(1)
-  tags                 Json        @default("[]")
-  dueDate              DateTime?
-  weight               Float?      @default(1)
-  budget               Decimal?    @default("0.00") @postgresql.Decimal(10, 2)
-  isPrivate            Boolean     @default(false)
-  largeNumber          BigInt?
-  metadata             Json?
-  secretNote           String?
-  coverImage_id        String?
-  coverImage_filesize  Int?
-  coverImage_width     Int?
-  coverImage_height    Int?
-  coverImage_extension String?
-  todoImages           TodoImage[] @relation("Todo_todoImages")
-  assignedTo           User?       @relation("Todo_assignedTo", fields: [assignedToId], references: [id])
-  assignedToId         String?     @map("assignedTo")
-
-  @@index([assignedToId])
+enum CartItemSubstitutionPreferenceType {
+  allow
+  contact
+  remove
 }
 
-model TodoImage {
-  id              String  @id @default(cuid())
-  image_id        String?
-  image_filesize  Int?
-  image_width     Int?
-  image_height    Int?
-  image_extension String?
-  imagePath       String  @default("")
-  altText         String  @default("")
-  todos           Todo[]  @relation("Todo_todoImages")
-  metadata        Json?
+enum CouponDiscountTypeType {
+  percentage
+  fixed
+  bogo
+}
+
+enum DepartmentTemperatureZoneType {
+  ambient
+  refrigerated
+  frozen
+}
+
+enum DeliveryRouteTimeWindowType {
+  time_8_10
+  time_10_12
+  time_12_14
+  time_14_16
+  time_16_18
+  time_18_20
+}
+
+enum DeliveryRouteStatusType {
+  planning
+  in_progress
+  completed
+}
+
+enum LoyaltyTransactionTypeType {
+  earned_purchase
+  earned_bonus
+  earned_referral
+  earned_birthday
+  redeemed_discount
+  redeemed_reward
+  expired
+  adjusted
+  refund_deducted
+}
+
+enum OrderStatusType {
+  pending
+  picking
+  packed
+  out_for_delivery
+  delivered
+  cancelled
+}
+
+enum OrderDeliveryTimeWindowType {
+  time_8_10
+  time_10_12
+  time_12_14
+  time_14_16
+  time_16_18
+  time_18_20
+}
+
+enum OrderSubstitutionPreferenceType {
+  call_me
+  best_match
+  refund
+}
+
+enum ProductStatusType {
+  draft
+  published
+  archived
+}
+
+enum ProductDepartmentType {
+  produce
+  meat
+  seafood
+  dairy
+  bakery
+  deli
+  frozen
+  pantry
+  beverages
+  snacks
+  health_beauty
+  household
+}
+
+enum ProductPricingMethodType {
+  unit
+  weight
+  volume
+}
+
+enum ProductUnitOfMeasureType {
+  each
+  lb
+  oz
+  kg
+  g
+  L
+  mL
+  gallon
+  quart
+  pint
+}
+
+enum PurchaseOrderStatusType {
+  draft
+  sent
+  confirmed
+  received
+  cancelled
+}
+
+enum RecipeDifficultyType {
+  easy
+  medium
+  hard
+}
+
+enum SubscriptionFrequencyType {
+  weekly
+  biweekly
+  monthly
+}
+
+enum SupplierPaymentTermType {
+  net_30
+  net_60
+  cod
+}
+
+enum UserOnboardingStatusType {
+  not_started
+  in_progress
+  completed
+  dismissed
 }

@@ -36,22 +36,30 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { AdminMeta } from '../hooks/useAdminMeta'
-import { Home, Database, ChevronRight, Package } from 'lucide-react'
+import { Home, ChevronRight, Package } from 'lucide-react'
 import { Logo, LogoIcon } from '@/features/dashboard/components/Logo'
 import { UserProfileClient } from './UserProfileClient'
+import { OnboardingCards } from '@/features/platform/onboarding/components/OnboardingCards'
+import { dismissOnboarding } from '@/features/platform/onboarding/actions/onboarding'
+import { groceryPlatformNavGroups, groceryPlatformNavItems } from '@/features/platform/lib/navigation'
 
 interface User {
   id: string;
   email: string;
   name?: string;
+  onboardingStatus?: string;
+  role?: {
+    canManageOnboarding?: boolean;
+  };
 }
 
 interface SidebarProps {
   adminMeta: AdminMeta | null
   user?: User | null
+  onOpenDialog?: () => void
 }
 
-export function Sidebar({ adminMeta, user }: SidebarProps) {
+export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
   const { isMobile, setOpenMobile } = useSidebar()
   const pathname = usePathname()
 
@@ -94,6 +102,14 @@ export function Sidebar({ adminMeta, user }: SidebarProps) {
     },
   ]
 
+  const platformItems = groceryPlatformNavGroups.map((group) => ({
+    ...group,
+    items: groceryPlatformNavItems.filter((item) => item.group === group.id),
+    isActive: groceryPlatformNavItems
+      .filter((item) => item.group === group.id)
+      .some((item) => isLinkActive(item.href)),
+  }))
+
   return (
     <SidebarComponent collapsible="icon">
       <SidebarHeader>
@@ -122,6 +138,80 @@ export function Sidebar({ adminMeta, user }: SidebarProps) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
+        </SidebarGroup>
+
+        {/* Platform Navigation */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Platform</SidebarGroupLabel>
+          <SidebarMenu className="group-has-[[data-collapsible=icon]]/sidebar-wrapper:hidden gap-0">
+            {platformItems.map((platformItem) => (
+              <Collapsible
+                key={platformItem.title}
+                asChild
+                defaultOpen={platformItem.isActive}
+                className="group/collapsible"
+              >
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton>
+                      <platformItem.icon className="h-4 w-4" />
+                      <span>{platformItem.title}</span>
+                      <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      {platformItem.items.map((link) => (
+                        <SidebarMenuSubItem key={link.href}>
+                          <SidebarMenuSubButton asChild isActive={isLinkActive(link.href)}>
+                            <Link href={link.href} onClick={() => setOpenMobile(false)}>
+                              <span>{link.title}</span>
+                            </Link>
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ))}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
+            ))}
+          </SidebarMenu>
+
+          <div className="hidden group-has-[[data-collapsible=icon]]/sidebar-wrapper:block">
+            {platformItems.map((platformItem) => (
+              <DropdownMenu key={platformItem.title}>
+                <SidebarMenuItem>
+                  <DropdownMenuTrigger asChild>
+                    <SidebarMenuButton className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
+                      <platformItem.icon className="h-4 w-4" />
+                    </SidebarMenuButton>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    side={isMobile ? "bottom" : "right"}
+                    align={isMobile ? "end" : "start"}
+                    className="min-w-56"
+                  >
+                    <div className="max-h-[calc(100vh-16rem)] overflow-y-auto py-1">
+                      {platformItem.items.map((link) => (
+                        <DropdownMenuItem
+                          asChild
+                          key={link.href}
+                          className={isLinkActive(link.href) ? "bg-blue-50 text-blue-600" : ""}
+                        >
+                          <Link href={link.href} onClick={() => setOpenMobile(false)}>
+                            <span>{link.title}</span>
+                            {isLinkActive(link.href) && (
+                              <div className="ml-auto h-2 w-2 rounded-full bg-blue-600" />
+                            )}
+                          </Link>
+                        </DropdownMenuItem>
+                      ))}
+                    </div>
+                  </DropdownMenuContent>
+                </SidebarMenuItem>
+              </DropdownMenu>
+            ))}
+          </div>
         </SidebarGroup>
 
         {/* Models Dropdown - Collapsible */}
@@ -220,7 +310,26 @@ export function Sidebar({ adminMeta, user }: SidebarProps) {
       </SidebarContent>
       
       <SidebarFooter>
-        {user && <UserProfileClient user={user} />}
+        {user && (
+          <div className="space-y-3">
+            <OnboardingCards
+              steps={[
+                {
+                  href: '/dashboard/onboarding',
+                  title: 'Complete store setup',
+                  description: 'Seed your grocery demo data and unlock the core operator and storefront flows.',
+                },
+              ]}
+              onboardingStatus={user.onboardingStatus}
+              userRole={user.role}
+              onDismiss={() => {
+                void dismissOnboarding()
+              }}
+              onOpenDialog={() => onOpenDialog?.()}
+            />
+            <UserProfileClient user={user} />
+          </div>
+        )}
       </SidebarFooter>
       
       <SidebarRail />

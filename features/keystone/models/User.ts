@@ -1,96 +1,76 @@
-import { list } from '@keystone-6/core'
-import { allOperations, denyAll } from '@keystone-6/core/access'
-import { checkbox, password, relationship, text } from '@keystone-6/core/fields'
-
-import { isSignedIn, permissions, rules } from '../access'
-import type { Session } from '../access'
+import { list } from "@keystone-6/core";
+import { denyAll } from "@keystone-6/core/access";
+import {
+  text,
+  password,
+  relationship,
+  select,
+} from "@keystone-6/core/fields";
+import { isSignedIn, permissions } from "../access";
+import { trackingFields } from "./trackingFields";
 
 export const User = list({
   access: {
     operation: {
-      ...allOperations(isSignedIn),
-      create: (args) => {
-        // Allow public sign-ups if environment variable is set to true
-        if (process.env.PUBLIC_SIGNUPS_ALLOWED === 'true') {
-          return true;
-        }
-        // Otherwise, require canManagePeople permission
-        return permissions.canManagePeople(args);
-      },
-      delete: permissions.canManagePeople,
+      query: isSignedIn,
+      create: () => true,
+      update: isSignedIn,
+      delete: permissions.canManageUsers,
     },
     filter: {
-      query: rules.canReadPeople,
-      update: rules.canUpdatePeople,
+      query: ({ session }) => {
+        if (permissions.canManageUsers({ session })) {
+          return true;
+        }
+        return { id: { equals: session?.itemId } };
+      },
+      update: ({ session }) => {
+        if (permissions.canManageUsers({ session })) {
+          return true;
+        }
+        return { id: { equals: session?.itemId } };
+      },
     },
   },
   ui: {
-    hideCreate: args => !permissions.canManagePeople(args),
-    hideDelete: args => !permissions.canManagePeople(args),
+    labelField: "name",
     listView: {
-      initialColumns: ['name', 'email', 'role', 'tasks'],
-    },
-    itemView: {
-      defaultFieldMode: ({ session, item }) => {
-        // canEditOtherPeople can edit other people
-        if (session?.data.role?.canEditOtherPeople) return 'edit'
-
-        // edit themselves
-        if (session?.itemId === item?.id) return 'edit'
-
-        // else, default all fields to read mode
-        return 'read'
-      },
+      initialColumns: ["name", "email", "role", "onboardingStatus"],
     },
   },
   fields: {
     name: text({
-      validation: {
-        isRequired: true,
-      },
+      validation: { isRequired: true },
+      label: "Name",
     }),
     email: text({
-      isFilterable: false,
-      isOrderable: false,
-      isIndexed: 'unique',
-      validation: {
-        isRequired: true,
-      },
+      validation: { isRequired: true },
+      isIndexed: "unique",
+      label: "Email",
     }),
     password: password({
+      validation: { isRequired: true },
       access: {
         read: denyAll,
         update: ({ session, item }) =>
-          permissions.canManagePeople({ session }) || session?.itemId === item.id,
+          permissions.canManageUsers({ session }) || session?.itemId === item.id,
       },
-      validation: { isRequired: true },
     }),
     role: relationship({
-      ref: 'Role.assignedTo',
-      access: {
-        create: permissions.canManagePeople,
-        update: permissions.canManagePeople,
-      },
-      ui: {
-        itemView: {
-          fieldMode: args => (permissions.canManagePeople(args) ? 'edit' : 'read'),
-        },
-      },
+      ref: "Role.assignedTo",
+      label: "Role",
     }),
-    tasks: relationship({
-      ref: 'Todo.assignedTo',
-      many: true,
-      access: {
-        create: permissions.canManageAllTodos,
-        update: ({ session, item }) =>
-          permissions.canManageAllTodos({ session }) || session?.itemId === item.id,
-      },
-      ui: {
-        createView: {
-          fieldMode: args => (permissions.canManageAllTodos(args) ? 'edit' : 'hidden'),
-        },
-        // itemView: { fieldMode: 'read' },
-      },
+    onboardingStatus: select({
+      type: "enum",
+      options: [
+        { label: "Not Started", value: "not_started" },
+        { label: "In Progress", value: "in_progress" },
+        { label: "Completed", value: "completed" },
+        { label: "Dismissed", value: "dismissed" },
+      ],
+      defaultValue: "not_started",
+      label: "Onboarding Status",
     }),
+    ...trackingFields,
   },
 });
