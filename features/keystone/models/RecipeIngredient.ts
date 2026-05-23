@@ -5,51 +5,16 @@ import {
   checkbox,
   relationship,
 } from "@keystone-6/core/fields";
-import { isSignedIn, permissions } from "../access";
+import { permissions } from "../access";
 import { trackingFields } from "./trackingFields";
 
 export const RecipeIngredient = list({
   access: {
     operation: {
-      query: () => true, // Public can view recipe ingredients
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
-    },
-    filter: {
-      query: ({ session }) => {
-        // Public can see ingredients of published recipes
-        // Logged in users can also see ingredients of their own recipes
-        if (session?.itemId) {
-          return {
-            OR: [
-              { recipe: { status: { equals: "published" } } },
-              { recipe: { author: { id: { equals: session.itemId } } } },
-            ],
-          };
-        }
-        return { recipe: { status: { equals: "published" } } };
-      },
-      update: ({ session }) => {
-        if (permissions.canManageProducts({ session })) {
-          return true;
-        }
-        // Users can only update ingredients of their own recipes
-        if (session?.itemId) {
-          return { recipe: { author: { id: { equals: session.itemId } } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        if (permissions.canManageProducts({ session })) {
-          return true;
-        }
-        // Users can only delete ingredients of their own recipes
-        if (session?.itemId) {
-          return { recipe: { author: { id: { equals: session.itemId } } } };
-        }
-        return false;
-      },
+      query: () => true, // Public can view ingredients for public recipe content.
+      create: permissions.canManageProducts,
+      update: permissions.canManageProducts,
+      delete: permissions.canManageProducts,
     },
   },
   ui: {

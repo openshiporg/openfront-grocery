@@ -1,38 +1,27 @@
 import type { GroceryOrder } from '../../types';
-import { clearCart } from './cart';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import { clearCart, getSessionId } from './cart';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
 export async function initiatePaymentSession(
   cartId: string,
-  paymentProviderId: string
-): Promise<{ id: string; data?: { clientSecret?: string; paymentIntentId?: string }; amount?: number } | null> {
+  paymentProviderId: string,
+  deliverySlotId?: string,
+  pickupSlotId?: string
+): Promise<{ id: string; data?: { clientSecret?: string; paymentIntentId?: string }; amount?: number | string } | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation InitiatePaymentSession($cartId: ID!, $paymentProviderId: String!) {
-            initiatePaymentSession(cartId: $cartId, paymentProviderId: $paymentProviderId) {
-              id
-              amount
-              data
-            }
-          }
-        `,
-        variables: { cartId, paymentProviderId },
-      }),
-    });
+    const { data, errors } = await storefrontGraphQL<{
+      initiatePaymentSession?: { id: string; data?: { clientSecret?: string; paymentIntentId?: string }; amount?: number | string } | null;
+    }>(`
+      mutation InitiatePaymentSession($cartId: ID!, $paymentProviderId: String!, $deliverySlotId: ID, $pickupSlotId: ID, $sessionId: String) {
+        initiatePaymentSession(cartId: $cartId, paymentProviderId: $paymentProviderId, deliverySlotId: $deliverySlotId, pickupSlotId: $pickupSlotId, sessionId: $sessionId) {
+          id
+          amount
+          data
+        }
+      }
+    `, { cartId, paymentProviderId, deliverySlotId, pickupSlotId, sessionId: getSessionId() });
 
-    const { data, errors } = await response.json();
-
-    if (errors?.length) {
-      throw new Error(errors[0]?.message || 'Failed to initiate payment session');
-    }
+    throwGraphQLErrors(errors);
 
     return data?.initiatePaymentSession || null;
   } catch (error) {
@@ -58,90 +47,82 @@ export async function submitOrder(orderData: {
   };
   deliveryDate: string;
   deliveryTimeWindow: string;
+  fulfillmentMethod: 'delivery' | 'pickup';
+  deliverySlotId?: string;
+  pickupSlotId?: string;
+  deliveryFee: number;
+  expectedTotal: number;
   substitutionPreference: 'call_me' | 'best_match' | 'refund';
   deliveryInstructions?: string;
+  sessionId?: string;
 }): Promise<GroceryOrder | null> {
   try {
-    const submitResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation SubmitGroceryOrder($data: SubmitGroceryOrderInput!) {
-            submitGroceryOrder(data: $data) {
-              success
-              orderId
-              displayId
-              message
-            }
-          }
-        `,
-        variables: {
-          data: orderData,
-        },
-      }),
+    const submitResult = await storefrontGraphQL<{
+      submitGroceryOrder?: {
+        success?: boolean;
+        orderId?: string;
+        displayId?: string;
+        message?: string;
+      };
+    }>(`
+      mutation SubmitGroceryOrder($data: SubmitGroceryOrderInput!) {
+        submitGroceryOrder(data: $data) {
+          success
+          orderId
+          displayId
+          message
+        }
+      }
+    `, {
+      data: { ...orderData, sessionId: orderData.sessionId ?? getSessionId() },
     });
 
-    const submitResult = await submitResponse.json();
     const orderId = submitResult?.data?.submitGroceryOrder?.orderId;
 
     if (!submitResult?.data?.submitGroceryOrder?.success || !orderId) {
       throw new Error(submitResult?.data?.submitGroceryOrder?.message || 'Failed to create order');
     }
 
-    const orderFetchResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetOrder($id: ID!) {
-            order(where: { id: $id }) {
+    const finalOrderResult = await storefrontGraphQL<{ order: any | null }>(`
+      query GetOrder($id: ID!) {
+        order(where: { id: $id }) {
+          id
+          displayId
+          status
+          email
+          taxRate
+          createdAt
+          updatedAt
+          shippingAddress {
+            firstName
+            lastName
+            address1
+            address2
+            city
+            province
+            postalCode
+            phone
+          }
+          deliveryDate
+          deliveryTimeWindow
+          deliveryInstructions
+          substitutionPreference
+          metadata
+          lineItems {
+            id
+            title
+            quantity
+            unitPrice
+            thumbnail
+            product {
               id
-              displayId
-              status
-              email
-              taxRate
-              createdAt
-              updatedAt
-              shippingAddress {
-                firstName
-                lastName
-                address1
-                city
-                province
-                postalCode
-                phone
-              }
-              deliveryDate
-              deliveryTimeWindow
-              deliveryInstructions
-              substitutionPreference
-              lineItems {
-                id
-                title
-                quantity
-                unitPrice
-                thumbnail
-                product {
-                  id
-                  handle
-                }
-              }
+              handle
             }
           }
-        `,
-        variables: { id: orderId },
-      }),
-      cache: 'no-store',
-    });
+        }
+      }
+    `, { id: orderId }, { cache: 'no-store' });
 
-    const finalOrderResult = await orderFetchResponse.json();
     const order = finalOrderResult?.data?.order;
 
     if (!order) {
@@ -169,9 +150,9 @@ export async function submitOrder(orderData: {
       items: mappedItems,
       subtotal,
       tax_total: taxTotal,
-      shipping_total: 0,
+      shipping_total: Math.round((order.metadata?.deliveryFee || 0) * 100),
       discount_total: 0,
-      total: subtotal + taxTotal,
+      total: subtotal + taxTotal + Math.round((order.metadata?.deliveryFee || 0) * 100),
       shippingAddress: order.shippingAddress,
       deliverySlot: order.deliveryDate
         ? {

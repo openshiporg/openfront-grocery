@@ -1,9 +1,8 @@
 import type { GroceryCart } from '../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import { storefrontGraphQL } from './graphql';
 
 // Get or generate a session ID for guest carts
-function getSessionId(): string {
+export function getSessionId(): string {
   if (typeof window === 'undefined') return '';
 
   let sessionId = localStorage.getItem('grocery_cart_session');
@@ -24,48 +23,37 @@ function dispatchCartUpdate(cart: GroceryCart | null) {
 export async function retrieveCart(): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetCart($sessionId: String) {
-            groceryCart(sessionId: $sessionId) {
+    if (!sessionId) return null;
+
+    const { data } = await storefrontGraphQL<{ groceryCart: GroceryCart | null }>(`
+      query GetCart($sessionId: String) {
+        groceryCart(sessionId: $sessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            substitutionPreference
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                substitutionPreference
-                product {
-                  id
-                  name
-                  handle
-                  price
-                  unitPrice
-                  unit
-                  imageUrl
-                  inStock
-                  stockQuantity
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              handle
+              price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
-        `,
-        variables: { sessionId },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { sessionId }, { cache: 'no-store' });
     return data?.groceryCart || null;
   } catch (error) {
     console.error('Error retrieving cart:', error);
@@ -79,41 +67,30 @@ export async function addToCart(
 ): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation AddToCart($productId: ID!, $quantity: Int!, $sessionId: String) {
-            addItemToGroceryCart(productId: $productId, quantity: $quantity, sessionId: $sessionId) {
+    if (!sessionId) return null;
+
+    const { data } = await storefrontGraphQL<{ addItemToGroceryCart: GroceryCart | null }>(`
+      mutation AddToCart($productId: ID!, $quantity: Int!, $sessionId: String) {
+        addItemToGroceryCart(productId: $productId, quantity: $quantity, sessionId: $sessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                product {
-                  id
-                  name
-                  price
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              price
             }
           }
-        `,
-        variables: { productId, quantity, sessionId },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { productId, quantity, sessionId }, { cache: 'no-store' });
     const cart = data?.addItemToGroceryCart || null;
     dispatchCartUpdate(cart);
     return cart;
@@ -129,41 +106,30 @@ export async function updateCartItem(
 ): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation UpdateCartItem($itemId: ID!, $quantity: Int!, $sessionId: String) {
-            updateGroceryCartItem(itemId: $itemId, quantity: $quantity, sessionId: $sessionId) {
+    if (!sessionId) return null;
+
+    const { data } = await storefrontGraphQL<{ updateGroceryCartItem: GroceryCart | null }>(`
+      mutation UpdateCartItem($itemId: ID!, $quantity: Int!, $sessionId: String) {
+        updateGroceryCartItem(itemId: $itemId, quantity: $quantity, sessionId: $sessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                product {
-                  id
-                  name
-                  price
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              price
             }
           }
-        `,
-        variables: { itemId, quantity, sessionId },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { itemId, quantity, sessionId }, { cache: 'no-store' });
     const cart = data?.updateGroceryCartItem || null;
     dispatchCartUpdate(cart);
     return cart;
@@ -178,41 +144,30 @@ export async function removeFromCart(
 ): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation RemoveFromCart($itemId: ID!, $sessionId: String) {
-            removeItemFromGroceryCart(itemId: $itemId, sessionId: $sessionId) {
+    if (!sessionId) return null;
+
+    const { data } = await storefrontGraphQL<{ removeItemFromGroceryCart: GroceryCart | null }>(`
+      mutation RemoveFromCart($itemId: ID!, $sessionId: String) {
+        removeItemFromGroceryCart(itemId: $itemId, sessionId: $sessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                product {
-                  id
-                  name
-                  price
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              price
             }
           }
-        `,
-        variables: { itemId, sessionId },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { itemId, sessionId }, { cache: 'no-store' });
     const cart = data?.removeItemFromGroceryCart || null;
     dispatchCartUpdate(cart);
     return cart;
@@ -226,41 +181,30 @@ export async function removeFromCart(
 export async function clearCart(): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation ClearCart($sessionId: String) {
-            clearGroceryCart(sessionId: $sessionId) {
+    if (!sessionId) return null;
+
+    const { data } = await storefrontGraphQL<{ clearGroceryCart: GroceryCart | null }>(`
+      mutation ClearCart($sessionId: String) {
+        clearGroceryCart(sessionId: $sessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                product {
-                  id
-                  name
-                  price
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              price
             }
           }
-        `,
-        variables: { sessionId },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { sessionId }, { cache: 'no-store' });
     return data?.clearGroceryCart || null;
   } catch (error) {
     console.error('Error clearing cart:', error);
@@ -276,44 +220,31 @@ export async function mergeGuestCart(): Promise<GroceryCart | null> {
       return await retrieveCart();
     }
 
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation MergeGuestCart($guestSessionId: String!) {
-            mergeGuestGroceryCart(guestSessionId: $guestSessionId) {
+    const { data } = await storefrontGraphQL<{ mergeGuestGroceryCart: GroceryCart | null }>(`
+      mutation MergeGuestCart($guestSessionId: String!) {
+        mergeGuestGroceryCart(guestSessionId: $guestSessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                product {
-                  id
-                  name
-                  price
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              price
             }
           }
-        `,
-        variables: { guestSessionId },
-      }),
-      cache: 'no-store',
-    });
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { guestSessionId }, { cache: 'no-store' });
 
     // Clear the guest session after merge
     localStorage.removeItem('grocery_cart_session');
-
-    const { data } = await response.json();
     return data?.mergeGuestGroceryCart || null;
   } catch (error) {
     console.error('Error merging guest cart:', error);
@@ -328,42 +259,31 @@ export async function updateSubstitutionPreference(
 ): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation UpdateSubstitutionPreference($itemId: ID!, $preference: String!, $sessionId: String) {
-            updateGrocerySubstitutionPreference(itemId: $itemId, preference: $preference, sessionId: $sessionId) {
+    if (!sessionId) return null;
+
+    const { data } = await storefrontGraphQL<{ updateGrocerySubstitutionPreference: GroceryCart | null }>(`
+      mutation UpdateSubstitutionPreference($itemId: ID!, $preference: String!, $sessionId: String) {
+        updateGrocerySubstitutionPreference(itemId: $itemId, preference: $preference, sessionId: $sessionId) {
+          id
+          items {
+            id
+            quantity
+            subtotal
+            substitutionPreference
+            product {
               id
-              items {
-                id
-                quantity
-                subtotal
-                substitutionPreference
-                product {
-                  id
-                  name
-                  price
-                }
-              }
-              subtotal
-              tax
-              deliveryFee
-              total
-              itemCount
+              name
+              price
             }
           }
-        `,
-        variables: { itemId, preference, sessionId },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          subtotal
+          tax
+          deliveryFee
+          total
+          itemCount
+        }
+      }
+    `, { itemId, preference, sessionId }, { cache: 'no-store' });
     return data?.updateGrocerySubstitutionPreference || null;
   } catch (error) {
     console.error('Error updating substitution preference:', error);

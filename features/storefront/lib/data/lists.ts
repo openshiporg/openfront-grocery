@@ -1,50 +1,66 @@
 import type { ShoppingList } from '../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
 function mapList(list: any): ShoppingList {
+  const items = (list.items || []).map((item: any) => ({
+    id: item.id,
+    name: item.product,
+    quantity: item.quantity,
+    checked: item.checked,
+    unit: item.unit || undefined,
+    notes: item.notes || undefined,
+    addedAt: item.addedAt || undefined,
+  }));
+
   return {
     id: list.id,
     name: list.name,
-    updatedAt: list.updatedAt,
-    items: (list.items || []).map((item: any) => ({
-      id: item.id,
-      name: item.product,
-      quantity: item.quantity,
-      checked: item.checked,
-    })),
+    updatedAt: list.updatedAt || new Date().toISOString(),
+    isDefault: list.isDefault,
+    itemCount: list.itemCount ?? items.length,
+    checkedCount: list.checkedCount ?? items.filter((item: any) => item.checked).length,
+    items,
   };
+}
+
+async function requestGraphQL<T = any>(query: string, variables?: Record<string, unknown>) {
+  const result = await storefrontGraphQL<T>(query, variables, { cache: 'no-store' });
+
+  throwGraphQLErrors(result.errors);
+
+  return result.data as T;
 }
 
 export async function getShoppingLists(): Promise<ShoppingList[]> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetShoppingLists {
-            shoppingLists(orderBy: { updatedAt: desc }) {
-              id
-              name
-              updatedAt
-              items {
-                id
-                product
-                quantity
-                checked
-              }
-            }
+    const data = await requestGraphQL<{
+      shoppingLists: Array<{
+        id: string;
+        name: string;
+        isDefault?: boolean;
+        updatedAt: string;
+        items: any[];
+      }>;
+    }>(`
+      query GetShoppingLists {
+        shoppingLists(orderBy: { updatedAt: desc }) {
+          id
+          name
+          isDefault
+          updatedAt
+          items {
+            id
+            product
+            quantity
+            checked
+            unit
+            notes
+            addedAt
           }
-        `,
-      }),
-      cache: 'no-store',
-    });
+        }
+      }
+    `);
 
-    const { data } = await response.json();
     return (data?.shoppingLists || []).map(mapList);
   } catch (error) {
     console.error('Error fetching shopping lists:', error);
@@ -54,34 +70,34 @@ export async function getShoppingLists(): Promise<ShoppingList[]> {
 
 export async function getShoppingListById(id: string): Promise<ShoppingList | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetShoppingList($id: ID!) {
-            shoppingList(where: { id: $id }) {
-              id
-              name
-              updatedAt
-              items {
-                id
-                product
-                quantity
-                checked
-              }
-            }
+    const data = await requestGraphQL<{
+      shoppingList: {
+        id: string;
+        name: string;
+        isDefault?: boolean;
+        updatedAt: string;
+        items: any[];
+      } | null;
+    }>(`
+      query GetShoppingList($id: ID!) {
+        shoppingList(where: { id: $id }) {
+          id
+          name
+          isDefault
+          updatedAt
+          items {
+            id
+            product
+            quantity
+            checked
+            unit
+            notes
+            addedAt
           }
-        `,
-        variables: { id },
-      }),
-      cache: 'no-store',
-    });
+        }
+      }
+    `, { id });
 
-    const { data } = await response.json();
     return data?.shoppingList ? mapList(data.shoppingList) : null;
   } catch (error) {
     console.error('Error fetching shopping list:', error);
@@ -91,33 +107,54 @@ export async function getShoppingListById(id: string): Promise<ShoppingList | nu
 
 export async function createShoppingList(name: string): Promise<ShoppingList | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation CreateShoppingList($name: String!) {
-            createShoppingList(data: { name: $name }) {
-              id
-              name
-              updatedAt
-              items {
-                id
-                product
-                quantity
-                checked
-              }
-            }
+    const authData = await requestGraphQL<{ authenticatedItem?: { id: string } | null }>(`
+      query GetAuthenticatedListOwner {
+        authenticatedItem {
+          ... on User {
+            id
           }
-        `,
-        variables: { name },
-      }),
+        }
+      }
+    `);
+
+    const userId = authData?.authenticatedItem?.id;
+    if (!userId) {
+      throw new Error('You must be signed in to create a shopping list.');
+    }
+
+    const data = await requestGraphQL<{
+      createShoppingList: {
+        id: string;
+        name: string;
+        isDefault?: boolean;
+        updatedAt: string;
+        items: any[];
+      } | null;
+    }>(`
+      mutation CreateShoppingList($data: ShoppingListCreateInput!) {
+        createShoppingList(data: $data) {
+          id
+          name
+          isDefault
+          updatedAt
+          items {
+            id
+            product
+            quantity
+            checked
+            unit
+            notes
+            addedAt
+          }
+        }
+      }
+    `, {
+      data: {
+        name,
+        user: { connect: { id: userId } },
+      },
     });
 
-    const { data } = await response.json();
     return data?.createShoppingList ? mapList(data.createShoppingList) : null;
   } catch (error) {
     console.error('Error creating shopping list:', error);
@@ -127,93 +164,207 @@ export async function createShoppingList(name: string): Promise<ShoppingList | n
 
 export async function addItemToList(
   listId: string,
-  item: { name: string; quantity?: number }
+  item: { name: string; quantity?: number; unit?: string; notes?: string }
 ): Promise<ShoppingList | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation AddItemToList($data: ShoppingListItemCreateInput!) {
-            createShoppingListItem(data: $data) {
-              id
-            }
+    const data = await requestGraphQL<{ addToShoppingList: any }>(`
+      mutation AddItemToShoppingList(
+        $listId: ID!
+        $product: String!
+        $quantity: Int
+        $unit: String
+        $notes: String
+      ) {
+        addToShoppingList(
+          listId: $listId
+          product: $product
+          quantity: $quantity
+          unit: $unit
+          notes: $notes
+        ) {
+          id
+          name
+          isDefault
+          itemCount
+          checkedCount
+          items {
+            id
+            product
+            quantity
+            unit
+            checked
+            notes
+            addedAt
           }
-        `,
-        variables: {
-          data: {
-            list: { connect: { id: listId } },
-            product: item.name,
-            quantity: item.quantity || 1,
-          },
-        },
-      }),
+        }
+      }
+    `, {
+      listId,
+      product: item.name,
+      quantity: item.quantity || 1,
+      unit: item.unit || 'each',
+      notes: item.notes || '',
     });
 
-    const { errors } = await response.json();
-    if (errors) return null;
-    return await getShoppingListById(listId);
+    return data?.addToShoppingList ? mapList(data.addToShoppingList) : null;
   } catch (error) {
     console.error('Error adding item to list:', error);
     return null;
   }
 }
 
-export async function toggleListItem(listId: string, itemId: string): Promise<void> {
+export async function updateListItemQuantity(listId: string, itemId: string, quantity: number): Promise<ShoppingList | null> {
   try {
-    const list = await getShoppingListById(listId);
-    const item = list?.items.find((entry) => entry.id === itemId);
-    if (!item) return;
-
-    await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation ToggleListItem($id: ID!, $data: ShoppingListItemUpdateInput!) {
-            updateShoppingListItem(where: { id: $id }, data: $data) {
-              id
-            }
+    const data = await requestGraphQL<{ updateShoppingListItemQuantity: any }>(`
+      mutation UpdateShoppingListItemQuantity($listId: ID!, $itemId: ID!, $quantity: Int!) {
+        updateShoppingListItemQuantity(listId: $listId, itemId: $itemId, quantity: $quantity) {
+          id
+          name
+          isDefault
+          itemCount
+          checkedCount
+          items {
+            id
+            product
+            quantity
+            unit
+            checked
+            notes
+            addedAt
           }
-        `,
-        variables: {
-          id: itemId,
-          data: { checked: !item.checked },
-        },
-      }),
+        }
+      }
+    `, {
+      listId,
+      itemId,
+      quantity,
     });
+
+    return data?.updateShoppingListItemQuantity ? mapList(data.updateShoppingListItemQuantity) : null;
   } catch (error) {
-    console.error('Error toggling list item:', error);
+    console.error('Error updating list item quantity:', error);
+    return null;
   }
 }
 
-export async function deleteShoppingList(id: string): Promise<void> {
+export async function toggleListItem(listId: string, itemId: string): Promise<ShoppingList | null> {
   try {
-    await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          mutation DeleteShoppingList($id: ID!) {
-            deleteShoppingList(where: { id: $id }) {
-              id
-            }
+    const data = await requestGraphQL<{ toggleShoppingListItemChecked: any }>(`
+      mutation ToggleShoppingListItem($listId: ID!, $itemId: ID!) {
+        toggleShoppingListItemChecked(listId: $listId, itemId: $itemId) {
+          id
+          name
+          isDefault
+          itemCount
+          checkedCount
+          items {
+            id
+            product
+            quantity
+            unit
+            checked
+            notes
+            addedAt
           }
-        `,
-        variables: { id },
-      }),
+        }
+      }
+    `, {
+      listId,
+      itemId,
     });
+
+    return data?.toggleShoppingListItemChecked ? mapList(data.toggleShoppingListItemChecked) : null;
+  } catch (error) {
+    console.error('Error toggling list item:', error);
+    return null;
+  }
+}
+
+export async function removeListItem(listId: string, itemId: string): Promise<ShoppingList | null> {
+  try {
+    const data = await requestGraphQL<{ removeFromShoppingList: any }>(`
+      mutation RemoveListItem($listId: ID!, $itemId: ID!) {
+        removeFromShoppingList(listId: $listId, itemId: $itemId) {
+          id
+          name
+          isDefault
+          itemCount
+          checkedCount
+          items {
+            id
+            product
+            quantity
+            unit
+            checked
+            notes
+            addedAt
+          }
+        }
+      }
+    `, {
+      listId,
+      itemId,
+    });
+
+    return data?.removeFromShoppingList ? mapList(data.removeFromShoppingList) : null;
+  } catch (error) {
+    console.error('Error removing list item:', error);
+    return null;
+  }
+}
+
+export async function addShoppingListToCart(listId: string): Promise<{
+  success: boolean;
+  message: string;
+  addedCount: number;
+  skippedCount: number;
+  skippedItems: string[];
+}> {
+  try {
+    const data = await requestGraphQL<{ addShoppingListToCart: any }>(`
+      mutation AddShoppingListToCart($listId: ID!) {
+        addShoppingListToCart(listId: $listId) {
+          success
+          message
+          addedCount
+          skippedCount
+          skippedItems
+        }
+      }
+    `, { listId });
+
+    return data?.addShoppingListToCart || {
+      success: false,
+      message: 'Failed to add list to cart',
+      addedCount: 0,
+      skippedCount: 0,
+      skippedItems: [],
+    };
+  } catch (error) {
+    console.error('Error adding shopping list to cart:', error);
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Failed to add list to cart',
+      addedCount: 0,
+      skippedCount: 0,
+      skippedItems: [],
+    };
+  }
+}
+
+export async function deleteShoppingList(id: string): Promise<boolean> {
+  try {
+    const data = await requestGraphQL<{ deleteShoppingList: { id: string } | null }>(`
+      mutation DeleteShoppingList($id: ID!) {
+        deleteShoppingList(where: { id: $id }) {
+          id
+        }
+      }
+    `, { id });
+
+    return Boolean(data?.deleteShoppingList?.id);
   } catch (error) {
     console.error('Error deleting shopping list:', error);
+    return false;
   }
 }

@@ -3884,7 +3884,7 @@ type Mutation {
   sendUserPasswordResetLink(email: String!): Boolean!
   redeemUserPasswordResetToken(email: String!, token: String!, password: String!): RedeemUserPasswordResetTokenResult
   updateActiveUser(data: UserUpdateProfileInput!): User
-  initiatePaymentSession(cartId: ID!, paymentProviderId: String!): PaymentSession
+  initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String): PaymentSession
   addItemToGroceryCart(productId: ID!, quantity: Int!, sessionId: String): GroceryCart
   updateGroceryCartItem(itemId: ID!, quantity: Int!, sessionId: String): GroceryCart
   removeItemFromGroceryCart(itemId: ID!, sessionId: String): GroceryCart
@@ -3912,6 +3912,8 @@ type Mutation {
   customerCheckIn(orderId: ID!, parkingSpotId: ID, vehicleDescription: String): CustomerCheckInResult!
   releaseParkingSpot(parkingSpotId: ID!, orderId: ID!): ReleaseParkingSpotResult!
   completeOrderHandoff(orderId: ID!): CompleteOrderHandoffResult!
+  createDeliveryRouteFromOrders(deliveryDate: String!, deliveryTimeWindow: String!, orderIds: [ID!]!, driverId: ID): DeliveryRouteWorkflowResult!
+  updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
   submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
 }
 
@@ -4481,6 +4483,14 @@ type CompleteOrderHandoffResult {
   message: String!
 }
 
+type DeliveryRouteWorkflowResult {
+  success: Boolean!
+  routeId: ID!
+  status: String!
+  orderCount: Int!
+  message: String!
+}
+
 input SubmitGroceryOrderAddressInput {
   firstName: String!
   lastName: String!
@@ -4495,10 +4505,16 @@ input SubmitGroceryOrderInput {
   cartId: ID!
   paymentSessionId: ID!
   paymentIntentId: String!
+  sessionId: String
   email: String!
   deliveryAddress: SubmitGroceryOrderAddressInput!
   deliveryDate: String!
   deliveryTimeWindow: String!
+  fulfillmentMethod: String!
+  deliverySlotId: ID
+  pickupSlotId: ID
+  deliveryFee: Float!
+  expectedTotal: Float!
   substitutionPreference: String!
   deliveryInstructions: String
 }

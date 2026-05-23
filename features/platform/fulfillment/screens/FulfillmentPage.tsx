@@ -1,6 +1,7 @@
 import { gql } from 'graphql-request';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
 import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import FulfillmentBoardClient from '@/features/platform/fulfillment/components/FulfillmentBoardClient';
 
 const FULFILLMENT_QUERY = gql`
   query GroceryFulfillmentBoard {
@@ -8,34 +9,56 @@ const FULFILLMENT_QUERY = gql`
       id
       displayId
       email
+      status
       deliveryTimeWindow
-      lineItems { id quantity title }
+      substitutionPreference
+      metadata
+      lineItems { id quantity title sku }
     }
     packed: orders(where: { status: { equals: packed } }, orderBy: { updatedAt: desc }, take: 20) {
       id
       displayId
       email
+      status
       deliveryTimeWindow
-      lineItems { id quantity title }
+      substitutionPreference
+      metadata
+      lineItems { id quantity title sku }
     }
     pending: orders(where: { status: { equals: pending } }, orderBy: { createdAt: asc }, take: 20) {
       id
       displayId
       email
-      lineItems { id quantity title }
+      status
+      deliveryTimeWindow
+      substitutionPreference
+      metadata
+      lineItems { id quantity title sku }
+    }
+    orderItemSubstitutions(orderBy: { createdAt: desc }, take: 200) {
+      id
+      orderItem
+      originalProduct
+      substitutedProduct
+      reason
+      customerApproved
+      approvedAt
     }
   }
 `;
 
 export async function FulfillmentPage() {
   const response = await keystoneClient<any>(FULFILLMENT_QUERY);
-  const data = response.success ? response.data : { pending: [], picking: [], packed: [] };
+  const data = response.success ? response.data : { pending: [], picking: [], packed: [], orderItemSubstitutions: [] };
 
   const columns = [
     { title: 'Pending', items: data.pending || [] },
     { title: 'Picking', items: data.picking || [] },
     { title: 'Packed', items: data.packed || [] },
   ];
+
+  const substitutionCount = (data.orderItemSubstitutions || []).length;
+  const waitingApprovalCount = (data.orderItemSubstitutions || []).filter((entry: any) => !entry.customerApproved).length;
 
   const breadcrumbs = [
     { type: 'link' as const, label: 'Dashboard', href: '/dashboard' },
@@ -44,50 +67,22 @@ export async function FulfillmentPage() {
   ];
 
   const header = (
-    <div className="space-y-2">
-      <h1 className="text-2xl font-semibold tracking-tight">Fulfillment Board</h1>
-      <p className="text-sm text-muted-foreground">A simple picking and packing board to move Grocery beyond model CRUD.</p>
+    <div className="space-y-3">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Fulfillment Board</h1>
+        <p className="text-sm text-muted-foreground">Picker-focused workflow for starting orders, capturing substitutions, and sending packed orders onward.</p>
+      </div>
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        <span className="rounded-full border px-2.5 py-1 bg-background">Substitutions logged: {substitutionCount}</span>
+        <span className="rounded-full border px-2.5 py-1 bg-background">Waiting customer approval: {waitingApprovalCount}</span>
+      </div>
     </div>
   );
 
   return (
     <PageContainer title="Fulfillment" header={header} breadcrumbs={breadcrumbs}>
       <div className="px-4 md:px-6 pb-6">
-        <div className="grid gap-4 xl:grid-cols-3">
-          {columns.map((column) => (
-            <section key={column.title} className="rounded-2xl border bg-background shadow-sm overflow-hidden">
-              <div className="border-b px-4 py-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted-foreground">{column.title}</h2>
-                  <span className="rounded-full border px-2 py-0.5 text-xs">{column.items.length}</span>
-                </div>
-              </div>
-              <div className="divide-y">
-                {column.items.length === 0 ? (
-                  <div className="px-4 py-8 text-sm text-muted-foreground">No orders in this lane.</div>
-                ) : (
-                  column.items.map((order: any) => (
-                    <div key={order.id} className="px-4 py-4 space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="font-medium">Order #{order.displayId}</p>
-                        <span className="text-xs text-muted-foreground">{order.lineItems?.length || 0} items</span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">{order.email}</p>
-                      <p className="text-xs text-muted-foreground">Window: {order.deliveryTimeWindow || '—'}</p>
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {(order.lineItems || []).slice(0, 3).map((item: any) => (
-                          <span key={item.id} className="rounded-full bg-muted px-2.5 py-1 text-xs">
-                            {item.quantity}× {item.title}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-          ))}
-        </div>
+        <FulfillmentBoardClient columns={columns} substitutions={data.orderItemSubstitutions || []} />
       </div>
     </PageContainer>
   );

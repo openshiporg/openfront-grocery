@@ -1,6 +1,5 @@
 import type { GroceryUser } from '../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import { storefrontGraphQL } from './graphql';
 
 function splitName(name?: string | null) {
   if (!name) {
@@ -16,29 +15,19 @@ function splitName(name?: string | null) {
 
 export async function getUser(): Promise<GroceryUser | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetUser {
-            authenticatedItem {
-              ... on User {
-                id
-                email
-                name
-              }
-            }
+    const { data } = await storefrontGraphQL<{
+      authenticatedItem?: { id: string; email: string; name?: string | null } | null;
+    }>(`
+      query GetUser {
+        authenticatedItem {
+          ... on User {
+            id
+            email
+            name
           }
-        `,
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+        }
+      }
+    `, undefined, { cache: 'no-store' });
     const user = data?.authenticatedItem;
 
     if (!user) return null;

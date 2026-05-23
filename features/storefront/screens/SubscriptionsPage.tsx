@@ -1,184 +1,93 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { getSubscriptions } from "@/features/storefront/lib/data/subscriptions";
-import { getProductsByIds } from "@/features/storefront/lib/data/products";
-import SubscriptionCard from "@/features/storefront/modules/subscriptions/components/subscription-card";
-import type { GrocerySubscription, GroceryProduct } from "@/features/storefront/types";
+import { BadgePercent, CalendarDays, Package, Repeat2, SlidersHorizontal } from 'lucide-react';
+
+import { getSubscriptions } from '@/features/storefront/lib/data/subscriptions';
+import { getProductsByIds } from '@/features/storefront/lib/data/products';
+import type { GroceryProduct, GrocerySubscription } from '@/features/storefront/types';
+import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanEmptyState, UrbanHeadline, UrbanMetric, UrbanPageShell, UrbanPanel, formatMoney, productImage } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 export async function generateMetadata(): Promise<Metadata> {
   return {
-    title: "My Subscriptions | Openfront Grocery",
-    description: "Manage your grocery subscriptions and auto-replenishment orders.",
+    title: 'Subscriptions | Urban Express',
+    description: 'Manage Urban Express grocery subscriptions and auto-replenishment orders.',
   };
+}
+
+function SubscriptionTile({ subscription }: { subscription: GrocerySubscription }) {
+  const product = subscription.productDetails;
+  return (
+    <UrbanPanel className="overflow-hidden">
+      <div className="aspect-[4/3] bg-[#282a2b]">
+        {product ? <img src={productImage(product)!} alt={product.name} className="h-full w-full object-cover opacity-80 mix-blend-luminosity" /> : <div className="flex h-full items-center justify-center"><Package className="h-10 w-10 text-[#ffb693]" /></div>}
+      </div>
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="font-market-label text-2xl font-black uppercase leading-none tracking-[-0.03em] text-[#e2e2e2]">{product?.name || subscription.product}</h3>
+          <UrbanBadge tone={subscription.isActive ? 'orange' : 'muted'}>{subscription.pausedUntil ? 'Paused' : subscription.isActive ? 'Active' : 'Off'}</UrbanBadge>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2 text-sm text-[#e2bfb0]">
+          <span>Qty {subscription.quantity}</span>
+          <span>{subscription.frequency}</span>
+          <span>{subscription.discount}% off</span>
+          <span>{new Date(subscription.nextDeliveryDate).toLocaleDateString()}</span>
+        </div>
+        {product ? <p className="mt-4 font-market-label text-3xl font-black text-[#ffb693]">{formatMoney(product.price)}</p> : null}
+      </div>
+    </UrbanPanel>
+  );
 }
 
 export async function SubscriptionsPage() {
   const subscriptions: GrocerySubscription[] = await getSubscriptions();
-  
-  // Get product details for all subscriptions
-  const productIds = subscriptions.map(s => s.product);
-  const { products } = await getProductsByIds(productIds);
-  
-  // Map products to subscriptions
-  const subscriptionsWithProducts = subscriptions.map(sub => ({
-    ...sub,
-    productDetails: products.find((p: GroceryProduct) => p.id === sub.product),
-  }));
-
-  const activeSubscriptions = subscriptionsWithProducts.filter(s => s.isActive && !s.pausedUntil);
-  const pausedSubscriptions = subscriptionsWithProducts.filter(s => s.pausedUntil);
-  const cancelledSubscriptions = subscriptionsWithProducts.filter(s => !s.isActive);
+  const { products } = await getProductsByIds(subscriptions.map((sub) => sub.product));
+  const withProducts = subscriptions.map((sub) => ({ ...sub, productDetails: products.find((p: GroceryProduct) => p.id === sub.product) }));
 
   return (
-    <div className="max-w-[1440px] mx-auto px-6 py-8">
-      {/* Breadcrumb */}
-      <nav className="text-sm text-gray-600 mb-6">
-        <Link href="/" className="hover:text-gray-900">Home</Link>
-        <span className="mx-2">/</span>
-        <span className="text-gray-900">Subscriptions</span>
-      </nav>
+    <UrbanPageShell>
+      <UrbanContainer className="space-y-8">
+        <nav className="font-market-label text-xs font-black uppercase tracking-[0.16em] text-[#e2bfb0]">
+          <Link href="/" className="hover:text-[#ffb693]">Urban Express</Link>
+          <span className="mx-2 text-[#5a4136]">/</span>
+          <span className="text-[#ffb693]">Subscriptions</span>
+        </nav>
 
-      {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">My Subscriptions</h1>
-          <p className="text-gray-600">
-            Manage your recurring orders and save 10% on every delivery
-          </p>
-        </div>
-        <Link
-          href="/subscriptions/new"
-          className="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold flex items-center gap-2 transition-colors"
-        >
-          <span className="text-xl">+</span>
-          New Subscription
-        </Link>
-      </div>
-
-      {/* Savings Banner */}
-      <div className="bg-gradient-to-r from-green-50 to-emerald-50 border border-green-200 rounded-xl p-6 mb-8">
-        <div className="flex items-center gap-4">
-          <div className="text-5xl">💰</div>
-          <div>
-            <h2 className="text-xl font-bold text-green-900">Subscribe & Save 10%</h2>
-            <p className="text-green-700">
-              Set it and forget it! Your favorite products delivered automatically at a discounted price.
-            </p>
+        <section className="grid gap-3 lg:grid-cols-[1fr_360px]">
+          <UrbanPanel className="p-5 sm:p-8">
+            <UrbanBadge tone="orange"><Repeat2 className="h-3 w-3" /> Auto replenishment</UrbanBadge>
+            <UrbanHeadline className="mt-5">Staples on schedule.</UrbanHeadline>
+            <p className="mt-5 max-w-2xl text-sm leading-7 text-[#e2bfb0]">Turn frequent grocery needs into recurring deliveries with product data from the Openfront catalog.</p>
+            <div className="mt-6"><UrbanButtonLink href="/products">Find subscription products</UrbanButtonLink></div>
+          </UrbanPanel>
+          <div className="grid gap-3">
+            <UrbanMetric label="Subscriptions" value={subscriptions.length} icon={Repeat2} />
+            <UrbanMetric label="Savings" value="10%" icon={BadgePercent} />
+            <UrbanMetric label="Flexible" value="Skip" icon={SlidersHorizontal} />
           </div>
-        </div>
-      </div>
+        </section>
 
-      {subscriptions.length === 0 ? (
-        /* Empty State */
-        <div className="bg-white border rounded-xl p-12 text-center">
-          <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <span className="text-5xl">🔄</span>
+        {withProducts.length === 0 ? (
+          <UrbanEmptyState title="No subscriptions yet" actionHref="/products" actionLabel="Browse products">Start a recurring run for groceries you buy regularly.</UrbanEmptyState>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {withProducts.map((subscription) => <SubscriptionTile key={subscription.id} subscription={subscription} />)}
           </div>
-          <h3 className="text-2xl font-bold text-gray-900 mb-2">No Subscriptions Yet</h3>
-          <p className="text-gray-600 mb-6 max-w-md mx-auto">
-            Start a subscription to get your favorite groceries delivered regularly and save 10% on every order.
-          </p>
-          <Link
-            href="/subscriptions/new"
-            className="bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold inline-flex items-center gap-2 transition-colors"
-          >
-            <span className="text-xl">+</span>
-            Create Your First Subscription
-          </Link>
-        </div>
-      ) : (
-        <>
-          {/* Active Subscriptions */}
-          {activeSubscriptions.length > 0 && (
-            <section className="mb-10">
-              <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-green-500 rounded-full"></span>
-                Active Subscriptions ({activeSubscriptions.length})
-              </h2>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {activeSubscriptions.map((subscription) => (
-                  <SubscriptionCard key={subscription.id} subscription={subscription} />
-                ))}
-              </div>
-            </section>
-          )}
+        )}
 
-          {/* Paused Subscriptions */}
-          {pausedSubscriptions.length > 0 && (
-            <section className="mb-10">
-              <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-yellow-500 rounded-full"></span>
-                Paused Subscriptions ({pausedSubscriptions.length})
-              </h2>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {pausedSubscriptions.map((subscription) => (
-                  <SubscriptionCard key={subscription.id} subscription={subscription} />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Cancelled Subscriptions */}
-          {cancelledSubscriptions.length > 0 && (
-            <section className="mb-10">
-              <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <span className="w-3 h-3 bg-gray-400 rounded-full"></span>
-                Cancelled Subscriptions ({cancelledSubscriptions.length})
-              </h2>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 opacity-60">
-                {cancelledSubscriptions.map((subscription) => (
-                  <SubscriptionCard key={subscription.id} subscription={subscription} />
-                ))}
-              </div>
-            </section>
-          )}
-        </>
-      )}
-
-      {/* Info Cards */}
-      <div className="mt-12 bg-white border rounded-xl p-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-6 text-center">
-          How Subscriptions Work
-        </h2>
-        <div className="grid md:grid-cols-4 gap-6">
-          <div className="text-center">
-            <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">📦</span>
+        <UrbanPanel className="grid gap-4 p-5 md:grid-cols-4">
+          {[
+            ['Choose products', Package],
+            ['Set frequency', CalendarDays],
+            ['Save automatically', BadgePercent],
+            ['Stay flexible', SlidersHorizontal],
+          ].map(([label, Icon]) => (
+            <div key={String(label)} className="border border-[#5a4136] bg-[#282a2b] p-4 text-center">
+              <Icon className="mx-auto h-6 w-6 text-[#ffb693]" />
+              <p className="mt-3 font-market-label text-sm font-black uppercase tracking-[0.14em] text-[#e2e2e2]">{String(label)}</p>
             </div>
-            <h3 className="font-semibold text-lg mb-2">Choose Products</h3>
-            <p className="text-gray-600 text-sm">
-              Select items you buy regularly
-            </p>
-          </div>
-          <div className="text-center">
-            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">📅</span>
-            </div>
-            <h3 className="font-semibold text-lg mb-2">Set Frequency</h3>
-            <p className="text-gray-600 text-sm">
-              Weekly, bi-weekly, or monthly
-            </p>
-          </div>
-          <div className="text-center">
-            <div className="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">💰</span>
-            </div>
-            <h3 className="font-semibold text-lg mb-2">Save 10%</h3>
-            <p className="text-gray-600 text-sm">
-              Automatic discount on every delivery
-            </p>
-          </div>
-          <div className="text-center">
-            <div className="w-16 h-16 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
-              <span className="text-3xl">✨</span>
-            </div>
-            <h3 className="font-semibold text-lg mb-2">Stay Flexible</h3>
-            <p className="text-gray-600 text-sm">
-              Skip, pause, or cancel anytime
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
+          ))}
+        </UrbanPanel>
+      </UrbanContainer>
+    </UrbanPageShell>
   );
 }

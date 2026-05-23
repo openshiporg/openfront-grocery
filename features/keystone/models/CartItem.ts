@@ -6,59 +6,16 @@ import {
   select,
   float,
 } from "@keystone-6/core/fields";
+import { permissions } from "../access";
 import { trackingFields } from "./trackingFields";
 
 export const CartItem = list({
   access: {
     operation: {
-      query: () => true, // Public can view cart items
-      create: () => true, // Anyone can create cart items
-      update: () => true, // Update allowed
-      delete: () => true, // Delete allowed
-    },
-    filter: {
-      query: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            cart: {
-              customer: { id: { equals: session.itemId } },
-            },
-          };
-        }
-        return {
-          cart: {
-            sessionId: { equals: '__guest_resolver_only__' },
-          },
-        };
-      },
-      update: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            cart: {
-              customer: { id: { equals: session.itemId } },
-            },
-          };
-        }
-        return {
-          cart: {
-            sessionId: { equals: '__guest_resolver_only__' },
-          },
-        };
-      },
-      delete: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            cart: {
-              customer: { id: { equals: session.itemId } },
-            },
-          };
-        }
-        return {
-          cart: {
-            sessionId: { equals: '__guest_resolver_only__' },
-          },
-        };
-      },
+      query: ({ session }) => permissions.canManageOrders({ session }),
+      create: permissions.canManageOrders,
+      update: permissions.canManageOrders,
+      delete: permissions.canManageOrders,
     },
   },
   ui: {

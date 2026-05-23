@@ -41,7 +41,7 @@ import { Logo, LogoIcon } from '@/features/dashboard/components/Logo'
 import { UserProfileClient } from './UserProfileClient'
 import { OnboardingCards } from '@/features/platform/onboarding/components/OnboardingCards'
 import { dismissOnboarding } from '@/features/platform/onboarding/actions/onboarding'
-import { groceryPlatformNavGroups, groceryPlatformNavItems } from '@/features/platform/lib/navigation'
+import { groceryPlatformNavGroups, getPlatformNavItemsWithBasePath, platformStandaloneItems } from '@/features/platform/lib/navigation'
 
 interface User {
   id: string;
@@ -102,6 +102,11 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
     },
   ]
 
+  const groceryPlatformNavItems = getPlatformNavItemsWithBasePath('/dashboard')
+  const standaloneItemsWithBasePath = platformStandaloneItems.map((item) => ({
+    ...item,
+    href: `/dashboard${item.href}`,
+  }))
   const platformItems = groceryPlatformNavGroups.map((group) => ({
     ...group,
     items: groceryPlatformNavItems.filter((item) => item.group === group.id),
@@ -144,6 +149,17 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
         <SidebarGroup>
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarMenu className="group-has-[[data-collapsible=icon]]/sidebar-wrapper:hidden gap-0">
+            {standaloneItemsWithBasePath.map((item) => (
+              <SidebarMenuItem key={item.href}>
+                <SidebarMenuButton asChild isActive={isLinkActive(item.href)}>
+                  <Link href={item.href} onClick={() => setOpenMobile(false)}>
+                    <item.icon className="h-4 w-4" />
+                    <span>{item.title}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+
             {platformItems.map((platformItem) => (
               <Collapsible
                 key={platformItem.title}
@@ -178,6 +194,17 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
           </SidebarMenu>
 
           <div className="hidden group-has-[[data-collapsible=icon]]/sidebar-wrapper:block">
+            {standaloneItemsWithBasePath.map((item) => (
+              <SidebarMenuItem key={item.href}>
+                <SidebarMenuButton asChild isActive={isLinkActive(item.href)}>
+                  <Link href={item.href} onClick={() => setOpenMobile(false)}>
+                    <item.icon className="h-4 w-4" />
+                    <span className="sr-only">{item.title}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+
             {platformItems.map((platformItem) => (
               <DropdownMenu key={platformItem.title}>
                 <SidebarMenuItem>

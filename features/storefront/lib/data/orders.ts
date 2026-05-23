@@ -1,6 +1,5 @@
-import type { GroceryOrder } from '../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import type { GroceryOrder, GroceryParkingSpot } from '../../types';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
 function mapOrderStatus(status: string): GroceryOrder['status'] {
   const statusMap: Record<string, GroceryOrder['status']> = {
@@ -32,34 +31,55 @@ function mapSubstitutionPreference(pref: string): 'allow' | 'contact' | 'remove'
   return prefMap[pref?.toLowerCase()] || 'allow';
 }
 
-function mapLineItems(lineItems: any[] = []) {
-  return lineItems.map((item: any) => ({
-    id: item.id,
-    title: item.title,
-    variant: undefined,
-    quantity: item.quantity,
-    unit_price: Math.round((item.unitPrice || 0) * 100),
-    thumbnail: item.thumbnail,
-    product: item.product
-      ? {
-          id: item.product.id,
-          handle: item.product.handle,
-        }
-      : undefined,
-  }));
+function mapLineItems(lineItems: any[] = [], substitutions: any[] = []) {
+  const substitutionByItem = new Map(substitutions.map((substitution) => [substitution.orderItem, substitution]));
+
+  return lineItems.map((item: any) => {
+    const substitution = substitutionByItem.get(item.id);
+
+    return {
+      id: item.id,
+      title: item.title,
+      variant: undefined,
+      quantity: item.quantity,
+      unit_price: Math.round((item.unitPrice || 0) * 100),
+      thumbnail: item.thumbnail,
+      product: item.product
+        ? {
+            id: item.product.id,
+            handle: item.product.handle,
+          }
+        : undefined,
+      substitutionPreference: item.metadata?.substitutionPreference || null,
+      substitution: substitution
+        ? {
+            id: substitution.id,
+            originalProduct: substitution.originalProduct,
+            substitutedProduct: substitution.substitutedProduct,
+            reason: substitution.reason,
+            customerApproved: Boolean(substitution.customerApproved),
+            approvedAt: substitution.approvedAt,
+          }
+        : undefined,
+    };
+  });
 }
 
 function mapOrder(order: any): GroceryOrder {
-  const items = mapLineItems(order.lineItems || []);
+  const items = mapLineItems(order.lineItems || [], order.orderItemSubstitutions || []);
   const subtotal = items.reduce((sum, item) => sum + item.unit_price * item.quantity, 0);
   const taxTotal = Math.round(subtotal * (order.taxRate || 0));
-  const shippingTotal = 0;
+  const shippingTotal = Math.round((order.metadata?.deliveryFee || 0) * 100);
   const total = subtotal + taxTotal + shippingTotal;
+  const metadata = order.metadata || {};
+  const fulfillmentSlot = metadata.selectedFulfillmentSlot;
+  const fulfillmentMethod = metadata.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery';
+  const pickupReady = fulfillmentMethod === 'pickup' && Boolean(metadata.readyForPickup);
 
   return {
     id: order.id,
     orderNumber: String(order.displayId || order.id.slice(-8).toUpperCase()),
-    status: mapOrderStatus(order.status),
+    status: pickupReady && order.status === 'packed' ? 'out_for_delivery' : mapOrderStatus(order.status),
     email: order.email,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -69,10 +89,11 @@ function mapOrder(order: any): GroceryOrder {
     discount_total: 0,
     total,
     shippingAddress: order.shippingAddress,
+    fulfillmentMethod,
     deliverySlot: order.deliveryDate
       ? {
           date: new Date(order.deliveryDate).toISOString(),
-          startTime: order.deliveryTimeWindow?.startsWith('time_8')
+          startTime: fulfillmentSlot?.startTime || (order.deliveryTimeWindow?.startsWith('time_8')
             ? '08:00'
             : order.deliveryTimeWindow?.startsWith('time_10')
             ? '10:00'
@@ -82,8 +103,8 @@ function mapOrder(order: any): GroceryOrder {
             ? '14:00'
             : order.deliveryTimeWindow?.startsWith('time_16')
             ? '16:00'
-            : '18:00',
-          endTime: order.deliveryTimeWindow?.endsWith('10')
+            : '18:00'),
+          endTime: fulfillmentSlot?.endTime || (order.deliveryTimeWindow?.endsWith('10')
             ? '10:00'
             : order.deliveryTimeWindow?.endsWith('12')
             ? '12:00'
@@ -93,7 +114,16 @@ function mapOrder(order: any): GroceryOrder {
             ? '16:00'
             : order.deliveryTimeWindow?.endsWith('18')
             ? '18:00'
-            : '20:00',
+            : '20:00'),
+        }
+      : undefined,
+    pickupCheckIn: fulfillmentMethod === 'pickup'
+      ? {
+          customerArrived: Boolean(metadata.customerArrived),
+          checkInTime: metadata.checkInTime || null,
+          parkingSpotId: metadata.parkingSpotId || null,
+          parkingSpotNumber: metadata.parkingSpotNumber || null,
+          vehicleDescription: metadata.vehicleDescription || null,
         }
       : undefined,
     deliveryInstructions: order.deliveryInstructions,
@@ -102,86 +132,92 @@ function mapOrder(order: any): GroceryOrder {
   };
 }
 
-async function getAuthenticatedUserId() {
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    credentials: 'include',
-    body: JSON.stringify({
-      query: `
-        query GetAuthenticatedUserId {
-          authenticatedItem {
-            ... on User {
-              id
-            }
-          }
-        }
-      `,
-    }),
-    cache: 'no-store',
-  });
+async function getOrderSubstitutions(lineItemIds: string[]) {
+  if (!lineItemIds.length) return [];
 
-  const { data } = await response.json();
+  try {
+    const { data } = await storefrontGraphQL<{ orderItemSubstitutions: any[] }>(`
+      query GetOrderSubstitutions($lineItemIds: [String!]) {
+        orderItemSubstitutions(where: { orderItem: { in: $lineItemIds } }) {
+          id
+          orderItem
+          originalProduct
+          substitutedProduct
+          reason
+          customerApproved
+          approvedAt
+        }
+      }
+    `, { lineItemIds }, { cache: 'no-store' });
+    return data?.orderItemSubstitutions || [];
+  } catch (error) {
+    console.error('Error fetching order substitutions:', error);
+    return [];
+  }
+}
+
+async function getAuthenticatedUserId() {
+  const { data } = await storefrontGraphQL<{
+    authenticatedItem?: { id: string } | null;
+  }>(`
+    query GetAuthenticatedUserId {
+      authenticatedItem {
+        ... on User {
+          id
+        }
+      }
+    }
+  `, undefined, { cache: 'no-store' });
   return data?.authenticatedItem?.id || null;
 }
 
 export async function getOrderById(id: string): Promise<GroceryOrder | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetOrder($id: ID!) {
-            order(where: { id: $id }) {
+    const { data } = await storefrontGraphQL<{ order: any | null }>(`
+      query GetOrder($id: ID!) {
+        order(where: { id: $id }) {
+          id
+          displayId
+          status
+          email
+          taxRate
+          createdAt
+          updatedAt
+          shippingAddress {
+            firstName
+            lastName
+            address1
+            address2
+            city
+            province
+            postalCode
+            phone
+          }
+          deliveryDate
+          deliveryTimeWindow
+          deliveryInstructions
+          substitutionPreference
+          metadata
+          lineItems {
+            id
+            title
+            quantity
+            unitPrice
+            thumbnail
+            metadata
+            product {
               id
-              displayId
-              status
-              email
-              taxRate
-              createdAt
-              updatedAt
-              shippingAddress {
-                firstName
-                lastName
-                address1
-                address2
-                city
-                province
-                postalCode
-                phone
-              }
-              deliveryDate
-              deliveryTimeWindow
-              deliveryInstructions
-              substitutionPreference
-              lineItems {
-                id
-                title
-                quantity
-                unitPrice
-                thumbnail
-                product {
-                  id
-                  handle
-                }
-              }
+              handle
             }
           }
-        `,
-        variables: { id },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+        }
+      }
+    `, { id }, { cache: 'no-store' });
     const order = data?.order;
-    return order ? mapOrder(order) : null;
+    if (!order) return null;
+
+    const substitutions = await getOrderSubstitutions((order.lineItems || []).map((item: any) => item.id));
+    return mapOrder({ ...order, orderItemSubstitutions: substitutions });
   } catch (error) {
     console.error('Error fetching order:', error);
     return null;
@@ -193,55 +229,116 @@ export async function getOrdersByUser(): Promise<GroceryOrder[]> {
     const userId = await getAuthenticatedUserId();
     if (!userId) return [];
 
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      credentials: 'include',
-      body: JSON.stringify({
-        query: `
-          query GetUserOrders($userId: ID!) {
-            orders(
-              where: { user: { id: { equals: $userId } } }
-              orderBy: { createdAt: desc }
-              take: 20
-            ) {
+    const { data } = await storefrontGraphQL<{ orders: any[] }>(`
+      query GetUserOrders($userId: ID!) {
+        orders(
+          where: { user: { id: { equals: $userId } } }
+          orderBy: { createdAt: desc }
+          take: 20
+        ) {
+          id
+          displayId
+          status
+          email
+          taxRate
+          createdAt
+          updatedAt
+          deliveryDate
+          deliveryTimeWindow
+          deliveryInstructions
+          substitutionPreference
+          metadata
+          lineItems {
+            id
+            title
+            quantity
+            unitPrice
+            thumbnail
+            metadata
+            product {
               id
-              displayId
-              status
-              email
-              taxRate
-              createdAt
-              updatedAt
-              deliveryDate
-              deliveryTimeWindow
-              deliveryInstructions
-              substitutionPreference
-              lineItems {
-                id
-                title
-                quantity
-                unitPrice
-                thumbnail
-                product {
-                  id
-                  handle
-                }
-              }
+              handle
             }
           }
-        `,
-        variables: { userId },
-      }),
-      cache: 'no-store',
-    });
+        }
+      }
+    `, { userId }, { cache: 'no-store' });
+    const orders = data?.orders || [];
+    const lineItemIds = orders.flatMap((order: any) => (order.lineItems || []).map((item: any) => item.id));
+    const substitutions = await getOrderSubstitutions(lineItemIds);
 
-    const { data } = await response.json();
-    return (data?.orders || []).map(mapOrder);
+    return orders.map((order: any) => ({
+      ...order,
+      orderItemSubstitutions: substitutions.filter((substitution: any) =>
+        (order.lineItems || []).some((item: any) => item.id === substitution.orderItem)
+      ),
+    })).map(mapOrder);
   } catch (error) {
     console.error('Error fetching user orders:', error);
     return [];
+  }
+}
+
+export async function getAvailableParkingSpots(accessibleOnly = false): Promise<GroceryParkingSpot[]> {
+  try {
+    const { data } = await storefrontGraphQL<{ availableParkingSpots: GroceryParkingSpot[] }>(`
+      query GetAvailableParkingSpots($accessibleOnly: Boolean) {
+        availableParkingSpots(accessibleOnly: $accessibleOnly) {
+          id
+          spotNumber
+          description
+          isAccessible
+          isAvailable
+        }
+      }
+    `, { accessibleOnly }, { cache: 'no-store' });
+    return data?.availableParkingSpots || [];
+  } catch (error) {
+    console.error('Error fetching parking spots:', error);
+    return [];
+  }
+}
+
+export async function checkInPickupOrder(input: {
+  orderId: string;
+  parkingSpotId?: string;
+  vehicleDescription?: string;
+}): Promise<{ success: boolean; message: string; estimatedWaitMinutes?: number; parkingSpotNumber?: string }> {
+  try {
+    const { data, errors } = await storefrontGraphQL<{
+      customerCheckIn?: {
+        success?: boolean;
+        message?: string;
+        estimatedWaitMinutes?: number;
+        parkingSpot?: { spotNumber?: string } | null;
+      };
+    }>(`
+      mutation CheckInPickupOrder($orderId: ID!, $parkingSpotId: ID, $vehicleDescription: String) {
+        customerCheckIn(orderId: $orderId, parkingSpotId: $parkingSpotId, vehicleDescription: $vehicleDescription) {
+          success
+          message
+          estimatedWaitMinutes
+          parkingSpot {
+            spotNumber
+          }
+        }
+      }
+    `, input);
+
+    throwGraphQLErrors(errors);
+
+    const result = data?.customerCheckIn;
+    return {
+      success: Boolean(result?.success),
+      message: result?.message || 'Checked in successfully.',
+      estimatedWaitMinutes: result?.estimatedWaitMinutes,
+      parkingSpotNumber: result?.parkingSpot?.spotNumber,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      message: error instanceof Error ? error.message : 'Failed to check in for pickup',
+    };
   }
 }
 
@@ -252,25 +349,30 @@ export async function reorderFromOrder(orderId: string): Promise<{ success: bool
       return { success: false, error: 'Order not found' };
     }
 
+    const { data: authData } = await storefrontGraphQL<{
+      authenticatedItem?: { id: string } | null;
+    }>(`
+      query GetReorderSessionId {
+        authenticatedItem {
+          ... on User {
+            id
+          }
+        }
+      }
+    `, undefined, { cache: 'no-store' });
+
+    const isSignedIn = Boolean(authData?.authenticatedItem?.id);
+    const sessionId = !isSignedIn ? `guest_reorder_${Date.now()}` : undefined;
+
     for (const item of order.items) {
       if (item.product?.id) {
-        await fetch(API_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-          body: JSON.stringify({
-            query: `
-              mutation ReorderItem($productId: ID!, $quantity: Int!) {
-                addItemToGroceryCart(productId: $productId, quantity: $quantity) {
-                  id
-                }
-              }
-            `,
-            variables: { productId: item.product.id, quantity: item.quantity },
-          }),
-        });
+        await storefrontGraphQL(`
+          mutation ReorderItem($productId: ID!, $quantity: Int!, $sessionId: String) {
+            addItemToGroceryCart(productId: $productId, quantity: $quantity, sessionId: $sessionId) {
+              id
+            }
+          }
+        `, { productId: item.product.id, quantity: item.quantity, sessionId });
       }
     }
 

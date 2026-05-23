@@ -1,66 +1,55 @@
 import type { GroceryDeal } from '../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import { storefrontGraphQL } from './graphql';
 
 export async function getDeals(): Promise<GroceryDeal[]> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetDeals {
-            discounts(
-              where: {
-                isActive: { equals: true }
-                startsAt: { lte: "${new Date().toISOString()}" }
-                OR: [
-                  { endsAt: { gte: "${new Date().toISOString()}" } }
-                  { endsAt: { equals: null } }
-                ]
-              }
-              orderBy: { priority: desc }
-            ) {
+    const now = new Date().toISOString();
+    const { data } = await storefrontGraphQL<{ discounts: any[] }>(`
+      query GetDeals($now: DateTime!) {
+        discounts(
+          where: {
+            isActive: { equals: true }
+            startsAt: { lte: $now }
+            OR: [
+              { endsAt: { gte: $now } }
+              { endsAt: { equals: null } }
+            ]
+          }
+          orderBy: { priority: desc }
+        ) {
+          id
+          code
+          description
+          type
+          value
+          minimumPurchase
+          startsAt
+          endsAt
+          usageLimit
+          usageCount
+          products {
+            id
+            title
+            handle
+            price
+            compareAtPrice
+            imageUrl
+            thumbnailUrl
+            unitOfMeasure
+            departmentRef {
               id
-              code
-              description
-              type
-              value
-              minimumPurchase
-              startsAt
-              endsAt
-              usageLimit
-              usageCount
-              products {
-                id
-                title
-                handle
-                price
-                compareAtPrice
-                imageUrl
-                thumbnailUrl
-                unitOfMeasure
-                departmentRef {
-                  id
-                  name
-                  handle
-                }
-              }
-              categories {
-                id
-                name
-                handle
-              }
+              name
+              handle
             }
           }
-        `,
-      }),
-      next: { revalidate: 300 },
-    });
-
-    const { data } = await response.json();
+          categories {
+            id
+            name
+            handle
+          }
+        }
+      }
+    `, { now }, { next: { revalidate: 300 } });
     const discounts = data?.discounts || [];
 
     // Transform discounts to GroceryDeal format
@@ -118,47 +107,36 @@ export async function getFlashDeals(): Promise<GroceryDeal[]> {
     const endOfDay = new Date(now);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetFlashDeals {
-            discounts(
-              where: {
-                isActive: { equals: true }
-                startsAt: { lte: "${now.toISOString()}" }
-                endsAt: { lte: "${endOfDay.toISOString()}" }
-              }
-              orderBy: { endsAt: asc }
-              take: 10
-            ) {
-              id
-              code
-              description
-              type
-              value
-              endsAt
-              products {
-                id
-                title
-                handle
-                price
-                compareAtPrice
-                imageUrl
-                thumbnailUrl
-                unitOfMeasure
-              }
-            }
+    const { data } = await storefrontGraphQL<{ discounts: any[] }>(`
+      query GetFlashDeals($now: DateTime!, $endOfDay: DateTime!) {
+        discounts(
+          where: {
+            isActive: { equals: true }
+            startsAt: { lte: $now }
+            endsAt: { lte: $endOfDay }
           }
-        `,
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
+          orderBy: { endsAt: asc }
+          take: 10
+        ) {
+          id
+          code
+          description
+          type
+          value
+          endsAt
+          products {
+            id
+            title
+            handle
+            price
+            compareAtPrice
+            imageUrl
+            thumbnailUrl
+            unitOfMeasure
+          }
+        }
+      }
+    `, { now: now.toISOString(), endOfDay: endOfDay.toISOString() }, { cache: 'no-store' });
     const discounts = data?.discounts || [];
 
     return discounts.flatMap((discount: any) =>
@@ -193,46 +171,36 @@ export async function getFlashDeals(): Promise<GroceryDeal[]> {
 
 export async function getCoupons(): Promise<GroceryDeal[]> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetCoupons {
-            discounts(
-              where: {
-                isActive: { equals: true }
-                type: { equals: "fixed" }
-                startsAt: { lte: "${new Date().toISOString()}" }
-                OR: [
-                  { endsAt: { gte: "${new Date().toISOString()}" } }
-                  { endsAt: { equals: null } }
-                ]
-              }
-              orderBy: { value: desc }
-            ) {
-              id
-              code
-              description
-              type
-              value
-              minimumPurchase
-              endsAt
-              categories {
-                id
-                name
-                handle
-              }
-            }
+    const now = new Date().toISOString();
+    const { data } = await storefrontGraphQL<{ discounts: any[] }>(`
+      query GetCoupons($now: DateTime!) {
+        discounts(
+          where: {
+            isActive: { equals: true }
+            type: { equals: "fixed" }
+            startsAt: { lte: $now }
+            OR: [
+              { endsAt: { gte: $now } }
+              { endsAt: { equals: null } }
+            ]
           }
-        `,
-      }),
-      next: { revalidate: 300 },
-    });
-
-    const { data } = await response.json();
+          orderBy: { value: desc }
+        ) {
+          id
+          code
+          description
+          type
+          value
+          minimumPurchase
+          endsAt
+          categories {
+            id
+            name
+            handle
+          }
+        }
+      }
+    `, { now }, { next: { revalidate: 300 } });
     const discounts = data?.discounts || [];
 
     return discounts.map((discount: any) => ({

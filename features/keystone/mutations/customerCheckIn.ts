@@ -53,8 +53,14 @@ export async function customerCheckIn(
     throw new Error('Not authorized to check in for this order');
   }
 
-  // Validate order status - must be packed or ready for pickup
-  const validStatuses = ['packed', 'picking'];
+  const metadata = order.metadata || {};
+
+  if (metadata.fulfillmentMethod === 'pickup' && !metadata.readyForPickup) {
+    throw new Error('This pickup order is not marked ready yet');
+  }
+
+  // Validate order status - must be packed/ready for pickup
+  const validStatuses = ['packed'];
   if (!validStatuses.includes(order.status)) {
     if (order.status === 'delivered') {
       throw new Error('This order has already been picked up');
@@ -92,7 +98,6 @@ export async function customerCheckIn(
   }
 
   // Update order metadata with check-in information
-  const metadata = order.metadata || {};
   const checkInTime = new Date().toISOString();
 
   await sudoContext.query.Order.updateOne({
@@ -106,6 +111,7 @@ export async function customerCheckIn(
         parkingSpotNumber: parkingSpot?.spotNumber || null,
         vehicleDescription: vehicleDescription || null,
         customerArrived: true,
+        pickupCheckedInAt: checkInTime,
       },
     },
   });

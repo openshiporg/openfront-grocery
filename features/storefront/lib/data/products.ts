@@ -1,96 +1,135 @@
 import type { GroceryProduct } from '../../types';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+export type ProductSortOption = 'name' | 'price-asc' | 'price-desc' | 'newest' | 'low-stock';
+export type ProductAvailabilityFilter = 'in-stock' | 'all' | 'low-stock';
+
+function mapProduct(product: any): GroceryProduct {
+  return {
+    ...product,
+    name: product.title,
+    unit: product.unitOfMeasure,
+    department: product.departmentRef,
+  };
+}
+
+function buildProductWhere(options?: {
+  department?: string;
+  search?: string;
+  availability?: ProductAvailabilityFilter;
+  organic?: boolean;
+}) {
+  const where: Record<string, any> = {
+    status: { equals: 'published' },
+  };
+
+  if (options?.department) {
+    where.departmentRef = { handle: { equals: options.department } };
+  }
+
+  if (options?.search?.trim()) {
+    const query = options.search.trim();
+    where.OR = [
+      { title: { contains: query, mode: 'insensitive' } },
+      { sku: { contains: query, mode: 'insensitive' } },
+      { handle: { contains: query, mode: 'insensitive' } },
+    ];
+  }
+
+  if (options?.organic) {
+    where.organicCertified = { equals: true };
+  }
+
+  if (options?.availability === 'all') {
+    return where;
+  }
+
+  where.inStock = { equals: true };
+
+  if (options?.availability === 'low-stock') {
+    where.stockQuantity = { lt: 10 };
+  }
+
+  return where;
+}
+
+function buildProductOrderBy(sort?: ProductSortOption) {
+  switch (sort) {
+    case 'price-asc':
+      return [{ price: 'asc' }];
+    case 'price-desc':
+      return [{ price: 'desc' }];
+    case 'newest':
+      return [{ createdAt: 'desc' }];
+    case 'low-stock':
+      return [{ stockQuantity: 'asc' }, { title: 'asc' }];
+    case 'name':
+    default:
+      return [{ title: 'asc' }];
+  }
+}
 
 export async function getProductsList(options?: {
   department?: string;
-  sort?: string;
+  sort?: ProductSortOption | string;
   search?: string;
+  availability?: ProductAvailabilityFilter;
+  organic?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<{ products: GroceryProduct[]; count: number }> {
-  const { department, sort, search, limit = 24, offset = 0 } = options || {};
+  const {
+    department,
+    sort = 'name',
+    search,
+    availability = 'in-stock',
+    organic = false,
+    limit = 24,
+    offset = 0,
+  } = options || {};
 
   try {
-    // Build where clause
-    const whereConditions: string[] = [
-      'inStock: { equals: true }',
-      'status: { equals: published }',
-    ];
+    const where = buildProductWhere({ department, search, availability, organic });
+    const orderBy = buildProductOrderBy(sort as ProductSortOption);
 
-    if (department) {
-      whereConditions.push(`departmentRef: { handle: { equals: "${department}" } }`);
-    }
-
-    if (search) {
-      whereConditions.push(`OR: [
-        { title: { contains: "${search}", mode: insensitive } }
-        { sku: { contains: "${search}", mode: insensitive } }
-      ]`);
-    }
-
-    // Build order by clause
-    let orderBy = '{ createdAt: desc }';
-    if (sort === 'price-asc') {
-      orderBy = '{ price: asc }';
-    } else if (sort === 'price-desc') {
-      orderBy = '{ price: desc }';
-    } else if (sort === 'name') {
-      orderBy = '{ title: asc }';
-    } else if (sort === 'newest') {
-      orderBy = '{ createdAt: desc }';
-    }
-
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetProducts($take: Int, $skip: Int) {
-            products(
-              where: { ${whereConditions.join(', ')} }
-              orderBy: ${orderBy}
-              take: $take
-              skip: $skip
-            ) {
-              id
-              title
-              handle
-              sku
-              price
-              compareAtPrice
-              unitOfMeasure
-              pricingMethod
-              imageUrl
-              thumbnailUrl
-              isPerishable
-              inStock
-              stockQuantity
-              organicCertified
-              departmentRef {
-                id
-                name
-                handle
-              }
-            }
-            productsCount(where: { ${whereConditions.join(', ')} })
+    const { data, errors } = await storefrontGraphQL<{
+      products: any[];
+      productsCount: number;
+    }>(`
+      query GetProducts($where: ProductWhereInput!, $orderBy: [ProductOrderByInput!]!, $take: Int, $skip: Int) {
+        products(
+          where: $where
+          orderBy: $orderBy
+          take: $take
+          skip: $skip
+        ) {
+          id
+          title
+          handle
+          sku
+          price
+          compareAtPrice
+          unitOfMeasure
+          pricingMethod
+          imageUrl
+          thumbnailUrl
+          isPerishable
+          inStock
+          stockQuantity
+          organicCertified
+          departmentRef {
+            id
+            name
+            handle
           }
-        `,
-        variables: { take: limit, skip: offset },
-      }),
-      next: { revalidate: 300 },
-    });
+        }
+        productsCount(where: $where)
+      }
+    `, { where, orderBy, take: limit, skip: offset }, { next: { revalidate: 300 } });
 
-    const { data } = await response.json();
+    throwGraphQLErrors(errors);
 
-    const products = (data?.products || []).map((p: any) => ({
-      ...p,
-      name: p.title,
-      unit: p.unitOfMeasure,
-      department: p.departmentRef,
-    }));
+    const products = (data?.products || []).map(mapProduct);
 
     return {
       products,
@@ -106,63 +145,45 @@ export async function getProductByHandle(
   handle: string
 ): Promise<GroceryProduct | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetProduct($handle: String!) {
-            product(where: { handle: $handle }) {
-              id
-              title
-              handle
-              description {
-                document
-              }
-              sku
-              price
-              compareAtPrice
-              unitOfMeasure
-              pricingMethod
-              imageUrl
-              thumbnailUrl
-              isPerishable
-              shelfLife
-              organicCertified
-              allergens
-              inStock
-              stockQuantity
-              departmentRef {
-                id
-                name
-                handle
-              }
-              supplier {
-                id
-                name
-              }
-            }
+    const { data } = await storefrontGraphQL<{ product: any | null }>(`
+      query GetProduct($handle: String!) {
+        product(where: { handle: $handle }) {
+          id
+          title
+          handle
+          description {
+            document
           }
-        `,
-        variables: { handle },
-      }),
-      next: { revalidate: 300 },
-    });
-
-    const { data } = await response.json();
+          sku
+          price
+          compareAtPrice
+          unitOfMeasure
+          pricingMethod
+          imageUrl
+          thumbnailUrl
+          isPerishable
+          shelfLife
+          organicCertified
+          allergens
+          inStock
+          stockQuantity
+          departmentRef {
+            id
+            name
+            handle
+          }
+          supplier {
+            id
+            name
+          }
+        }
+      }
+    `, { handle }, { next: { revalidate: 300 } });
     const product = data?.product;
 
     if (!product) return null;
 
-    // Map to GroceryProduct type
-    return {
-      ...product,
-      name: product.title,
-      unit: product.unitOfMeasure,
-      department: product.departmentRef,
-    };
+    return mapProduct(product);
   } catch (error) {
     console.error('Error fetching product:', error);
     return null;
@@ -173,50 +194,35 @@ export async function getProductsByIds(
   ids: string[]
 ): Promise<{ products: GroceryProduct[] }> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetProductsByIds($ids: [ID!]) {
-            products(where: { id: { in: $ids } }) {
-              id
-              title
-              handle
-              sku
-              price
-              unitOfMeasure
-              pricingMethod
-              imageUrl
-              thumbnailUrl
-              isPerishable
-              inStock
-              stockQuantity
-              organicCertified
-              departmentRef {
-                id
-                name
-                handle
-              }
-            }
+    if (!ids.length) {
+      return { products: [] };
+    }
+
+    const { data } = await storefrontGraphQL<{ products: any[] }>(`
+      query GetProductsByIds($ids: [ID!]) {
+        products(where: { id: { in: $ids } }) {
+          id
+          title
+          handle
+          sku
+          price
+          unitOfMeasure
+          pricingMethod
+          imageUrl
+          thumbnailUrl
+          isPerishable
+          inStock
+          stockQuantity
+          organicCertified
+          departmentRef {
+            id
+            name
+            handle
           }
-        `,
-        variables: { ids },
-      }),
-      next: { revalidate: 300 },
-    });
-
-    const { data } = await response.json();
-
-    // Map API response to GroceryProduct type
-    const products = (data?.products || []).map((p: any) => ({
-      ...p,
-      name: p.title,
-      unit: p.unitOfMeasure,
-      department: p.departmentRef,
-    }));
+        }
+      }
+    `, { ids }, { next: { revalidate: 300 } });
+    const products = (data?.products || []).map(mapProduct);
 
     return { products };
   } catch (error) {
@@ -232,62 +238,7 @@ export async function searchProducts(
   const { limit = 10 } = options || {};
 
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query SearchProducts($query: String!, $take: Int) {
-            products(
-              where: {
-                OR: [
-                  { title: { contains: $query, mode: insensitive } }
-                  { sku: { contains: $query, mode: insensitive } }
-                  { handle: { contains: $query, mode: insensitive } }
-                ]
-                inStock: { equals: true }
-                status: { equals: published }
-              }
-              take: $take
-            ) {
-              id
-              title
-              handle
-              sku
-              price
-              unitOfMeasure
-              pricingMethod
-              imageUrl
-              thumbnailUrl
-              isPerishable
-              inStock
-              stockQuantity
-              organicCertified
-              departmentRef {
-                id
-                name
-                handle
-              }
-            }
-          }
-        `,
-        variables: { query, take: limit },
-      }),
-      cache: 'no-store',
-    });
-
-    const { data } = await response.json();
-
-    // Map API response to GroceryProduct type
-    const products = (data?.products || []).map((p: any) => ({
-      ...p,
-      name: p.title,
-      unit: p.unitOfMeasure,
-      department: p.departmentRef,
-    }));
-
+    const { products } = await getProductsList({ search: query, limit, offset: 0 });
     return { products };
   } catch (error) {
     console.error('Error searching products:', error);
@@ -300,58 +251,7 @@ export async function getFeaturedProducts(
   limit: number = 8
 ): Promise<{ products: GroceryProduct[] }> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetFeaturedProducts($take: Int) {
-            products(
-              where: {
-                inStock: { equals: true }
-                status: { equals: published }
-              }
-              take: $take
-              orderBy: { createdAt: desc }
-            ) {
-              id
-              title
-              handle
-              sku
-              price
-              unitOfMeasure
-              pricingMethod
-              imageUrl
-              thumbnailUrl
-              isPerishable
-              inStock
-              stockQuantity
-              organicCertified
-              departmentRef {
-                id
-                name
-                handle
-              }
-            }
-          }
-        `,
-        variables: { take: limit },
-      }),
-      next: { revalidate: 300 },
-    });
-
-    const { data } = await response.json();
-
-    // Map API response to GroceryProduct type
-    const products = (data?.products || []).map((p: any) => ({
-      ...p,
-      name: p.title,
-      unit: p.unitOfMeasure,
-      department: p.departmentRef,
-    }));
-
+    const { products } = await getProductsList({ sort: 'newest', limit, offset: 0 });
     return { products };
   } catch (error) {
     console.error('Error fetching featured products:', error);

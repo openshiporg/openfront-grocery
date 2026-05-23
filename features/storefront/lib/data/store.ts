@@ -1,40 +1,31 @@
 import type { GroceryStore } from '../../types';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+import { storefrontGraphQL } from './graphql';
 
 export async function getStore(): Promise<GroceryStore | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetStoreMeta {
-            departments(
-              where: { isActive: { equals: true } }
-              orderBy: { sortOrder: asc }
-              take: 1
-            ) {
-              id
-            }
-            products(
-              where: {
-                inStock: { equals: true }
-                status: { equals: published }
-              }
-              take: 4
-            ) {
-              id
-            }
+    const { data } = await storefrontGraphQL<{
+      departments: Array<{ id: string }>;
+      products: Array<{ id: string }>;
+    }>(`
+      query GetStoreMeta {
+        departments(
+          where: { isActive: { equals: true } }
+          orderBy: { sortOrder: asc }
+          take: 1
+        ) {
+          id
+        }
+        products(
+          where: {
+            inStock: { equals: true }
+            status: { equals: published }
           }
-        `,
-      }),
-      next: { revalidate: 300 },
-    });
-
-    const { data } = await response.json();
+          take: 4
+        ) {
+          id
+        }
+      }
+    `, undefined, { next: { revalidate: 300 } });
     const activeDepartmentCount = data?.departments?.length || 0;
     const featuredProductCount = data?.products?.length || 0;
 

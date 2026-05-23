@@ -1,6 +1,5 @@
-import { gql } from 'graphql-request';
 import { cache } from 'react';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
 export interface GroceryPaymentProviderOption {
   id: string;
@@ -11,7 +10,9 @@ export interface GroceryPaymentProviderOption {
 
 export const listPaymentProviders = cache(async function listPaymentProviders(): Promise<GroceryPaymentProviderOption[]> {
   try {
-    const response = await keystoneClient<{ activeCartPaymentProviders: GroceryPaymentProviderOption[] }>(gql`
+    const { data, errors } = await storefrontGraphQL<{
+      activeCartPaymentProviders?: GroceryPaymentProviderOption[];
+    }>(`
       query ListPaymentProviders {
         activeCartPaymentProviders {
           id
@@ -20,13 +21,11 @@ export const listPaymentProviders = cache(async function listPaymentProviders():
           isInstalled
         }
       }
-    `);
+    `, undefined, { cache: 'no-store' });
 
-    if (!response.success) {
-      throw new Error(response.error);
-    }
+    throwGraphQLErrors(errors);
 
-    return response.data.activeCartPaymentProviders || [];
+    return data?.activeCartPaymentProviders || [];
   } catch (error) {
     console.error('Error listing payment providers:', error);
     return [];

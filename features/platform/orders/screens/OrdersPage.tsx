@@ -16,6 +16,7 @@ const ORDERS_QUERY = gql`
       lineItems {
         id
         quantity
+        metadata
       }
     }
     pending: ordersCount(where: { status: { equals: pending } })
@@ -98,6 +99,9 @@ export async function OrdersPage() {
 
                   <div className="flex flex-wrap items-center gap-3 text-sm">
                     <span className="text-muted-foreground">{order.lineItems?.length || 0} line items</span>
+                    <span className="text-muted-foreground">
+                      {(order.lineItems || []).filter((item: any) => item.metadata?.substitutionPreference === 'contact' || item.metadata?.substitutionPreference === 'remove').length} flagged for substitution care
+                    </span>
                     <span className="text-muted-foreground">Created {formatDate(order.createdAt)}</span>
                     <Link
                       href={`/dashboard/order/${order.id}`}

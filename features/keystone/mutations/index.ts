@@ -53,6 +53,10 @@ import {
 } from "./customerCheckIn";
 import submitGroceryOrder from './submitGroceryOrder';
 import initiatePaymentSession from './initiatePaymentSession';
+import {
+  createDeliveryRouteFromOrders,
+  updateDeliveryRouteWorkflow,
+} from './manageDeliveryRoutes';
 
 const graphql = String.raw;
 
@@ -347,6 +351,14 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         message: String!
       }
 
+      type DeliveryRouteWorkflowResult {
+        success: Boolean!
+        routeId: ID!
+        status: String!
+        orderCount: Int!
+        message: String!
+      }
+
       type Query {
         redirectToInit: Boolean
         groceryCart(sessionId: String): GroceryCart
@@ -364,7 +376,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
 
       type Mutation {
         updateActiveUser(data: UserUpdateProfileInput!): User
-        initiatePaymentSession(cartId: ID!, paymentProviderId: String!): PaymentSession
+        initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String): PaymentSession
         addItemToGroceryCart(productId: ID!, quantity: Int!, sessionId: String): GroceryCart
         updateGroceryCartItem(itemId: ID!, quantity: Int!, sessionId: String): GroceryCart
         removeItemFromGroceryCart(itemId: ID!, sessionId: String): GroceryCart
@@ -404,6 +416,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         customerCheckIn(orderId: ID!, parkingSpotId: ID, vehicleDescription: String): CustomerCheckInResult!
         releaseParkingSpot(parkingSpotId: ID!, orderId: ID!): ReleaseParkingSpotResult!
         completeOrderHandoff(orderId: ID!): CompleteOrderHandoffResult!
+        createDeliveryRouteFromOrders(deliveryDate: String!, deliveryTimeWindow: String!, orderIds: [ID!]!, driverId: ID): DeliveryRouteWorkflowResult!
+        updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
         submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
       }
 
@@ -421,10 +435,16 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         cartId: ID!
         paymentSessionId: ID!
         paymentIntentId: String!
+        sessionId: String
         email: String!
         deliveryAddress: SubmitGroceryOrderAddressInput!
         deliveryDate: String!
         deliveryTimeWindow: String!
+        fulfillmentMethod: String!
+        deliverySlotId: ID
+        pickupSlotId: ID
+        deliveryFee: Float!
+        expectedTotal: Float!
         substitutionPreference: String!
         deliveryInstructions: String
       }
@@ -494,6 +514,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         customerCheckIn,
         releaseParkingSpot,
         completeOrderHandoff,
+        createDeliveryRouteFromOrders,
+        updateDeliveryRouteWorkflow,
         submitGroceryOrder,
       },
     },

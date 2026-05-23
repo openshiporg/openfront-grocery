@@ -429,44 +429,10 @@ var import_fields4 = require("@keystone-6/core/fields");
 var Cart = (0, import_core3.list)({
   access: {
     operation: {
-      query: () => true,
-      // Public can view carts (with filter for own cart)
-      create: () => true,
-      // Anyone can create a cart (guest or logged in)
-      update: () => true,
-      // Update allowed with filter
-      delete: () => true
-      // Delete allowed with filter
-    },
-    filter: {
-      query: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            OR: [
-              { customer: { id: { equals: session.itemId } } },
-              {
-                AND: [
-                  { customer: { id: { equals: null } } },
-                  { sessionId: { equals: "__guest_resolver_only__" } }
-                ]
-              }
-            ]
-          };
-        }
-        return { sessionId: { equals: "__guest_resolver_only__" } };
-      },
-      update: ({ session }) => {
-        if (session?.itemId) {
-          return { customer: { id: { equals: session.itemId } } };
-        }
-        return { sessionId: { equals: "__guest_resolver_only__" } };
-      },
-      delete: ({ session }) => {
-        if (session?.itemId) {
-          return { customer: { id: { equals: session.itemId } } };
-        }
-        return { sessionId: { equals: "__guest_resolver_only__" } };
-      }
+      query: ({ session }) => permissions.canManageOrders({ session }),
+      create: permissions.canManageOrders,
+      update: permissions.canManageOrders,
+      delete: permissions.canManageOrders
     }
   },
   ui: {
@@ -535,58 +501,10 @@ var import_fields5 = require("@keystone-6/core/fields");
 var CartItem = (0, import_core4.list)({
   access: {
     operation: {
-      query: () => true,
-      // Public can view cart items
-      create: () => true,
-      // Anyone can create cart items
-      update: () => true,
-      // Update allowed
-      delete: () => true
-      // Delete allowed
-    },
-    filter: {
-      query: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            cart: {
-              customer: { id: { equals: session.itemId } }
-            }
-          };
-        }
-        return {
-          cart: {
-            sessionId: { equals: "__guest_resolver_only__" }
-          }
-        };
-      },
-      update: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            cart: {
-              customer: { id: { equals: session.itemId } }
-            }
-          };
-        }
-        return {
-          cart: {
-            sessionId: { equals: "__guest_resolver_only__" }
-          }
-        };
-      },
-      delete: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            cart: {
-              customer: { id: { equals: session.itemId } }
-            }
-          };
-        }
-        return {
-          cart: {
-            sessionId: { equals: "__guest_resolver_only__" }
-          }
-        };
-      }
+      query: ({ session }) => permissions.canManageOrders({ session }),
+      create: permissions.canManageOrders,
+      update: permissions.canManageOrders,
+      delete: permissions.canManageOrders
     }
   },
   ui: {
@@ -2003,7 +1921,7 @@ var import_fields20 = require("@keystone-6/core/fields");
 var PaymentProvider = (0, import_core19.list)({
   access: {
     operation: {
-      query: () => true,
+      query: permissions.canManagePayments,
       create: permissions.canManagePayments,
       update: permissions.canManagePayments,
       delete: permissions.canManagePayments
@@ -2744,41 +2662,10 @@ var RecipeIngredient = (0, import_core27.list)({
   access: {
     operation: {
       query: () => true,
-      // Public can view recipe ingredients
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
-    },
-    filter: {
-      query: ({ session }) => {
-        if (session?.itemId) {
-          return {
-            OR: [
-              { recipe: { status: { equals: "published" } } },
-              { recipe: { author: { id: { equals: session.itemId } } } }
-            ]
-          };
-        }
-        return { recipe: { status: { equals: "published" } } };
-      },
-      update: ({ session }) => {
-        if (permissions.canManageProducts({ session })) {
-          return true;
-        }
-        if (session?.itemId) {
-          return { recipe: { author: { id: { equals: session.itemId } } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        if (permissions.canManageProducts({ session })) {
-          return true;
-        }
-        if (session?.itemId) {
-          return { recipe: { author: { id: { equals: session.itemId } } } };
-        }
-        return false;
-      }
+      // Public can view ingredients for public recipe content.
+      create: permissions.canManageProducts,
+      update: permissions.canManageProducts,
+      delete: permissions.canManageProducts
     }
   },
   ui: {
@@ -3388,7 +3275,7 @@ var Supplier = (0, import_core33.list)({
 
 // features/keystone/models/User.ts
 var import_core34 = require("@keystone-6/core");
-var import_access32 = require("@keystone-6/core/access");
+var import_access34 = require("@keystone-6/core/access");
 var import_fields35 = require("@keystone-6/core/fields");
 var User = (0, import_core34.list)({
   access: {
@@ -3432,7 +3319,7 @@ var User = (0, import_core34.list)({
     password: (0, import_fields35.password)({
       validation: { isRequired: true },
       access: {
-        read: import_access32.denyAll,
+        read: import_access34.denyAll,
         update: ({ session, item }) => permissions.canManageUsers({ session }) || session?.itemId === item.id
       }
     }),
@@ -3613,6 +3500,28 @@ var updateActiveUser_default = updateActiveUser;
 // features/keystone/mutations/cartOperations.ts
 var TAX_RATE = 0.08;
 var DELIVERY_FEE = 5.99;
+function requireGuestSessionId(sessionId) {
+  const trimmed = sessionId?.trim();
+  if (!trimmed) {
+    throw new Error("No session ID provided for guest cart");
+  }
+  return trimmed;
+}
+function assertCartAccess(cart, context, sessionId) {
+  if (!cart) {
+    throw new Error("Cart not found");
+  }
+  if (context.session?.itemId) {
+    if (cart.customer?.id !== context.session.itemId) {
+      throw new Error("You do not have access to this cart");
+    }
+    return;
+  }
+  const guestSessionId = requireGuestSessionId(sessionId);
+  if (cart.customer?.id || cart.sessionId !== guestSessionId) {
+    throw new Error("You do not have access to this cart");
+  }
+}
 async function getOrCreateCart(context, sessionId) {
   const sudoContext = context.sudo();
   if (context.session?.itemId) {
@@ -3622,6 +3531,8 @@ async function getOrCreateCart(context, sessionId) {
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -3654,6 +3565,8 @@ async function getOrCreateCart(context, sessionId) {
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -3677,12 +3590,15 @@ async function getOrCreateCart(context, sessionId) {
     });
   }
   if (sessionId) {
+    const guestSessionId = requireGuestSessionId(sessionId);
     let cart = await sudoContext.query.Cart.findMany({
       where: {
-        sessionId: { equals: sessionId }
+        sessionId: { equals: guestSessionId }
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -3711,13 +3627,15 @@ async function getOrCreateCart(context, sessionId) {
     expiresAt.setDate(expiresAt.getDate() + 7);
     return await sudoContext.query.Cart.createOne({
       data: {
-        sessionId,
+        sessionId: guestSessionId,
         itemCount: 0,
         subtotal: 0,
         expiresAt: expiresAt.toISOString()
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -3748,6 +3666,8 @@ async function recalculateCart(context, cartId) {
     where: { id: cartId },
     query: `
       id
+      sessionId
+      customer { id }
       items {
         id
         quantity
@@ -3827,6 +3747,7 @@ async function addToCart(root, {
 }, context) {
   const sudoContext = context.sudo();
   const cart = await getOrCreateCart(context, sessionId);
+  assertCartAccess(cart, context, sessionId);
   const product = await sudoContext.query.Product.findOne({
     where: { id: productId },
     query: "id title price inStock stockQuantity"
@@ -3876,13 +3797,14 @@ async function updateCartItem(root, {
     where: { id: itemId },
     query: `
       id
-      cart { id }
+      cart { id sessionId customer { id } }
       product { id stockQuantity inStock }
     `
   });
   if (!cartItem) {
     throw new Error("Cart item not found");
   }
+  assertCartAccess(cartItem.cart, context, sessionId);
   if (cartItem.product?.stockQuantity !== null && cartItem.product?.stockQuantity < quantity) {
     throw new Error(`Only ${cartItem.product.stockQuantity} items available in stock`);
   }
@@ -3904,11 +3826,12 @@ async function removeFromCart(root, { itemId, sessionId }, context) {
   const sudoContext = context.sudo();
   const cartItem = await sudoContext.query.CartItem.findOne({
     where: { id: itemId },
-    query: "id cart { id }"
+    query: "id cart { id sessionId customer { id } }"
   });
   if (!cartItem) {
     throw new Error("Cart item not found");
   }
+  assertCartAccess(cartItem.cart, context, sessionId);
   await sudoContext.query.CartItem.deleteOne({
     where: { id: itemId }
   });
@@ -3919,6 +3842,7 @@ async function removeFromCart(root, { itemId, sessionId }, context) {
 async function clearCart(root, { sessionId }, context) {
   const sudoContext = context.sudo();
   const cart = await getOrCreateCart(context, sessionId);
+  assertCartAccess(cart, context, sessionId);
   for (const item of cart.items) {
     await sudoContext.query.CartItem.deleteOne({
       where: { id: item.id }
@@ -3943,6 +3867,8 @@ async function mergeGuestCart(root, { guestSessionId }, context) {
     where: { sessionId: { equals: guestSessionId } },
     query: `
       id
+      sessionId
+      customer { id }
       items {
         id
         quantity
@@ -3955,6 +3881,7 @@ async function mergeGuestCart(root, { guestSessionId }, context) {
     return formatCartResponse(userCart2);
   }
   const guestCart = guestCarts[0];
+  assertCartAccess(guestCart, { ...context, session: void 0 }, guestSessionId);
   const userCart = await getOrCreateCart(context);
   for (const guestItem of guestCart.items) {
     const existingItem = userCart.items.find(
@@ -3987,6 +3914,14 @@ async function updateSubstitutionPreference(root, {
   sessionId
 }, context) {
   const sudoContext = context.sudo();
+  const cartItem = await sudoContext.query.CartItem.findOne({
+    where: { id: itemId },
+    query: "id cart { id sessionId customer { id } }"
+  });
+  if (!cartItem) {
+    throw new Error("Cart item not found");
+  }
+  assertCartAccess(cartItem.cart, context, sessionId);
   await sudoContext.query.CartItem.updateOne({
     where: { id: itemId },
     data: { substitutionPreference: preference }
@@ -5776,7 +5711,11 @@ async function customerCheckIn(root, {
   if (context.session?.itemId && order.user?.id !== context.session.itemId) {
     throw new Error("Not authorized to check in for this order");
   }
-  const validStatuses = ["packed", "picking"];
+  const metadata = order.metadata || {};
+  if (metadata.fulfillmentMethod === "pickup" && !metadata.readyForPickup) {
+    throw new Error("This pickup order is not marked ready yet");
+  }
+  const validStatuses = ["packed"];
   if (!validStatuses.includes(order.status)) {
     if (order.status === "delivered") {
       throw new Error("This order has already been picked up");
@@ -5806,7 +5745,6 @@ async function customerCheckIn(root, {
       data: { isAvailable: false }
     });
   }
-  const metadata = order.metadata || {};
   const checkInTime = (/* @__PURE__ */ new Date()).toISOString();
   await sudoContext.query.Order.updateOne({
     where: { id: orderId },
@@ -5819,7 +5757,8 @@ async function customerCheckIn(root, {
         parkingSpotId: parkingSpotId || null,
         parkingSpotNumber: parkingSpot?.spotNumber || null,
         vehicleDescription: vehicleDescription || null,
-        customerArrived: true
+        customerArrived: true,
+        pickupCheckedInAt: checkInTime
       }
     }
   });
@@ -6002,11 +5941,19 @@ async function getPaymentStatus({ provider, paymentId }) {
 }
 
 // features/keystone/mutations/submitGroceryOrder.ts
+var TAX_RATE3 = 0.0875;
 function generateDisplayId() {
   return Number(String(Date.now()).slice(-6));
 }
 async function submitGroceryOrder(root, { data }, context) {
   const sudoContext = context.sudo();
+  const fulfillmentMethod = data.fulfillmentMethod === "pickup" ? "pickup" : "delivery";
+  if (fulfillmentMethod === "delivery" && !data.deliverySlotId) {
+    throw new Error("Delivery orders require a delivery slot");
+  }
+  if (fulfillmentMethod === "pickup" && !data.pickupSlotId) {
+    throw new Error("Pickup orders require a pickup slot");
+  }
   const cart = await sudoContext.query.Cart.findOne({
     where: { id: data.cartId },
     query: `
@@ -6017,6 +5964,7 @@ async function submitGroceryOrder(root, { data }, context) {
         id
         quantity
         subtotal
+        substitutionPreference
         product {
           id
           title
@@ -6034,7 +5982,11 @@ async function submitGroceryOrder(root, { data }, context) {
   }
   const sessionUserId = context.session?.itemId || null;
   const cartOwnerId = cart.customer?.id || null;
-  if (cartOwnerId && sessionUserId && cartOwnerId !== sessionUserId) {
+  if (sessionUserId) {
+    if (cartOwnerId !== sessionUserId) {
+      throw new Error("You do not have access to this cart");
+    }
+  } else if (!data.sessionId?.trim() || cartOwnerId || cart.sessionId !== data.sessionId.trim()) {
     throw new Error("You do not have access to this cart");
   }
   if (!cart.items?.length) {
@@ -6051,18 +6003,42 @@ async function submitGroceryOrder(root, { data }, context) {
       throw new Error(`Only ${item.product.stockQuantity} units available for ${item.product.title}`);
     }
   }
-  const address = await sudoContext.db.Address.createOne({
-    data: {
-      firstName: data.deliveryAddress.firstName,
-      lastName: data.deliveryAddress.lastName,
-      address1: data.deliveryAddress.address1,
-      city: data.deliveryAddress.city,
-      province: data.deliveryAddress.province,
-      postalCode: data.deliveryAddress.postalCode,
-      phone: data.deliveryAddress.phone,
-      user: sessionUserId ? { connect: { id: sessionUserId } } : void 0
-    }
-  });
+  const deliverySlot = fulfillmentMethod === "delivery" ? await sudoContext.query.DeliverySlot.findOne({
+    where: { id: data.deliverySlotId },
+    query: "id date startTime endTime capacity currentBookings isActive deliveryFee"
+  }) : null;
+  const pickupSlot = fulfillmentMethod === "pickup" ? await sudoContext.query.PickupSlot.findOne({
+    where: { id: data.pickupSlotId },
+    query: "id date startTime endTime maxOrders currentOrders isAvailable"
+  }) : null;
+  if (fulfillmentMethod === "delivery" && !deliverySlot) {
+    throw new Error("Selected delivery slot was not found");
+  }
+  if (fulfillmentMethod === "pickup" && !pickupSlot) {
+    throw new Error("Selected pickup slot was not found");
+  }
+  if (deliverySlot && !deliverySlot.isActive) {
+    throw new Error("Selected delivery slot is no longer available");
+  }
+  if (pickupSlot && !pickupSlot.isAvailable) {
+    throw new Error("Selected pickup slot is no longer available");
+  }
+  if (deliverySlot && deliverySlot.capacity - deliverySlot.currentBookings <= 0) {
+    throw new Error("Selected delivery slot is fully booked");
+  }
+  if (pickupSlot && pickupSlot.maxOrders - pickupSlot.currentOrders <= 0) {
+    throw new Error("Selected pickup slot is fully booked");
+  }
+  const subtotal = cart.items.reduce((sum, item) => sum + (item.product?.price || 0) * item.quantity, 0);
+  const taxAmount = Number((subtotal * TAX_RATE3).toFixed(2));
+  const deliveryFee = fulfillmentMethod === "delivery" ? Number(((deliverySlot?.deliveryFee || 0) / 100).toFixed(2)) : 0;
+  const orderTotal = Number((subtotal + taxAmount + deliveryFee).toFixed(2));
+  if (Math.abs(orderTotal - data.expectedTotal) > 0.02) {
+    throw new Error("Order total changed before checkout. Please review your cart and fulfillment slot.");
+  }
+  if (Math.abs(deliveryFee - data.deliveryFee) > 0.02) {
+    throw new Error("Delivery fee changed before checkout. Please review your fulfillment slot.");
+  }
   const selectedSession = await sudoContext.query.PaymentSession.findOne({
     where: { id: data.paymentSessionId },
     query: `
@@ -6091,6 +6067,19 @@ async function submitGroceryOrder(root, { data }, context) {
   if (!selectedSession || selectedSession.cart?.id !== cart.id) {
     throw new Error("Selected payment session not found for this cart");
   }
+  if ((selectedSession.data?.fulfillmentMethod || fulfillmentMethod) !== fulfillmentMethod) {
+    throw new Error("Payment session fulfillment method does not match checkout");
+  }
+  if (fulfillmentMethod === "delivery" && selectedSession.data?.deliverySlotId !== data.deliverySlotId) {
+    throw new Error("Payment session delivery slot does not match checkout delivery slot");
+  }
+  if (fulfillmentMethod === "pickup" && selectedSession.data?.pickupSlotId !== data.pickupSlotId) {
+    throw new Error("Payment session pickup slot does not match checkout pickup slot");
+  }
+  const sessionTotal = Number(selectedSession.data?.total || selectedSession.amount || 0);
+  if (Math.abs(sessionTotal - orderTotal) > 0.02) {
+    throw new Error("Payment session amount does not match order total");
+  }
   const paymentProvider = selectedSession.paymentProvider;
   if (!paymentProvider) {
     throw new Error("Payment provider missing from payment session");
@@ -6107,16 +6096,43 @@ async function submitGroceryOrder(root, { data }, context) {
   if (!["succeeded", "requires_capture", "captured", "processing"].includes(normalizedStatus)) {
     throw new Error(`Payment is not in a chargeable state: ${normalizedStatus}`);
   }
+  const address = await sudoContext.db.Address.createOne({
+    data: {
+      firstName: data.deliveryAddress.firstName,
+      lastName: data.deliveryAddress.lastName,
+      address1: fulfillmentMethod === "pickup" ? "Curbside pickup" : data.deliveryAddress.address1,
+      city: fulfillmentMethod === "pickup" ? "Store pickup" : data.deliveryAddress.city,
+      province: fulfillmentMethod === "pickup" ? "N/A" : data.deliveryAddress.province,
+      postalCode: fulfillmentMethod === "pickup" ? "N/A" : data.deliveryAddress.postalCode,
+      phone: data.deliveryAddress.phone,
+      user: sessionUserId ? { connect: { id: sessionUserId } } : void 0
+    }
+  });
+  const selectedSlot = deliverySlot || pickupSlot;
   const order = await sudoContext.db.Order.createOne({
     data: {
       displayId: generateDisplayId(),
       email: data.email,
       status: "pending",
-      taxRate: 0.0875,
+      taxRate: TAX_RATE3,
       deliveryDate: new Date(data.deliveryDate).toISOString(),
       deliveryTimeWindow: data.deliveryTimeWindow,
       substitutionPreference: data.substitutionPreference,
       deliveryInstructions: data.deliveryInstructions || void 0,
+      metadata: {
+        fulfillmentMethod,
+        deliverySlotId: data.deliverySlotId || null,
+        pickupSlotId: data.pickupSlotId || null,
+        deliveryFee,
+        subtotal,
+        taxAmount,
+        orderTotal,
+        selectedFulfillmentSlot: selectedSlot ? {
+          date: selectedSlot.date,
+          startTime: selectedSlot.startTime,
+          endTime: selectedSlot.endTime
+        } : null
+      },
       user: sessionUserId ? { connect: { id: sessionUserId } } : void 0,
       shippingAddress: { connect: { id: address.id } }
     }
@@ -6130,7 +6146,11 @@ async function submitGroceryOrder(root, { data }, context) {
         unitPrice: item.product?.price || 0,
         thumbnail: item.product?.imageUrl || void 0,
         order: { connect: { id: order.id } },
-        product: item.product?.id ? { connect: { id: item.product.id } } : void 0
+        product: item.product?.id ? { connect: { id: item.product.id } } : void 0,
+        metadata: {
+          cartItemId: item.id,
+          substitutionPreference: item.substitutionPreference || null
+        }
       }
     });
     if (item.product?.id && typeof item.product.stockQuantity === "number") {
@@ -6143,11 +6163,27 @@ async function submitGroceryOrder(root, { data }, context) {
       });
     }
   }
-  const subtotal = cart.items.reduce((sum, item) => sum + (item.product?.price || 0) * item.quantity, 0);
-  const paymentAmount = subtotal * (1 + 0.0875);
+  if (deliverySlot && data.deliverySlotId) {
+    await sudoContext.query.DeliverySlot.updateOne({
+      where: { id: data.deliverySlotId },
+      data: {
+        currentBookings: deliverySlot.currentBookings + 1,
+        isActive: deliverySlot.currentBookings + 1 < deliverySlot.capacity
+      }
+    });
+  }
+  if (pickupSlot && data.pickupSlotId) {
+    await sudoContext.query.PickupSlot.updateOne({
+      where: { id: data.pickupSlotId },
+      data: {
+        currentOrders: pickupSlot.currentOrders + 1,
+        isAvailable: pickupSlot.currentOrders + 1 < pickupSlot.maxOrders
+      }
+    });
+  }
   await sudoContext.db.Payment.createOne({
     data: {
-      amount: paymentAmount.toFixed(2),
+      amount: orderTotal.toFixed(2),
       status: "succeeded",
       paymentMethod: "credit_card",
       providerPaymentId,
@@ -6183,19 +6219,24 @@ async function submitGroceryOrder(root, { data }, context) {
 }
 
 // features/keystone/mutations/initiatePaymentSession.ts
-async function initiatePaymentSession(root, { cartId, paymentProviderId }, context) {
+async function initiatePaymentSession(root, { cartId, paymentProviderId, deliverySlotId, pickupSlotId, sessionId }, context) {
   const sudoContext = context.sudo();
+  if (deliverySlotId && pickupSlotId) {
+    throw new Error("Choose either delivery or pickup, not both");
+  }
   const cart = await sudoContext.query.Cart.findOne({
     where: { id: cartId },
     query: `
       id
+      sessionId
+      customer { id }
       subtotal
-      taxRate: subtotal
       paymentSessions {
         id
         isSelected
         isInitiated
         amount
+        idempotencyKey
         paymentProvider {
           id
           code
@@ -6206,6 +6247,13 @@ async function initiatePaymentSession(root, { cartId, paymentProviderId }, conte
   });
   if (!cart) {
     throw new Error("Cart not found");
+  }
+  if (context.session?.itemId) {
+    if (cart.customer?.id !== context.session.itemId) {
+      throw new Error("You do not have access to this cart");
+    }
+  } else if (!sessionId?.trim() || cart.customer?.id || cart.sessionId !== sessionId.trim()) {
+    throw new Error("You do not have access to this cart");
   }
   const provider = await sudoContext.query.PaymentProvider.findOne({
     where: { code: paymentProviderId },
@@ -6225,30 +6273,84 @@ async function initiatePaymentSession(root, { cartId, paymentProviderId }, conte
   if (!provider || !provider.isInstalled) {
     throw new Error(`Payment provider ${paymentProviderId} not found or not installed`);
   }
-  const amount = Number(cart.subtotal || 0);
-  const existingSession = cart.paymentSessions?.find((session) => session.paymentProvider?.code === provider.code);
+  const deliverySlot = deliverySlotId ? await sudoContext.query.DeliverySlot.findOne({
+    where: { id: deliverySlotId },
+    query: "id deliveryFee capacity currentBookings isActive"
+  }) : null;
+  const pickupSlot = pickupSlotId ? await sudoContext.query.PickupSlot.findOne({
+    where: { id: pickupSlotId },
+    query: "id maxOrders currentOrders isAvailable"
+  }) : null;
+  if (deliverySlotId && !deliverySlot) {
+    throw new Error("Selected delivery slot was not found");
+  }
+  if (pickupSlotId && !pickupSlot) {
+    throw new Error("Selected pickup slot was not found");
+  }
+  if (deliverySlot && !deliverySlot.isActive) {
+    throw new Error("Selected delivery slot is no longer available");
+  }
+  if (pickupSlot && !pickupSlot.isAvailable) {
+    throw new Error("Selected pickup slot is no longer available");
+  }
+  if (deliverySlot && deliverySlot.capacity - deliverySlot.currentBookings <= 0) {
+    throw new Error("Selected delivery slot is fully booked");
+  }
+  if (pickupSlot && pickupSlot.maxOrders - pickupSlot.currentOrders <= 0) {
+    throw new Error("Selected pickup slot is fully booked");
+  }
+  const fulfillmentMethod = pickupSlot ? "pickup" : "delivery";
+  const subtotalDollars = Number(cart.subtotal || 0);
+  const taxDollars = Number((subtotalDollars * 0.0875).toFixed(2));
+  const deliveryFeeDollars = Number(((deliverySlot?.deliveryFee || 0) / 100).toFixed(2));
+  const totalDollars = Number((subtotalDollars + taxDollars + deliveryFeeDollars).toFixed(2));
+  const amountInCents = Math.round(totalDollars * 100);
+  const slotKey = pickupSlotId ? `pickup:${pickupSlotId}` : `delivery:${deliverySlotId || "no-slot"}`;
+  const idempotencyKey = `${cart.id}:${provider.code}:${slotKey}:${amountInCents}`;
+  const existingSession = cart.paymentSessions?.find(
+    (session) => session.paymentProvider?.code === provider.code && session.idempotencyKey === idempotencyKey
+  );
   if (existingSession) {
     return existingSession;
+  }
+  const existingSelectedSessions = cart.paymentSessions?.filter((session) => session.isSelected) || [];
+  for (const session of existingSelectedSessions) {
+    await sudoContext.query.PaymentSession.updateOne({
+      where: { id: session.id },
+      data: { isSelected: false }
+    });
   }
   const sessionData = await createPayment({
     provider,
     cart,
-    amount,
+    amount: amountInCents,
     currency: "usd"
   });
   const newSession = await sudoContext.query.PaymentSession.createOne({
     data: {
       cart: { connect: { id: cart.id } },
       paymentProvider: { connect: { id: provider.id } },
-      amount: amount.toFixed(2),
+      amount: totalDollars.toFixed(2),
+      idempotencyKey,
       isSelected: true,
       isInitiated: true,
-      data: sessionData
+      data: {
+        ...sessionData,
+        subtotal: subtotalDollars,
+        tax: taxDollars,
+        deliveryFee: deliveryFeeDollars,
+        total: totalDollars,
+        fulfillmentMethod,
+        deliverySlotId: deliverySlotId || null,
+        pickupSlotId: pickupSlotId || null,
+        amountInCents
+      }
     },
     query: `
       id
       data
       amount
+      idempotencyKey
       isInitiated
       isSelected
       paymentProvider {
@@ -6258,6 +6360,151 @@ async function initiatePaymentSession(root, { cartId, paymentProviderId }, conte
     `
   });
   return newSession;
+}
+
+// features/keystone/mutations/manageDeliveryRoutes.ts
+async function getOrderOrThrow(sudoContext, orderId) {
+  const order = await sudoContext.query.Order.findOne({
+    where: { id: orderId },
+    query: "id displayId status deliveryDate deliveryTimeWindow metadata deliveryRoute { id }"
+  });
+  if (!order) {
+    throw new Error(`Order ${orderId} not found`);
+  }
+  return order;
+}
+async function createDeliveryRouteFromOrders(root, { deliveryDate, deliveryTimeWindow, orderIds, driverId }, context) {
+  if (!orderIds.length) {
+    throw new Error("Select at least one order for the route");
+  }
+  const sudoContext = context.sudo();
+  const orders = [];
+  for (const orderId of orderIds) {
+    const order = await getOrderOrThrow(sudoContext, orderId);
+    const metadata = order.metadata || {};
+    if (metadata.fulfillmentMethod !== "delivery") {
+      throw new Error(`Order #${order.displayId} is not a delivery order`);
+    }
+    if (order.status !== "packed") {
+      throw new Error(`Order #${order.displayId} must be packed before routing`);
+    }
+    if (order.deliveryTimeWindow !== deliveryTimeWindow) {
+      throw new Error(`Order #${order.displayId} is in a different delivery window`);
+    }
+    if (order.deliveryRoute?.id || metadata.deliveryRouteId) {
+      throw new Error(`Order #${order.displayId} is already assigned to a route`);
+    }
+    orders.push(order);
+  }
+  const route = await sudoContext.query.DeliveryRoute.createOne({
+    data: {
+      date: new Date(deliveryDate).toISOString(),
+      timeWindow: deliveryTimeWindow,
+      status: "planning",
+      ...driverId ? { driver: { connect: { id: driverId } } } : {},
+      stops: orders.map((order, index) => ({
+        orderId: order.id,
+        displayId: order.displayId,
+        sequence: index + 1,
+        status: "planned"
+      })),
+      orders: {
+        connect: orders.map((order) => ({ id: order.id }))
+      }
+    },
+    query: "id date timeWindow status"
+  });
+  const routedAt = (/* @__PURE__ */ new Date()).toISOString();
+  for (const order of orders) {
+    await sudoContext.query.Order.updateOne({
+      where: { id: order.id },
+      data: {
+        metadata: {
+          ...order.metadata || {},
+          deliveryRouteId: route.id,
+          routedAt
+        }
+      }
+    });
+  }
+  return {
+    success: true,
+    routeId: route.id,
+    status: route.status,
+    orderCount: orders.length,
+    message: `Created delivery route with ${orders.length} orders.`
+  };
+}
+async function updateDeliveryRouteWorkflow(root, { routeId, status }, context) {
+  const sudoContext = context.sudo();
+  const route = await sudoContext.query.DeliveryRoute.findOne({
+    where: { id: routeId },
+    query: `
+      id
+      status
+      stops
+      orders {
+        id
+        displayId
+        status
+        metadata
+      }
+    `
+  });
+  if (!route) {
+    throw new Error("Delivery route not found");
+  }
+  if (route.status === "completed") {
+    throw new Error("Completed routes cannot be changed");
+  }
+  if (status === "in_progress" && route.status !== "planning") {
+    throw new Error("Only planning routes can be dispatched");
+  }
+  if (status === "completed" && route.status !== "in_progress") {
+    throw new Error("Only in-progress routes can be completed");
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const routeData = { status };
+  if (status === "in_progress") {
+    routeData.startedAt = now;
+  }
+  if (status === "completed") {
+    routeData.completedAt = now;
+  }
+  await sudoContext.query.DeliveryRoute.updateOne({
+    where: { id: routeId },
+    data: {
+      ...routeData,
+      stops: (route.stops || []).map((stop) => ({
+        ...stop,
+        status: status === "in_progress" ? "out_for_delivery" : status === "completed" ? "delivered" : stop.status
+      }))
+    }
+  });
+  const nextOrderStatus = status === "in_progress" ? "out_for_delivery" : status === "completed" ? "delivered" : null;
+  if (nextOrderStatus) {
+    for (const order of route.orders || []) {
+      await sudoContext.query.Order.updateOne({
+        where: { id: order.id },
+        data: {
+          status: nextOrderStatus,
+          metadata: {
+            ...order.metadata || {},
+            deliveryRouteId: routeId,
+            ...status === "in_progress" ? { dispatchedAt: now } : {},
+            ...status === "completed" ? { deliveredAt: now } : {}
+          }
+        }
+      });
+    }
+  }
+  return {
+    success: true,
+    routeId,
+    status,
+    orderCount: route.orders?.length || 0,
+    message: status === "in_progress" ? "Route dispatched." : status === "completed" ? "Route completed." : "Route updated."
+  };
 }
 
 // features/keystone/mutations/index.ts
@@ -6553,6 +6800,14 @@ function extendGraphqlSchema(baseSchema) {
         message: String!
       }
 
+      type DeliveryRouteWorkflowResult {
+        success: Boolean!
+        routeId: ID!
+        status: String!
+        orderCount: Int!
+        message: String!
+      }
+
       type Query {
         redirectToInit: Boolean
         groceryCart(sessionId: String): GroceryCart
@@ -6570,7 +6825,7 @@ function extendGraphqlSchema(baseSchema) {
 
       type Mutation {
         updateActiveUser(data: UserUpdateProfileInput!): User
-        initiatePaymentSession(cartId: ID!, paymentProviderId: String!): PaymentSession
+        initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String): PaymentSession
         addItemToGroceryCart(productId: ID!, quantity: Int!, sessionId: String): GroceryCart
         updateGroceryCartItem(itemId: ID!, quantity: Int!, sessionId: String): GroceryCart
         removeItemFromGroceryCart(itemId: ID!, sessionId: String): GroceryCart
@@ -6610,6 +6865,8 @@ function extendGraphqlSchema(baseSchema) {
         customerCheckIn(orderId: ID!, parkingSpotId: ID, vehicleDescription: String): CustomerCheckInResult!
         releaseParkingSpot(parkingSpotId: ID!, orderId: ID!): ReleaseParkingSpotResult!
         completeOrderHandoff(orderId: ID!): CompleteOrderHandoffResult!
+        createDeliveryRouteFromOrders(deliveryDate: String!, deliveryTimeWindow: String!, orderIds: [ID!]!, driverId: ID): DeliveryRouteWorkflowResult!
+        updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
         submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
       }
 
@@ -6627,10 +6884,16 @@ function extendGraphqlSchema(baseSchema) {
         cartId: ID!
         paymentSessionId: ID!
         paymentIntentId: String!
+        sessionId: String
         email: String!
         deliveryAddress: SubmitGroceryOrderAddressInput!
         deliveryDate: String!
         deliveryTimeWindow: String!
+        fulfillmentMethod: String!
+        deliverySlotId: ID
+        pickupSlotId: ID
+        deliveryFee: Float!
+        expectedTotal: Float!
         substitutionPreference: String!
         deliveryInstructions: String
       }
@@ -6694,6 +6957,8 @@ function extendGraphqlSchema(baseSchema) {
         customerCheckIn,
         releaseParkingSpot,
         completeOrderHandoff,
+        createDeliveryRouteFromOrders,
+        updateDeliveryRouteWorkflow,
         submitGroceryOrder
       }
     }

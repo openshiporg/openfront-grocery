@@ -1,34 +1,49 @@
-import CartTemplate from "@/features/storefront/modules/cart/templates"
-import { retrieveCart } from "@/features/storefront/lib/data/cart"
-import { getUser } from "@/features/storefront/lib/data/user"
-import SkeletonCartPage from "@/features/storefront/modules/skeletons/templates/skeleton-cart-page"
-import InteractiveLink from "@/features/storefront/modules/common/components/interactive-link"
+import { Metadata } from 'next';
+import Link from 'next/link';
+import { ShoppingCart, Truck, Zap } from 'lucide-react';
 
-export const metadata = {
-  title: "Cart",
-  description: "View your cart",
-}
+import { retrieveCart } from '@/features/storefront/lib/data/cart';
+import { getUser } from '@/features/storefront/lib/data/user';
+import UrbanCart from '@/features/storefront/modules/urban/UrbanCart';
+import { UrbanBadge, UrbanContainer, UrbanHeadline, UrbanMetric, UrbanPageShell, UrbanPanel } from '@/features/storefront/modules/urban/UrbanPrimitives';
+
+export const metadata: Metadata = {
+  title: 'Cart | Urban Express',
+  description: 'Review your Urban Express grocery cart.',
+};
 
 export async function CartPage() {
-  const cart = await retrieveCart()
-  const user = await getUser()
+  const [cart, user] = await Promise.all([retrieveCart(), getUser()]);
 
-  return <CartTemplate cart={cart} user={user} />
+  return (
+    <UrbanPageShell>
+      <UrbanContainer className="space-y-8">
+        <nav className="font-market-label text-xs font-black uppercase tracking-[0.16em] text-[#e2bfb0]">
+          <Link href="/" className="hover:text-[#ffb693]">Urban Express</Link>
+          <span className="mx-2 text-[#5a4136]">/</span>
+          <span className="text-[#ffb693]">Cart</span>
+        </nav>
+        <section className="grid gap-3 lg:grid-cols-[1fr_360px]">
+          <UrbanPanel className="p-5 sm:p-8">
+            <UrbanBadge tone="orange"><ShoppingCart className="h-3 w-3" /> Basket staging</UrbanBadge>
+            <UrbanHeadline className="mt-5">Cart dispatch.</UrbanHeadline>
+            <p className="mt-5 max-w-2xl text-sm leading-7 text-[#e2bfb0]">Confirm quantities, substitution protocol, cold-chain handling, and delivery readiness before checkout.</p>
+          </UrbanPanel>
+          <div className="grid gap-3">
+            <UrbanMetric label="Express promise" value="15m" icon={Zap} />
+            <UrbanMetric label="Handoff" value="Delivery" icon={Truck} />
+          </div>
+        </section>
+        <UrbanCart cart={cart} user={user} />
+      </UrbanContainer>
+    </UrbanPageShell>
+  );
 }
 
 export function CartLoading() {
-  return <SkeletonCartPage />
+  return <UrbanPageShell><UrbanContainer><UrbanPanel className="p-8 text-[#e2bfb0]">Loading cart signal…</UrbanPanel></UrbanContainer></UrbanPageShell>;
 }
 
 export function CartNotFound() {
-  return (
-    <div className="flex flex-col items-center justify-center min-h-[calc(100vh-64px)]">
-      <h1 className="text-2xl font-semibold text-foreground">Page not found</h1>
-      <p className="text-xs font-normal text-foreground">
-        The cart you tried to access does not exist. Clear your cookies and try
-        again.
-      </p>
-      <InteractiveLink href="/">Go to frontpage</InteractiveLink>
-    </div>
-  )
+  return <UrbanPageShell><UrbanContainer><UrbanPanel className="p-8 text-center"><h1 className="font-market-label text-4xl font-black uppercase text-[#e2e2e2]">Cart missing</h1><Link href="/" className="mt-4 inline-block text-[#ffb693]">Go to frontpage</Link></UrbanPanel></UrbanContainer></UrbanPageShell>;
 }

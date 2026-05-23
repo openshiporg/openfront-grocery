@@ -1,177 +1,118 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { ClipboardList, Package, Target, UserRound } from 'lucide-react';
 
 import { getUser } from '@/features/storefront/lib/data/user';
-import { getOrdersByUser } from '@/features/storefront/lib/data/orders';
+import { getOrdersByUser, reorderFromOrder } from '@/features/storefront/lib/data/orders';
 import { getShoppingLists } from '@/features/storefront/lib/data/lists';
+import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanEmptyState, UrbanHeadline, UrbanMetric, UrbanPageShell, UrbanPanel, formatCents, statusLabel } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 export async function generateMetadata(): Promise<Metadata> {
   return {
-    title: 'My Account | Openfront Grocery',
-    description: 'Manage your account, view order history, and update your preferences.',
+    title: 'Account | Urban Express',
+    description: 'Manage Urban Express orders, lists, and grocery preferences.',
   };
 }
 
 export async function AccountPage() {
-  const [user, recentOrders, savedLists] = await Promise.all([
-    getUser(),
-    getOrdersByUser(),
-    getShoppingLists(),
-  ]);
+  const [user, recentOrders, savedLists] = await Promise.all([getUser(), getOrdersByUser(), getShoppingLists()]);
 
   if (!user) {
     return (
-      <div className="max-w-[1440px] mx-auto px-6 py-16 text-center">
-        <span className="text-6xl block mb-4">👤</span>
-        <h1 className="text-3xl font-bold text-foreground mb-4">Sign in to view your account</h1>
-        <p className="text-muted-foreground mb-8">
-          Your orders, lists, and grocery preferences will appear here once you sign in.
-        </p>
-        <Link
-          href="/dashboard/signin?from=/account"
-          className="inline-flex items-center justify-center px-6 py-3 bg-primary text-primary-foreground rounded-md font-medium hover:bg-primary/90 transition-colors"
-        >
-          Sign in
-        </Link>
-      </div>
+      <UrbanPageShell>
+        <UrbanContainer>
+          <UrbanEmptyState title="Sign in for account grid" actionHref="/dashboard/signin?from=/account" actionLabel="Sign in">
+            Your orders, lists, pickup check-ins, and grocery preferences will appear here once you sign in.
+          </UrbanEmptyState>
+        </UrbanContainer>
+      </UrbanPageShell>
     );
   }
 
   const displayName = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
 
   return (
-    <div className="max-w-[1440px] mx-auto px-6 py-8">
-      <nav className="text-sm text-gray-600 mb-6">
-        <Link href="/" className="hover:text-gray-900">Home</Link>
-        <span className="mx-2">/</span>
-        <span className="text-gray-900">My Account</span>
-      </nav>
+    <UrbanPageShell>
+      <UrbanContainer className="space-y-8">
+        <nav className="font-market-label text-xs font-black uppercase tracking-[0.16em] text-[#e2bfb0]">
+          <Link href="/" className="hover:text-[#ffb693]">Urban Express</Link>
+          <span className="mx-2 text-[#5a4136]">/</span>
+          <span className="text-[#ffb693]">Account</span>
+        </nav>
 
-      <div className="bg-gradient-to-r from-green-500 to-green-600 rounded-xl p-8 mb-8 text-white">
-        <div className="flex items-center justify-between gap-6 flex-wrap">
-          <div>
-            <h1 className="text-3xl font-bold mb-2">Welcome back, {displayName}!</h1>
-            <p className="text-green-50">{user.email}</p>
+        <section className="grid gap-3 lg:grid-cols-[1fr_360px]">
+          <UrbanPanel className="p-5 sm:p-8">
+            <UrbanBadge tone="orange"><UserRound className="h-3 w-3" /> Account terminal</UrbanBadge>
+            <UrbanHeadline className="mt-5">Welcome back, {displayName}.</UrbanHeadline>
+            <p className="mt-5 text-sm leading-7 text-[#e2bfb0]">{user.email}</p>
+          </UrbanPanel>
+          <div className="grid gap-3">
+            <UrbanMetric label="Orders" value={recentOrders.length} icon={Package} />
+            <UrbanMetric label="Saved lists" value={savedLists.length} icon={ClipboardList} />
+            <UrbanMetric label="Deal signal" value="Live" icon={Target} />
           </div>
-          <div className="text-center bg-white/20 backdrop-blur px-6 py-4 rounded-lg">
-            <div className="text-3xl font-bold">{recentOrders.length}</div>
-            <div className="text-sm text-green-50">Orders on file</div>
-          </div>
-        </div>
-      </div>
+        </section>
 
-      <div className="grid lg:grid-cols-3 gap-6 mb-8">
-        <div className="lg:col-span-1">
-          <div className="bg-white border rounded-lg p-6">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">Quick Actions</h2>
+        <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+          <UrbanPanel className="h-max p-5">
+            <h2 className="font-market-label text-3xl font-black uppercase tracking-[-0.04em] text-[#e2e2e2]">Quick actions</h2>
+            <div className="mt-5 grid gap-3">
+              <UrbanButtonLink href="/lists" variant="ghost" className="justify-start">Shopping lists ({savedLists.length})</UrbanButtonLink>
+              <UrbanButtonLink href="/deals" variant="ghost" className="justify-start">Weekly deals</UrbanButtonLink>
+              <UrbanButtonLink href={recentOrders[0] ? `/order/${recentOrders[0].id}` : '/products'} variant="ghost" className="justify-start">Track latest order</UrbanButtonLink>
+            </div>
+          </UrbanPanel>
+
+          <UrbanPanel className="p-5">
+            <div className="mb-5 flex items-center justify-between border-b border-[#5a4136] pb-3">
+              <h2 className="font-market-label text-3xl font-black uppercase tracking-[-0.04em] text-[#e2e2e2]">Recent orders</h2>
+              <UrbanBadge tone="muted">{recentOrders.length} total</UrbanBadge>
+            </div>
             <div className="space-y-3">
-              <Link href="/lists" className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors">
-                <span className="text-2xl">📝</span>
-                <div>
-                  <div className="font-semibold text-gray-900">Shopping Lists</div>
-                  <div className="text-xs text-gray-600">{savedLists.length} saved lists</div>
-                </div>
-              </Link>
-              <Link href="/deals" className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors">
-                <span className="text-2xl">🎯</span>
-                <div>
-                  <div className="font-semibold text-gray-900">Weekly Deals</div>
-                  <div className="text-xs text-gray-600">Browse live grocery offers</div>
-                </div>
-              </Link>
-              <Link href={recentOrders[0] ? `/order/${recentOrders[0].id}` : '/account'} className="flex items-center gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors">
-                <span className="text-2xl">📦</span>
-                <div>
-                  <div className="font-semibold text-gray-900">Order Tracking</div>
-                  <div className="text-xs text-gray-600">View your recent grocery orders</div>
-                </div>
-              </Link>
-            </div>
-          </div>
-        </div>
-
-        <div className="lg:col-span-2">
-          <div className="bg-white border rounded-lg p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-gray-900">Recent Orders</h2>
-              <span className="text-sm text-gray-500">{recentOrders.length} total</span>
-            </div>
-
-            <div className="space-y-4">
               {recentOrders.map((order) => (
-                <div key={order.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
-                  <div className="flex items-center justify-between mb-3 gap-4">
+                <div key={order.id} className="border border-[#5a4136] bg-[#282a2b] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
                     <div>
-                      <div className="font-semibold text-gray-900">Order #{order.orderNumber}</div>
-                      <div className="text-sm text-gray-600">
-                        {new Date(order.createdAt).toLocaleDateString('en-US', {
-                          month: 'long',
-                          day: 'numeric',
-                          year: 'numeric',
-                        })}
-                      </div>
+                      <p className="font-market-label text-xl font-black uppercase text-[#e2e2e2]">Order #{order.orderNumber}</p>
+                      <p className="mt-1 text-sm text-[#e2bfb0]">{new Date(order.createdAt).toLocaleDateString()}</p>
                     </div>
                     <div className="text-right">
-                      <div className="text-lg font-bold text-gray-900">${(order.total / 100).toFixed(2)}</div>
-                      <div className="text-sm text-green-600 font-semibold capitalize">{order.status.replace(/_/g, ' ')}</div>
+                      <p className="font-market-label text-2xl font-black text-[#ffb693]">{formatCents(order.total)}</p>
+                      <UrbanBadge tone="blue">{statusLabel(order.status)}</UrbanBadge>
                     </div>
                   </div>
-
-                  <div className="flex items-center justify-between pt-3 border-t gap-4 flex-wrap">
-                    <div className="text-sm text-gray-600">{order.items.length} items</div>
-                    <div className="flex gap-2">
-                      <Link href={`/order/${order.id}`} className="text-sm text-green-600 hover:text-green-700 font-semibold">
-                        View Details
-                      </Link>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#5a4136] pt-3 text-sm text-[#e2bfb0]">
+                    <span>{order.items.length} items</span>
+                    <div className="flex gap-3">
+                      <Link href={`/order/${order.id}`} className="font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#ffb693]">View details</Link>
+                      <form action={async () => { 'use server'; await reorderFromOrder(order.id); }}>
+                        <button type="submit" className="font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#b6c6ed]">Reorder</button>
+                      </form>
                     </div>
                   </div>
                 </div>
               ))}
+              {recentOrders.length === 0 ? <UrbanEmptyState title="No orders yet" actionHref="/products" actionLabel="Start shopping">Start shopping to see order history here.</UrbanEmptyState> : null}
             </div>
+          </UrbanPanel>
+        </div>
 
-            {recentOrders.length === 0 && (
-              <div className="text-center py-12">
-                <span className="text-6xl block mb-4">📦</span>
-                <h3 className="text-xl font-bold text-gray-900 mb-2">No orders yet</h3>
-                <p className="text-gray-600 mb-6">Start shopping to see your order history here</p>
-                <Link
-                  href="/products"
-                  className="inline-block bg-green-500 hover:bg-green-600 text-white px-6 py-3 rounded-lg font-semibold transition-colors"
-                >
-                  Start Shopping
-                </Link>
-              </div>
-            )}
+        <UrbanPanel className="p-5">
+          <div className="mb-5 flex items-center justify-between border-b border-[#5a4136] pb-3">
+            <h2 className="font-market-label text-3xl font-black uppercase tracking-[-0.04em] text-[#e2e2e2]">Shopping lists</h2>
+            <Link href="/lists" className="font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#ffb693]">Manage lists</Link>
           </div>
-        </div>
-      </div>
-
-      <div className="bg-white border rounded-lg p-6 mb-8">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-gray-900">My Shopping Lists</h2>
-          <Link href="/lists" className="text-green-600 hover:text-green-700 font-semibold text-sm">
-            Manage Lists
-          </Link>
-        </div>
-
-        {savedLists.length > 0 ? (
-          <div className="grid md:grid-cols-3 gap-4">
+          <div className="grid gap-3 md:grid-cols-3">
             {savedLists.map((list) => (
-              <div key={list.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-2xl">📋</span>
-                  <div>
-                    <h3 className="font-semibold text-gray-900">{list.name}</h3>
-                    <p className="text-sm text-gray-600">{list.items.length} items</p>
-                  </div>
-                </div>
+              <div key={list.id} className="border border-[#5a4136] bg-[#282a2b] p-4">
+                <ClipboardList className="h-5 w-5 text-[#ffb693]" />
+                <h3 className="mt-3 font-market-label text-xl font-black uppercase text-[#e2e2e2]">{list.name}</h3>
+                <p className="mt-1 text-sm text-[#e2bfb0]">{list.items.length} items</p>
               </div>
             ))}
           </div>
-        ) : (
-          <p className="text-sm text-gray-600">No saved lists yet.</p>
-        )}
-      </div>
-    </div>
+        </UrbanPanel>
+      </UrbanContainer>
+    </UrbanPageShell>
   );
 }

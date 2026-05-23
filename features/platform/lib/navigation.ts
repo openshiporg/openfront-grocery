@@ -1,112 +1,129 @@
 import {
+  BadgePercent,
   Boxes,
   ClipboardList,
-  PackageCheck,
-  Truck,
-  Store,
-  Warehouse,
   Factory,
-  Users,
+  PackageCheck,
   Repeat,
-  BadgePercent,
+  Store,
+  Truck,
   type LucideIcon,
+  Users,
+  Warehouse,
 } from 'lucide-react';
+
+export type GroceryPlatformNavGroupId = 'standalone' | 'catalog' | 'customers';
 
 export interface GroceryPlatformNavItem {
   title: string;
   href: string;
   description: string;
   icon: LucideIcon;
-  group: 'operations' | 'catalog' | 'customers';
+  group: GroceryPlatformNavGroupId;
+}
+
+export interface GroceryPlatformNavGroup {
+  id: Exclude<GroceryPlatformNavGroupId, 'standalone'>;
+  title: string;
+  icon: LucideIcon;
+  items: GroceryPlatformNavItem[];
 }
 
 export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
   {
     title: 'Orders',
-    href: '/dashboard/platform/orders',
+    href: '/platform/orders',
     description: 'Monitor incoming grocery orders and move them through fulfillment.',
     icon: ClipboardList,
-    group: 'operations',
+    group: 'standalone',
   },
   {
     title: 'Fulfillment',
-    href: '/dashboard/platform/fulfillment',
-    description: 'Use the order queue as the starting point for picking and packing.',
+    href: '/platform/fulfillment',
+    description: 'Run the pick, pack, and substitution workflow for active orders.',
     icon: PackageCheck,
-    group: 'operations',
+    group: 'standalone',
   },
   {
     title: 'Delivery',
-    href: '/dashboard/platform/delivery',
+    href: '/platform/delivery',
     description: 'Manage delivery routes, timing, and dispatch operations.',
     icon: Truck,
-    group: 'operations',
+    group: 'standalone',
   },
   {
     title: 'Pickup',
-    href: '/dashboard/platform/pickup',
+    href: '/platform/pickup',
     description: 'Track curbside pickup slots and handoff readiness.',
     icon: Store,
-    group: 'operations',
+    group: 'standalone',
   },
   {
     title: 'Inventory',
-    href: '/dashboard/platform/inventory',
+    href: '/platform/inventory',
     description: 'Watch lot-level stock, expiry risk, and replenishment needs.',
     icon: Warehouse,
     group: 'catalog',
   },
   {
     title: 'Suppliers',
-    href: '/dashboard/platform/suppliers',
+    href: '/platform/suppliers',
     description: 'Review suppliers, delivery days, and purchasing relationships.',
     icon: Factory,
     group: 'catalog',
   },
   {
     title: 'Purchasing',
-    href: '/dashboard/platform/purchasing',
+    href: '/platform/purchasing',
     description: 'Inspect purchase orders, receiving, and replenishment flow.',
     icon: Boxes,
     group: 'catalog',
   },
   {
+    title: 'Merchandising',
+    href: '/platform/merchandising',
+    description: 'Manage offers, coupons, and promotional grocery merchandising.',
+    icon: BadgePercent,
+    group: 'catalog',
+  },
+  {
     title: 'Customers',
-    href: '/dashboard/platform/customers',
+    href: '/platform/customers',
     description: 'Inspect customer accounts, orders, and grocery lifecycle activity.',
     icon: Users,
     group: 'customers',
   },
   {
     title: 'Subscriptions',
-    href: '/dashboard/platform/subscriptions',
+    href: '/platform/subscriptions',
     description: 'Manage recurring grocery orders and repeat purchase schedules.',
     icon: Repeat,
     group: 'customers',
   },
-  {
-    title: 'Merchandising',
-    href: '/dashboard/platform/merchandising',
-    description: 'Manage offers, coupons, and promotional grocery merchandising.',
-    icon: BadgePercent,
-    group: 'catalog',
-  },
 ];
 
-export const groceryPlatformNavGroups = [
-  {
-    id: 'operations',
-    title: 'Operations',
-    icon: ClipboardList,
-  },
+export const platformStandaloneItems = groceryPlatformNavItems.filter(
+  (item) => item.group === 'standalone'
+);
+
+export const groceryPlatformNavGroups: GroceryPlatformNavGroup[] = [
   {
     id: 'catalog',
     title: 'Catalog & Supply',
     icon: Boxes,
+    items: groceryPlatformNavItems.filter((item) => item.group === 'catalog'),
   },
   {
     id: 'customers',
     title: 'Customers & Retention',
     icon: Users,
+    items: groceryPlatformNavItems.filter((item) => item.group === 'customers'),
   },
-] as const;
+];
+
+export const platformNavItems = groceryPlatformNavItems;
+export const platformNavGroups = groceryPlatformNavGroups;
+
+export function getPlatformNavItemsWithBasePath(basePath: string) {
+  return groceryPlatformNavItems.map((item) => ({ ...item, href: `${basePath}${item.href}` }));
+}

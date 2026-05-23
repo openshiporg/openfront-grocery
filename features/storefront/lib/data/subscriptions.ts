@@ -1,36 +1,62 @@
 import type { GrocerySubscription } from '../../types';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+type Frequency = 'weekly' | 'biweekly' | 'monthly';
+
+function mapSubscription(subscription: any): GrocerySubscription {
+  return {
+    id: subscription.id,
+    product: subscription.productId || subscription.product,
+    quantity: subscription.quantity,
+    frequency: subscription.frequency,
+    nextDeliveryDate: subscription.nextDeliveryDate,
+    discount: subscription.discount || 0,
+    isActive: subscription.isActive,
+    pausedUntil: subscription.pausedUntil || null,
+    createdAt: subscription.createdAt || new Date().toISOString(),
+  };
+}
+
+async function requestGraphQL<T = any>(query: string, variables?: Record<string, unknown>) {
+  const result = await storefrontGraphQL<T>(query, variables, { cache: 'no-store' });
+
+  throwGraphQLErrors(result.errors);
+
+  return result.data as T;
+}
+
+const SUBSCRIPTION_RESULT_FIELDS = `
+  id
+  productId
+  quantity
+  frequency
+  nextDeliveryDate
+  discount
+  isActive
+  isPaused
+  pausedUntil
+  skippedDate
+`;
 
 export async function getSubscriptions(): Promise<GrocerySubscription[]> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetSubscriptions {
-            subscriptions(orderBy: { createdAt: desc }) {
-              id
-              product
-              quantity
-              frequency
-              nextDeliveryDate
-              discount
-              isActive
-              pausedUntil
-              createdAt
-            }
-          }
-        `,
-      }),
-      cache: 'no-store',
-    });
+    const data = await requestGraphQL<{ subscriptions: any[] }>(`
+      query GetSubscriptions {
+        subscriptions(orderBy: { createdAt: desc }) {
+          id
+          product
+          quantity
+          frequency
+          nextDeliveryDate
+          discount
+          isActive
+          pausedUntil
+          createdAt
+        }
+      }
+    `);
 
-    const { data } = await response.json();
-    return data?.subscriptions || [];
+    return (data?.subscriptions || []).map(mapSubscription);
   } catch (error) {
     console.error('Error fetching subscriptions:', error);
     return [];
@@ -39,34 +65,23 @@ export async function getSubscriptions(): Promise<GrocerySubscription[]> {
 
 export async function getSubscriptionById(id: string): Promise<GrocerySubscription | null> {
   try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          query GetSubscription($id: ID!) {
-            subscription(where: { id: $id }) {
-              id
-              product
-              quantity
-              frequency
-              nextDeliveryDate
-              discount
-              isActive
-              pausedUntil
-              createdAt
-            }
-          }
-        `,
-        variables: { id },
-      }),
-      cache: 'no-store',
-    });
+    const data = await requestGraphQL<{ subscription: any | null }>(`
+      query GetSubscription($id: ID!) {
+        subscription(where: { id: $id }) {
+          id
+          product
+          quantity
+          frequency
+          nextDeliveryDate
+          discount
+          isActive
+          pausedUntil
+          createdAt
+        }
+      }
+    `, { id });
 
-    const { data } = await response.json();
-    return data?.subscription || null;
+    return data?.subscription ? mapSubscription(data.subscription) : null;
   } catch (error) {
     console.error('Error fetching subscription:', error);
     return null;
@@ -76,48 +91,24 @@ export async function getSubscriptionById(id: string): Promise<GrocerySubscripti
 export async function createSubscription(data: {
   productId: string;
   quantity: number;
-  frequency: 'weekly' | 'biweekly' | 'monthly';
+  frequency: Frequency;
+  deliveryDay?: string;
 }): Promise<GrocerySubscription | null> {
   try {
-    const nextDate = calculateNextDeliveryDate(data.frequency);
-    
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          mutation CreateSubscription($product: String!, $quantity: Int!, $frequency: SubscriptionFrequencyType!, $nextDeliveryDate: DateTime!) {
-            createSubscription(data: {
-              product: $product
-              quantity: $quantity
-              frequency: $frequency
-              nextDeliveryDate: $nextDeliveryDate
-              isActive: true
-              discount: 10
-            }) {
-              id
-              product
-              quantity
-              frequency
-              nextDeliveryDate
-              discount
-              isActive
-            }
-          }
-        `,
-        variables: {
-          product: data.productId,
-          quantity: data.quantity,
-          frequency: data.frequency,
-          nextDeliveryDate: nextDate.toISOString(),
-        },
-      }),
+    const result = await requestGraphQL<{ createGrocerySubscription: any }>(`
+      mutation CreateGrocerySubscription($productId: ID!, $quantity: Int!, $frequency: String!, $deliveryDay: String) {
+        createGrocerySubscription(productId: $productId, quantity: $quantity, frequency: $frequency, deliveryDay: $deliveryDay) {
+          ${SUBSCRIPTION_RESULT_FIELDS}
+        }
+      }
+    `, {
+      productId: data.productId,
+      quantity: data.quantity,
+      frequency: data.frequency,
+      deliveryDay: data.deliveryDay,
     });
 
-    const result = await response.json();
-    return result.data?.createSubscription || null;
+    return result?.createGrocerySubscription ? mapSubscription(result.createGrocerySubscription) : null;
   } catch (error) {
     console.error('Error creating subscription:', error);
     return null;
@@ -128,44 +119,37 @@ export async function updateSubscription(
   id: string,
   data: Partial<{
     quantity: number;
-    frequency: 'weekly' | 'biweekly' | 'monthly';
+    frequency: Frequency;
     isActive: boolean;
     pausedUntil: string | null;
   }>
 ): Promise<GrocerySubscription | null> {
   try {
-    const updateData: Record<string, unknown> = {};
-    if (data.quantity !== undefined) updateData.quantity = data.quantity;
-    if (data.frequency !== undefined) updateData.frequency = data.frequency;
-    if (data.isActive !== undefined) updateData.isActive = data.isActive;
-    if (data.pausedUntil !== undefined) updateData.pausedUntil = data.pausedUntil;
+    if (data.isActive === false) {
+      return cancelSubscription(id);
+    }
 
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          mutation UpdateSubscription($id: ID!, $data: SubscriptionUpdateInput!) {
-            updateSubscription(where: { id: $id }, data: $data) {
-              id
-              product
-              quantity
-              frequency
-              nextDeliveryDate
-              discount
-              isActive
-              pausedUntil
-            }
-          }
-        `,
-        variables: { id, data: updateData },
-      }),
+    if (data.pausedUntil) {
+      return pauseSubscription(id, new Date(data.pausedUntil));
+    }
+
+    if (data.pausedUntil === null) {
+      return resumeSubscription(id);
+    }
+
+    const result = await requestGraphQL<{ updateGrocerySubscription: any }>(`
+      mutation UpdateGrocerySubscription($subscriptionId: ID!, $quantity: Int, $frequency: String) {
+        updateGrocerySubscription(subscriptionId: $subscriptionId, quantity: $quantity, frequency: $frequency) {
+          ${SUBSCRIPTION_RESULT_FIELDS}
+        }
+      }
+    `, {
+      subscriptionId: id,
+      quantity: data.quantity,
+      frequency: data.frequency,
     });
 
-    const result = await response.json();
-    return result.data?.updateSubscription || null;
+    return result?.updateGrocerySubscription ? mapSubscription(result.updateGrocerySubscription) : null;
   } catch (error) {
     console.error('Error updating subscription:', error);
     return null;
@@ -173,67 +157,80 @@ export async function updateSubscription(
 }
 
 export async function pauseSubscription(id: string, until: Date): Promise<GrocerySubscription | null> {
-  return updateSubscription(id, { pausedUntil: until.toISOString() });
-}
-
-export async function resumeSubscription(id: string): Promise<GrocerySubscription | null> {
-  return updateSubscription(id, { pausedUntil: null, isActive: true });
-}
-
-export async function cancelSubscription(id: string): Promise<GrocerySubscription | null> {
-  return updateSubscription(id, { isActive: false });
-}
-
-export async function skipNextDelivery(id: string): Promise<GrocerySubscription | null> {
   try {
-    const sub = await getSubscriptionById(id);
-    if (!sub) return null;
-
-    const nextDate = calculateNextDeliveryDate(sub.frequency, new Date(sub.nextDeliveryDate));
-    
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `
-          mutation SkipDelivery($id: ID!, $nextDeliveryDate: DateTime!) {
-            updateSubscription(where: { id: $id }, data: { nextDeliveryDate: $nextDeliveryDate }) {
-              id
-              nextDeliveryDate
-            }
-          }
-        `,
-        variables: { id, nextDeliveryDate: nextDate.toISOString() },
-      }),
+    const result = await requestGraphQL<{ pauseGrocerySubscription: any }>(`
+      mutation PauseGrocerySubscription($subscriptionId: ID!, $pauseUntil: String!) {
+        pauseGrocerySubscription(subscriptionId: $subscriptionId, pauseUntil: $pauseUntil) {
+          ${SUBSCRIPTION_RESULT_FIELDS}
+        }
+      }
+    `, {
+      subscriptionId: id,
+      pauseUntil: until.toISOString(),
     });
 
-    const result = await response.json();
-    return result.data?.updateSubscription || null;
+    return result?.pauseGrocerySubscription ? mapSubscription(result.pauseGrocerySubscription) : null;
   } catch (error) {
-    console.error('Error skipping delivery:', error);
+    console.error('Error pausing subscription:', error);
     return null;
   }
 }
 
-function calculateNextDeliveryDate(
-  frequency: 'weekly' | 'biweekly' | 'monthly',
-  fromDate: Date = new Date()
-): Date {
-  const next = new Date(fromDate);
-  
-  switch (frequency) {
-    case 'weekly':
-      next.setDate(next.getDate() + 7);
-      break;
-    case 'biweekly':
-      next.setDate(next.getDate() + 14);
-      break;
-    case 'monthly':
-      next.setMonth(next.getMonth() + 1);
-      break;
+export async function resumeSubscription(id: string): Promise<GrocerySubscription | null> {
+  try {
+    const result = await requestGraphQL<{ updateSubscription: any }>(`
+      mutation ResumeSubscription($id: ID!) {
+        updateSubscription(where: { id: $id }, data: { pausedUntil: null, isActive: true }) {
+          id
+          product
+          quantity
+          frequency
+          nextDeliveryDate
+          discount
+          isActive
+          pausedUntil
+          createdAt
+        }
+      }
+    `, { id });
+
+    return result?.updateSubscription ? mapSubscription(result.updateSubscription) : null;
+  } catch (error) {
+    console.error('Error resuming subscription:', error);
+    return null;
   }
-  
-  return next;
+}
+
+export async function cancelSubscription(id: string): Promise<GrocerySubscription | null> {
+  try {
+    const result = await requestGraphQL<{ cancelGrocerySubscription: any }>(`
+      mutation CancelGrocerySubscription($subscriptionId: ID!) {
+        cancelGrocerySubscription(subscriptionId: $subscriptionId) {
+          ${SUBSCRIPTION_RESULT_FIELDS}
+        }
+      }
+    `, { subscriptionId: id });
+
+    return result?.cancelGrocerySubscription ? mapSubscription(result.cancelGrocerySubscription) : null;
+  } catch (error) {
+    console.error('Error cancelling subscription:', error);
+    return null;
+  }
+}
+
+export async function skipNextDelivery(id: string): Promise<GrocerySubscription | null> {
+  try {
+    const result = await requestGraphQL<{ skipNextGroceryDelivery: any }>(`
+      mutation SkipNextGroceryDelivery($subscriptionId: ID!) {
+        skipNextGroceryDelivery(subscriptionId: $subscriptionId) {
+          ${SUBSCRIPTION_RESULT_FIELDS}
+        }
+      }
+    `, { subscriptionId: id });
+
+    return result?.skipNextGroceryDelivery ? mapSubscription(result.skipNextGroceryDelivery) : null;
+  } catch (error) {
+    console.error('Error skipping delivery:', error);
+    return null;
+  }
 }

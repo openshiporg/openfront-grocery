@@ -1,30 +1,35 @@
-// Re-export all data fetching functions
+// Re-export all data fetching functions and provide the lightweight prefetch
+// helpers used by StorefrontServer.
 import type { GroceryProduct, GroceryDepartment, GroceryCart, GroceryUser } from '../../types';
+import { retrieveCart } from './cart';
+import { getDepartmentsList } from './departments';
+import { getProductsList } from './products';
+import { getUser } from './user';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/graphql';
+export async function fetchProducts(options?: {
+  departmentId?: string;
+  limit?: number;
+}): Promise<GroceryProduct[]> {
+  const { products } = await getProductsList({
+    department: options?.departmentId,
+    limit: options?.limit ?? 12,
+    offset: 0,
+  });
 
-// Products
-export async function fetchProducts(options?: { departmentId?: string; limit?: number }): Promise<GroceryProduct[]> {
-  // TODO: Implement GraphQL query
-  return [];
+  return products;
 }
 
-// User
 export async function fetchUser(): Promise<GroceryUser | null> {
-  // TODO: Implement GraphQL query
-  return null;
+  return getUser();
 }
 
-// Cart
 export async function fetchCart(): Promise<GroceryCart | null> {
-  // TODO: Implement GraphQL query
-  return null;
+  return retrieveCart();
 }
 
-// Departments (grocery-specific)
 export async function fetchDepartments(): Promise<GroceryDepartment[]> {
-  // TODO: Implement GraphQL query
-  return [];
+  const { departments } = await getDepartmentsList(0, 12);
+  return departments;
 }
 
 export * from './cart';

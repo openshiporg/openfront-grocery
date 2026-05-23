@@ -6,7 +6,7 @@ import { trackingFields } from './trackingFields';
 export const PaymentProvider = list({
   access: {
     operation: {
-      query: () => true,
+      query: permissions.canManagePayments,
       create: permissions.canManagePayments,
       update: permissions.canManagePayments,
       delete: permissions.canManagePayments,

@@ -1,6 +1,7 @@
 import { gql } from 'graphql-request';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
 import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import DeliveryOperationsClient from '@/features/platform/delivery/components/DeliveryOperationsClient';
 
 const DELIVERY_QUERY = gql`
   query GroceryDeliveryBoard {
@@ -12,19 +13,55 @@ const DELIVERY_QUERY = gql`
       startedAt
       completedAt
       driver { id name email }
-      orders { id displayId status }
+      orders { id displayId status metadata }
+    }
+    readyOrders: orders(
+      where: {
+        AND: [
+          { status: { equals: packed } }
+          { metadata: { path: ["fulfillmentMethod"], equals: "delivery" } }
+        ]
+      }
+      orderBy: { updatedAt: asc }
+      take: 50
+    ) {
+      id
+      displayId
+      email
+      status
+      deliveryDate
+      deliveryTimeWindow
+      metadata
+      lineItems { id quantity }
+    }
+    drivers: users(where: { role: { canManageDelivery: { equals: true } } }, take: 25, orderBy: { name: asc }) {
+      id
+      name
+      email
+    }
+    deliverySlots(orderBy: [{ date: asc }, { startTime: asc }], take: 20) {
+      id
+      date
+      startTime
+      endTime
+      capacity
+      currentBookings
+      isActive
+      deliveryFee
     }
   }
 `;
 
-function formatDate(value?: string | null) {
-  if (!value) return '—';
-  return new Date(value).toLocaleString();
-}
-
 export async function DeliveryPage() {
   const response = await keystoneClient<any>(DELIVERY_QUERY);
   const routes = response.success ? response.data?.deliveryRoutes || [] : [];
+  const slots = response.success ? response.data?.deliverySlots || [] : [];
+  const readyOrders = response.success ? response.data?.readyOrders || [] : [];
+  const drivers = response.success ? response.data?.drivers || [] : [];
+
+  const constrainedSlots = slots.filter((slot: any) => slot.capacity > 0 && slot.currentBookings / slot.capacity >= 0.8).length;
+  const liveSlots = slots.filter((slot: any) => slot.isActive).length;
+  const openRoutes = routes.filter((route: any) => route.status !== 'completed').length;
 
   const breadcrumbs = [
     { type: 'link' as const, label: 'Dashboard', href: '/dashboard' },
@@ -33,60 +70,24 @@ export async function DeliveryPage() {
   ];
 
   const header = (
-    <div className="space-y-2">
-      <h1 className="text-2xl font-semibold tracking-tight">Delivery Operations</h1>
-      <p className="text-sm text-muted-foreground">Dispatch-oriented visibility into routes, drivers, and assigned grocery orders.</p>
+    <div className="space-y-3">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Delivery Operations</h1>
+        <p className="text-sm text-muted-foreground">Dispatch-oriented visibility into route readiness and live delivery capacity controls.</p>
+      </div>
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        <span className="rounded-full border px-2.5 py-1 bg-background">Live slots: {liveSlots}</span>
+        <span className="rounded-full border px-2.5 py-1 bg-background">High-pressure slots: {constrainedSlots}</span>
+        <span className="rounded-full border px-2.5 py-1 bg-background">Open routes: {openRoutes}</span>
+        <span className="rounded-full border px-2.5 py-1 bg-background">Ready to route: {readyOrders.length}</span>
+      </div>
     </div>
   );
 
   return (
     <PageContainer title="Delivery" header={header} breadcrumbs={breadcrumbs}>
       <div className="px-4 md:px-6 pb-6">
-        <div className="rounded-2xl border bg-background shadow-sm overflow-hidden">
-          <div className="border-b px-4 py-4 md:px-6">
-            <h2 className="text-base font-semibold">Routes</h2>
-            <p className="text-sm text-muted-foreground">Use this board to inspect which grocery orders are assigned to delivery runs.</p>
-          </div>
-          {routes.length === 0 ? (
-            <div className="px-6 py-10 text-sm text-muted-foreground">No delivery routes found.</div>
-          ) : (
-            <div className="divide-y">
-              {routes.map((route: any) => (
-                <div key={route.id} className="px-4 py-4 md:px-6 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                  <div className="space-y-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium">{route.timeWindow}</span>
-                      <span className="rounded-full border px-2 py-0.5 text-xs uppercase tracking-wide text-muted-foreground">
-                        {route.status}
-                      </span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">Scheduled: {formatDate(route.date)}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Driver: {route.driver?.name || route.driver?.email || 'Unassigned'}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Started: {formatDate(route.startedAt)} · Completed: {formatDate(route.completedAt)}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground mb-2">Assigned orders</p>
-                    <div className="flex flex-wrap gap-2">
-                      {(route.orders || []).length === 0 ? (
-                        <span className="text-sm text-muted-foreground">No assigned orders yet.</span>
-                      ) : (
-                        route.orders.map((order: any) => (
-                          <span key={order.id} className="rounded-full bg-muted px-2.5 py-1 text-xs">
-                            #{order.displayId} · {order.status}
-                          </span>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <DeliveryOperationsClient slots={slots} routes={routes} readyOrders={readyOrders} drivers={drivers} />
       </div>
     </PageContainer>
   );

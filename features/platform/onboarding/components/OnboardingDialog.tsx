@@ -124,13 +124,13 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-5xl gap-0 max-w-[95vw] max-h-[95vh]">
-        <DialogHeader className="border-b px-4 sm:px-6 py-4 mb-0">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-[95vw] flex-col overflow-hidden p-0 gap-0 sm:max-w-5xl">
+        <DialogHeader className="border-b px-4 sm:px-6 py-4 mb-0 shrink-0">
           <DialogTitle>Grocery onboarding</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col lg:flex-row">
-          <div className="flex flex-col lg:w-80 lg:border-r order-1 lg:order-none lg:justify-between">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+          <div className="order-1 flex shrink-0 flex-col lg:order-none lg:w-80 lg:justify-between lg:border-r">
             <div className="flex-1">
               <div className="p-4 sm:p-6">
                 <div className="flex items-center space-x-3">
@@ -290,7 +290,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
             </div>
           </div>
 
-          <div className="flex-1 max-h-[60vh] lg:max-h-[70vh] overflow-y-auto p-4 sm:p-6 order-2 lg:order-none">
+          <div className="order-2 min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 lg:order-none">
             {selectedTemplate === 'custom' && !customJsonApplied ? (
               <CustomSetupSteps
                 currentJson={currentJsonData}
@@ -319,7 +319,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
           </div>
         </div>
 
-        <div className="flex lg:hidden flex-col border-t">
+        <div className="flex shrink-0 flex-col border-t lg:hidden">
           {error && !isLoading && step !== 'done' && (
             <Badge color="rose" className="rounded-none gap-3 text-sm border-b">
               <AlertCircle className="size-4 sm:size-7" />

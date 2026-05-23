@@ -4,6 +4,34 @@ import type { Context } from '.keystone/types';
 const TAX_RATE = 0.08;
 const DELIVERY_FEE = 5.99;
 
+function requireGuestSessionId(sessionId?: string) {
+  const trimmed = sessionId?.trim();
+
+  if (!trimmed) {
+    throw new Error('No session ID provided for guest cart');
+  }
+
+  return trimmed;
+}
+
+function assertCartAccess(cart: any, context: Context, sessionId?: string) {
+  if (!cart) {
+    throw new Error('Cart not found');
+  }
+
+  if (context.session?.itemId) {
+    if (cart.customer?.id !== context.session.itemId) {
+      throw new Error('You do not have access to this cart');
+    }
+    return;
+  }
+
+  const guestSessionId = requireGuestSessionId(sessionId);
+  if (cart.customer?.id || cart.sessionId !== guestSessionId) {
+    throw new Error('You do not have access to this cart');
+  }
+}
+
 // Helper to get or create a cart for the current session/user
 async function getOrCreateCart(
   context: Context,
@@ -19,6 +47,8 @@ async function getOrCreateCart(
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -54,6 +84,8 @@ async function getOrCreateCart(
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -79,12 +111,16 @@ async function getOrCreateCart(
 
   // For guest users, use sessionId
   if (sessionId) {
+    const guestSessionId = requireGuestSessionId(sessionId);
+
     let cart = await sudoContext.query.Cart.findMany({
       where: {
-        sessionId: { equals: sessionId },
+        sessionId: { equals: guestSessionId },
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -117,13 +153,15 @@ async function getOrCreateCart(
 
     return await sudoContext.query.Cart.createOne({
       data: {
-        sessionId,
+        sessionId: guestSessionId,
         itemCount: 0,
         subtotal: 0,
         expiresAt: expiresAt.toISOString(),
       },
       query: `
         id
+        sessionId
+        customer { id }
         itemCount
         subtotal
         items {
@@ -158,6 +196,8 @@ async function recalculateCart(context: Context, cartId: string) {
     where: { id: cartId },
     query: `
       id
+      sessionId
+      customer { id }
       items {
         id
         quantity
@@ -262,6 +302,7 @@ export async function addToCart(
 
   // Get or create cart
   const cart = await getOrCreateCart(context, sessionId);
+  assertCartAccess(cart, context, sessionId);
 
   // Check if product exists and is in stock
   const product = await sudoContext.query.Product.findOne({
@@ -337,7 +378,7 @@ export async function updateCartItem(
     where: { id: itemId },
     query: `
       id
-      cart { id }
+      cart { id sessionId customer { id } }
       product { id stockQuantity inStock }
     `,
   });
@@ -345,6 +386,8 @@ export async function updateCartItem(
   if (!cartItem) {
     throw new Error('Cart item not found');
   }
+
+  assertCartAccess(cartItem.cart, context, sessionId);
 
   // Check stock
   if (cartItem.product?.stockQuantity !== null && cartItem.product?.stockQuantity < quantity) {
@@ -383,12 +426,14 @@ export async function removeFromCart(
   // Get the cart item to find the cart
   const cartItem = await sudoContext.query.CartItem.findOne({
     where: { id: itemId },
-    query: 'id cart { id }',
+    query: 'id cart { id sessionId customer { id } }',
   });
 
   if (!cartItem) {
     throw new Error('Cart item not found');
   }
+
+  assertCartAccess(cartItem.cart, context, sessionId);
 
   // Delete the item
   await sudoContext.query.CartItem.deleteOne({
@@ -413,6 +458,7 @@ export async function clearCart(
 
   // Get the cart
   const cart = await getOrCreateCart(context, sessionId);
+  assertCartAccess(cart, context, sessionId);
 
   // Delete all items
   for (const item of cart.items) {
@@ -452,6 +498,8 @@ export async function mergeGuestCart(
     where: { sessionId: { equals: guestSessionId } },
     query: `
       id
+      sessionId
+      customer { id }
       items {
         id
         quantity
@@ -467,6 +515,7 @@ export async function mergeGuestCart(
   }
 
   const guestCart = guestCarts[0];
+  assertCartAccess(guestCart, { ...context, session: undefined } as Context, guestSessionId);
 
   // Get or create user cart
   const userCart = await getOrCreateCart(context);
@@ -518,6 +567,17 @@ export async function updateSubstitutionPreference(
   context: Context
 ) {
   const sudoContext = context.sudo();
+
+  const cartItem = await sudoContext.query.CartItem.findOne({
+    where: { id: itemId },
+    query: 'id cart { id sessionId customer { id } }',
+  });
+
+  if (!cartItem) {
+    throw new Error('Cart item not found');
+  }
+
+  assertCartAccess(cartItem.cart, context, sessionId);
 
   await sudoContext.query.CartItem.updateOne({
     where: { id: itemId },

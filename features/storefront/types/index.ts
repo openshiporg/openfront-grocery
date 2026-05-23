@@ -8,6 +8,8 @@ export interface GroceryDepartment {
   imageUrl?: string;
   sortOrder?: number;
   isActive: boolean;
+  productsCount?: number;
+  temperatureZone?: string;
 }
 
 export interface GroceryProduct {
@@ -64,6 +66,8 @@ export interface DeliveryWindow {
   endTime: string;
   available: boolean;
   fee: number;
+  method?: 'delivery' | 'pickup';
+  remainingCapacity?: number;
 }
 
 export interface GroceryOrder {
@@ -78,7 +82,9 @@ export interface GroceryOrder {
   discount_total: number;
   total: number;
   shippingAddress?: ShippingAddress;
+  fulfillmentMethod?: 'delivery' | 'pickup';
   deliverySlot?: DeliverySlot;
+  pickupCheckIn?: GroceryPickupCheckIn;
   deliveryInstructions?: string;
   substitutionPreference: 'allow' | 'contact' | 'remove';
   createdAt: string;
@@ -138,12 +144,42 @@ export interface GroceryOrderItem {
   unit_price: number;
   thumbnail?: string;
   product?: { id: string; handle: string };
+  substitutionPreference?: string | null;
+  substitution?: GroceryOrderSubstitution;
+}
+
+export interface GroceryOrderSubstitution {
+  id: string;
+  originalProduct: string;
+  substitutedProduct: string;
+  reason?: string | null;
+  customerApproved: boolean;
+  approvedAt?: string | null;
+}
+
+export interface GroceryPickupCheckIn {
+  customerArrived: boolean;
+  checkInTime?: string | null;
+  parkingSpotId?: string | null;
+  parkingSpotNumber?: string | null;
+  vehicleDescription?: string | null;
+}
+
+export interface GroceryParkingSpot {
+  id: string;
+  spotNumber: string;
+  description?: string | null;
+  isAccessible: boolean;
+  isAvailable: boolean;
 }
 
 export interface ShoppingList {
   id: string;
   name: string;
   updatedAt: string;
+  isDefault?: boolean;
+  itemCount?: number;
+  checkedCount?: number;
   items: ShoppingListItem[];
 }
 
@@ -152,6 +188,9 @@ export interface ShoppingListItem {
   name: string;
   quantity: number;
   checked: boolean;
+  unit?: string;
+  notes?: string;
+  addedAt?: string;
   product?: GroceryProduct;
 }
 
