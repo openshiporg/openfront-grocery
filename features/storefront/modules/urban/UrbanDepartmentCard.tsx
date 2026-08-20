@@ -14,31 +14,42 @@ const iconMap = [
   { match: ['pantry'], Icon: Soup },
 ];
 
-function iconFor(department: GroceryDepartment) {
+function renderDepartmentIcon(department: GroceryDepartment) {
   const text = `${department.handle} ${department.name}`.toLowerCase();
-  return iconMap.find((entry) => entry.match.some((word) => text.includes(word)))?.Icon || Package;
+  const DepartmentIcon = iconMap.find((entry) => entry.match.some((word) => text.includes(word)))?.Icon || Package;
+  return <DepartmentIcon className="h-5 w-5" />;
 }
 
 export default function UrbanDepartmentCard({ department, index = 0 }: { department: GroceryDepartment; index?: number }) {
-  const Icon = iconFor(department);
-  const featured = index % 7 === 0;
-
   return (
-    <Link href={departmentHref(department)} className={`group flex min-h-[210px] flex-col justify-between border border-[#5a4136] bg-[#1e2020] p-5 transition hover:border-[#ffb693] ${featured ? 'lg:col-span-2' : ''}`}>
-      <div className="flex items-start justify-between gap-4">
-        <span className="flex h-14 w-14 items-center justify-center border border-[#5a4136] bg-[#282a2b] text-[#ffb693] transition group-hover:bg-[#ffb693] group-hover:text-[#561f00]">
-          <Icon className="h-6 w-6" />
+    <Link href={departmentHref(department)} className="group block h-full border border-[var(--sf-rule)] bg-[var(--sf-paper)] transition hover:border-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)]">
+      <div className="flex items-start justify-between gap-3 border-b border-[var(--sf-rule)] p-4">
+        <span className="font-[family-name:var(--sf-font-display)] text-lg text-[var(--sf-ink-faint)]">{String(index + 1).padStart(2, '0')}</span>
+        <span className="flex h-10 w-10 items-center justify-center border border-[var(--sf-rule)] bg-[var(--sf-paper-2)] text-[var(--sf-sage)]">
+          {renderDepartmentIcon(department)}
         </span>
-        <UrbanBadge tone={department.temperatureZone?.toLowerCase().includes('frozen') ? 'blue' : 'muted'}>
-          {department.temperatureZone || 'aisle'}
-        </UrbanBadge>
       </div>
-      <div>
-        <h3 className="font-market-label text-4xl font-black uppercase leading-[0.92] tracking-[-0.055em] text-[#e2e2e2] transition group-hover:text-[#ffb693]">{department.name}</h3>
-        <p className="mt-3 line-clamp-2 text-sm leading-6 text-[#e2bfb0]">{department.description || 'Fast-moving grocery inventory, picker-ready and organized by mission.'}</p>
-        <div className="mt-5 flex items-center justify-between border-t border-[#5a4136] pt-3 font-market-label text-xs font-black uppercase tracking-[0.16em] text-[#e2bfb0]">
-          <span>{department.productsCount || 0} items</span>
-          <span className="text-[#ffb693]">Open aisle</span>
+      {department.imageUrl ? (
+        <div className="aspect-[16/9] overflow-hidden border-b border-[var(--sf-rule)] bg-[var(--sf-paper-3)]">
+          <img
+            src={department.imageUrl}
+            alt={`${department.name} department`}
+            className="h-full w-full object-cover transition duration-[var(--sf-dur-normal)] group-hover:scale-[1.02]"
+          />
+        </div>
+      ) : null}
+      <div className="flex min-h-[180px] flex-col justify-between p-4">
+        <div>
+          <h3 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold leading-[1.1] tracking-[-0.02em] text-[var(--sf-ink)] transition group-hover:text-[var(--sf-accent)]">
+            {department.name}
+          </h3>
+          <p className="mt-2 line-clamp-3 text-sm leading-6 text-[var(--sf-ink-muted)]">
+            {department.description || 'Browse live inventory from this aisle.'}
+          </p>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-2 text-sm">
+          <UrbanBadge tone="muted">{department.temperatureZone || 'Standard'}</UrbanBadge>
+          <span className="font-medium text-[var(--sf-accent)]">{department.productsCount || 0} items →</span>
         </div>
       </div>
     </Link>

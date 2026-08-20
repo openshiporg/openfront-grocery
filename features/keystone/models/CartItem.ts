@@ -8,14 +8,23 @@ import {
 } from "@keystone-6/core/fields";
 import { permissions } from "../access";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { relatedStoreScopedFilter } from '../lib/storeAccess';
 
 export const CartItem = list({
+  db: {
+    extendPrismaSchema: (schema) => schema.replace(/\n}$/, '\n  @@unique([cartId, productId])\n}'),
+  },
   access: {
     operation: {
-      query: ({ session }) => permissions.canManageOrders({ session }),
-      create: permissions.canManageOrders,
-      update: permissions.canManageOrders,
-      delete: permissions.canManageOrders,
+      query: permissions.canManageOrders,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
+    },
+    filter: {
+      query: relatedStoreScopedFilter('cart'),
+      delete: relatedStoreScopedFilter('cart'),
     },
   },
   ui: {
@@ -27,6 +36,9 @@ export const CartItem = list({
   fields: {
     // Cart relationship
     cart: relationship({
+      access: { create: () => false, update: () => false },
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       ref: "Cart.items",
       label: "Cart",
       ui: {
@@ -36,6 +48,8 @@ export const CartItem = list({
     // Product relationship
     product: relationship({
       ref: "Product",
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       label: "Product",
       ui: {
         description: "The product in this cart item",
@@ -53,11 +67,12 @@ export const CartItem = list({
     // Calculated subtotal for this item
     subtotal: float({
       defaultValue: 0,
-      label: "Subtotal",
+      label: "Legacy display subtotal",
       ui: {
         description: "Price x Quantity",
       },
     }),
+    subtotalCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative subtotal (minor units)' }),
     // Grocery-specific: substitution preference
     substitutionPreference: select({
       type: "enum",

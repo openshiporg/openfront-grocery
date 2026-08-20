@@ -1,4 +1,8 @@
 import type { Context } from '.keystone/types';
+import { requireFreshCapability } from '../access';
+import { requireSessionStore } from '../lib/storeScope';
+import { verifyGuestOrderToken } from '../utils/guestOrderToken';
+import { withSerializableRetry } from '../utils/serializableTransaction';
 
 interface CheckInResult {
   success: boolean;
@@ -15,146 +19,149 @@ interface CheckInResult {
   message: string;
 }
 
-// Customer check-in for curbside pickup
-export async function customerCheckIn(
-  root: any,
-  {
-    orderId,
-    parkingSpotId,
-    vehicleDescription,
-  }: {
-    orderId: string;
-    parkingSpotId?: string;
-    vehicleDescription?: string;
-  },
-  context: Context
+async function assertCanManageDelivery(context: Context) {
+  return requireFreshCapability(context, 'canManageDelivery');
+}
+
+type PickupCheckInArgs = {
+  orderId: string;
+  parkingSpotId?: string;
+  vehicleDescription?: string;
+};
+
+type PickupOwnership =
+  | { kind: 'customer'; userId: string; storeId: string }
+  | { kind: 'guest'; sessionId: string; token: string };
+
+async function checkInOwnedPickupOrder(
+  args: PickupCheckInArgs,
+  ownership: PickupOwnership,
+  context: Context,
 ): Promise<CheckInResult> {
-  const sudoContext = context.sudo();
-
-  // Get the order
-  const order = await sudoContext.query.Order.findOne({
-    where: { id: orderId },
-    query: `
-      id
-      displayId
-      status
-      email
-      user { id }
-      metadata
-    `,
-  });
-
-  if (!order) {
-    throw new Error('Order not found');
-  }
-
-  // Verify order ownership if user is logged in
-  if (context.session?.itemId && order.user?.id !== context.session.itemId) {
-    throw new Error('Not authorized to check in for this order');
-  }
-
-  const metadata = order.metadata || {};
-
-  if (metadata.fulfillmentMethod === 'pickup' && !metadata.readyForPickup) {
-    throw new Error('This pickup order is not marked ready yet');
-  }
-
-  // Validate order status - must be packed/ready for pickup
-  const validStatuses = ['packed'];
-  if (!validStatuses.includes(order.status)) {
-    if (order.status === 'delivered') {
-      throw new Error('This order has already been picked up');
-    }
-    if (order.status === 'cancelled') {
-      throw new Error('This order has been cancelled');
-    }
-    if (order.status === 'pending') {
-      throw new Error('This order is still being processed and not ready for pickup');
-    }
-    throw new Error(`Order cannot be checked in with status: ${order.status}`);
-  }
-
-  // Get parking spot if specified
-  let parkingSpot = null;
-  if (parkingSpotId) {
-    parkingSpot = await sudoContext.query.ParkingSpot.findOne({
-      where: { id: parkingSpotId },
-      query: 'id spotNumber description isAccessible isAvailable',
+  const vehicleDescription = args.vehicleDescription?.trim() || '';
+  if (vehicleDescription.length > 200) throw new Error('Vehicle description must be 200 characters or less');
+  return context.transaction(async (transactionContext) => {
+    const tx = transactionContext.prisma;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', args.orderId);
+    const order = await tx.order.findUnique({
+      where: { id: args.orderId },
+      select: { id: true, displayId: true, status: true, userId: true, storeId: true, metadata: true, createdAt: true, store: { select: { isActive: true } } },
     });
+    if (!order?.store?.isActive) throw new Error('Pickup order not found');
 
-    if (!parkingSpot) {
-      throw new Error('Parking spot not found');
+    if (ownership.kind === 'customer') {
+      if (order.userId !== ownership.userId || order.storeId !== ownership.storeId) throw new Error('Pickup order not found');
+    } else {
+      const guestSessionId = String((order.metadata as any)?.guestSessionId || '');
+      if (
+        order.userId ||
+        guestSessionId !== ownership.sessionId.trim() ||
+        !verifyGuestOrderToken(order.id, ownership.sessionId, ownership.token, undefined, order.createdAt)
+      ) throw new Error('Pickup order not found');
     }
 
-    if (!parkingSpot.isAvailable) {
-      throw new Error('Selected parking spot is not available');
+    const metadata = (order.metadata as Record<string, any> | null) || {};
+    if (metadata.fulfillmentMethod !== 'pickup') throw new Error('Only pickup orders can check in');
+    if (!metadata.readyForPickup) throw new Error('This pickup order is not marked ready yet');
+    if (order.status !== 'packed') {
+      if (order.status === 'delivered') throw new Error('This order has already been picked up');
+      if (order.status === 'cancelled') throw new Error('This order has been cancelled');
+      throw new Error(`Order cannot be checked in with status: ${order.status}`);
     }
 
-    // Mark parking spot as occupied
-    await sudoContext.query.ParkingSpot.updateOne({
-      where: { id: parkingSpotId },
-      data: { isAvailable: false },
+    if (metadata.customerArrived) {
+      const existingSpot = metadata.parkingSpotId
+        ? await tx.parkingSpot.findUnique({ where: { id: metadata.parkingSpotId } })
+        : null;
+      return {
+        success: true,
+        orderId: order.id,
+        orderNumber: order.displayId,
+        status: 'checked_in',
+        parkingSpot: existingSpot ? {
+          id: existingSpot.id,
+          spotNumber: existingSpot.spotNumber,
+          description: existingSpot.description || undefined,
+          isAccessible: Boolean(existingSpot.isAccessible),
+        } : null,
+        estimatedWaitMinutes: Number(metadata.estimatedWaitMinutes || 0),
+        message: existingSpot ? `Already checked in at spot ${existingSpot.spotNumber}.` : 'Already checked in.',
+      };
+    }
+
+    let parkingSpot = null;
+    if (args.parkingSpotId) {
+      await tx.$queryRawUnsafe('SELECT "id" FROM "ParkingSpot" WHERE "id" = $1 FOR UPDATE', args.parkingSpotId);
+      parkingSpot = await tx.parkingSpot.findUnique({ where: { id: args.parkingSpotId } });
+      if (!parkingSpot || parkingSpot.storeId !== order.storeId) throw new Error('Parking spot not found');
+      if (!parkingSpot.isAvailable) throw new Error('Selected parking spot is not available');
+    }
+
+    const checkInTime = new Date().toISOString();
+    const waitingOrders = await tx.order.findMany({
+      where: { storeId: order.storeId, status: 'packed', id: { not: order.id } },
+      orderBy: { createdAt: 'asc' },
+      take: 100,
+      select: { metadata: true },
     });
-  }
+    const ordersAhead = waitingOrders.filter((waiting) => {
+      const waitingMetadata = (waiting.metadata as Record<string, any> | null) || {};
+      return Boolean(waitingMetadata.customerArrived && waitingMetadata.checkInTime && new Date(waitingMetadata.checkInTime) < new Date(checkInTime));
+    }).length;
+    const estimatedWaitMinutes = ordersAhead * 3;
 
-  // Update order metadata with check-in information
-  const checkInTime = new Date().toISOString();
-
-  await sudoContext.query.Order.updateOne({
-    where: { id: orderId },
-    data: {
-      status: 'packed', // Ensure status indicates ready for handoff
-      metadata: {
-        ...metadata,
-        checkInTime,
-        parkingSpotId: parkingSpotId || null,
-        parkingSpotNumber: parkingSpot?.spotNumber || null,
-        vehicleDescription: vehicleDescription || null,
-        customerArrived: true,
-        pickupCheckedInAt: checkInTime,
+    if (parkingSpot) await tx.parkingSpot.update({ where: { id: parkingSpot.id }, data: { isAvailable: false } });
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        metadata: {
+          ...metadata,
+          checkInTime,
+          parkingSpotId: parkingSpot?.id || null,
+          parkingSpotNumber: parkingSpot?.spotNumber || null,
+          vehicleDescription: vehicleDescription || null,
+          customerArrived: true,
+          pickupCheckedInAt: checkInTime,
+          estimatedWaitMinutes,
+        },
       },
-    },
-  });
+    });
 
-  // Calculate estimated wait time based on current queue
-  // Count orders that checked in before this one that are still waiting
-  const waitingOrders = await sudoContext.query.Order.findMany({
-    where: {
-      AND: [
-        { status: { equals: 'packed' } },
-        { id: { not: { equals: orderId } } },
-      ],
-    },
-    query: 'id metadata',
-  });
+    return {
+      success: true,
+      orderId: order.id,
+      orderNumber: order.displayId,
+      status: 'checked_in',
+      parkingSpot: parkingSpot ? {
+        id: parkingSpot.id,
+        spotNumber: parkingSpot.spotNumber,
+        description: parkingSpot.description || undefined,
+        isAccessible: Boolean(parkingSpot.isAccessible),
+      } : null,
+      estimatedWaitMinutes,
+      message: parkingSpot
+        ? `Checked in at spot ${parkingSpot.spotNumber}. Estimated wait: ${estimatedWaitMinutes} minutes.`
+        : `Checked in successfully. Estimated wait: ${estimatedWaitMinutes} minutes.`,
+    };
+  }, { isolationLevel: 'ReadCommitted' as any });
+}
 
-  // Count orders that have checked in but not been delivered
-  const ordersAhead = waitingOrders.filter((o: any) => {
-    const orderMeta = o.metadata || {};
-    if (!orderMeta.customerArrived) return false;
-    if (!orderMeta.checkInTime) return false;
-    return new Date(orderMeta.checkInTime) < new Date(checkInTime);
-  }).length;
+export async function customerCheckIn(
+  _root: unknown,
+  args: PickupCheckInArgs,
+  context: Context,
+) {
+  if (!context.session?.itemId) throw new Error('Sign in to check in for pickup');
+  const store = await requireSessionStore(context);
+  return checkInOwnedPickupOrder(args, { kind: 'customer', userId: context.session.itemId, storeId: store.id }, context);
+}
 
-  // Estimate 3 minutes per order ahead in queue
-  const estimatedWaitMinutes = ordersAhead * 3;
-
-  return {
-    success: true,
-    orderId,
-    orderNumber: order.displayId,
-    status: 'checked_in',
-    parkingSpot: parkingSpot ? {
-      id: parkingSpot.id,
-      spotNumber: parkingSpot.spotNumber,
-      description: parkingSpot.description,
-      isAccessible: parkingSpot.isAccessible,
-    } : null,
-    estimatedWaitMinutes,
-    message: parkingSpot
-      ? `Checked in at spot ${parkingSpot.spotNumber}. Estimated wait: ${estimatedWaitMinutes} minutes.`
-      : `Checked in successfully. Estimated wait: ${estimatedWaitMinutes} minutes.`,
-  };
+export async function guestCustomerCheckIn(
+  _root: unknown,
+  args: PickupCheckInArgs & { sessionId: string; token: string },
+  context: Context,
+) {
+  return checkInOwnedPickupOrder(args, { kind: 'guest', sessionId: args.sessionId, token: args.token }, context);
 }
 
 // Get available parking spots
@@ -163,10 +170,14 @@ export async function getAvailableParkingSpots(
   { accessibleOnly }: { accessibleOnly?: boolean },
   context: Context
 ) {
+  const { storeId } = await assertCanManageDelivery(context);
   const sudoContext = context.sudo();
 
   const where: any = {
-    isAvailable: { equals: true },
+    AND: [
+      { store: { id: { equals: storeId } } },
+      { isAvailable: { equals: true } },
+    ],
   };
 
   if (accessibleOnly) {
@@ -188,112 +199,78 @@ export async function getAvailableParkingSpots(
   }));
 }
 
-// Release parking spot when order is delivered
-export async function releaseParkingSpot(
-  root: any,
-  { parkingSpotId, orderId }: { parkingSpotId: string; orderId: string },
-  context: Context
-) {
-  const sudoContext = context.sudo();
-
-  // Get the parking spot
-  const spot = await sudoContext.query.ParkingSpot.findOne({
-    where: { id: parkingSpotId },
-    query: 'id spotNumber isAvailable',
-  });
-
-  if (!spot) {
-    throw new Error('Parking spot not found');
-  }
-
-  // Mark parking spot as available
-  await sudoContext.query.ParkingSpot.updateOne({
-    where: { id: parkingSpotId },
-    data: { isAvailable: true },
-  });
-
-  // Update order to delivered status
-  const order = await sudoContext.query.Order.findOne({
-    where: { id: orderId },
-    query: 'id metadata',
-  });
-
-  if (order) {
-    const metadata = order.metadata || {};
-    await sudoContext.query.Order.updateOne({
+async function completePickupHandoff(context: Context, orderId: string, expectedParkingSpotId?: string) {
+  const { storeId } = await assertCanManageDelivery(context);
+  return withSerializableRetry(() => context.transaction(async (transactionContext) => {
+    const tx = transactionContext.prisma;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', orderId);
+    const order = await tx.order.findUnique({
       where: { id: orderId },
-      data: {
-        status: 'delivered',
-        metadata: {
-          ...metadata,
-          deliveryTime: new Date().toISOString(),
-          parkingSpotReleased: true,
-        },
-      },
+      select: { id: true, displayId: true, status: true, metadata: true, storeId: true },
     });
-  }
+    if (!order || order.storeId !== storeId) throw new Error('Order not found in active store');
+    const metadata = (order.metadata as Record<string, any> | null) || {};
+    if (metadata.fulfillmentMethod !== 'pickup') throw new Error('Only pickup orders can use counter or curbside handoff');
+    if (order.status !== 'packed' && order.status !== 'delivered') throw new Error('Pickup order must be packed before handoff');
+    if (metadata.readyForPickup !== true && order.status !== 'delivered') throw new Error('Pickup order must be marked ready before handoff');
 
+    const parkingSpotId = typeof metadata.parkingSpotId === 'string' ? metadata.parkingSpotId : null;
+    if (expectedParkingSpotId && parkingSpotId !== expectedParkingSpotId) {
+      throw new Error('Parking spot does not belong to this order check-in');
+    }
+    let spotNumber: string | null = null;
+    if (parkingSpotId) {
+      await tx.$queryRawUnsafe('SELECT "id" FROM "ParkingSpot" WHERE "id" = $1 FOR UPDATE', parkingSpotId);
+      const spot = await tx.parkingSpot.findUnique({ where: { id: parkingSpotId }, select: { storeId: true, spotNumber: true } });
+      if (!spot || spot.storeId !== storeId) throw new Error('Parking spot not found in active store');
+      spotNumber = spot.spotNumber;
+      if (order.status !== 'delivered') await tx.parkingSpot.update({ where: { id: parkingSpotId }, data: { isAvailable: true } });
+    }
+
+    if (order.status !== 'delivered') {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 'delivered',
+          metadata: {
+            ...metadata,
+            deliveryTime: new Date().toISOString(),
+            handoffCompletedBy: context.session?.itemId || 'staff',
+            parkingSpotReleased: Boolean(parkingSpotId),
+          },
+        },
+      });
+    }
+    return { order, parkingSpotId, spotNumber };
+  }, { isolationLevel: 'Serializable' as any }));
+}
+
+export async function releaseParkingSpot(
+  _root: unknown,
+  { parkingSpotId, orderId }: { parkingSpotId: string; orderId: string },
+  context: Context,
+) {
+  const result = await completePickupHandoff(context, orderId, parkingSpotId);
   return {
     success: true,
     parkingSpotId,
-    spotNumber: spot.spotNumber,
+    spotNumber: result.spotNumber || parkingSpotId,
     orderId,
-    message: `Parking spot ${spot.spotNumber} released. Order marked as delivered.`,
+    message: `Parking spot ${result.spotNumber || parkingSpotId} released. Order marked as delivered.`,
   };
 }
 
-// Complete order handoff (for store staff)
 export async function completeOrderHandoff(
-  root: any,
+  _root: unknown,
   { orderId }: { orderId: string },
-  context: Context
+  context: Context,
 ) {
-  const sudoContext = context.sudo();
-
-  // Get the order
-  const order = await sudoContext.query.Order.findOne({
-    where: { id: orderId },
-    query: 'id displayId status metadata',
-  });
-
-  if (!order) {
-    throw new Error('Order not found');
-  }
-
-  if (order.status === 'delivered') {
-    throw new Error('Order has already been delivered');
-  }
-
-  const metadata = order.metadata || {};
-  const parkingSpotId = metadata.parkingSpotId;
-
-  // Release parking spot if one was assigned
-  if (parkingSpotId) {
-    await sudoContext.query.ParkingSpot.updateOne({
-      where: { id: parkingSpotId },
-      data: { isAvailable: true },
-    });
-  }
-
-  // Update order status to delivered
-  await sudoContext.query.Order.updateOne({
-    where: { id: orderId },
-    data: {
-      status: 'delivered',
-      metadata: {
-        ...metadata,
-        deliveryTime: new Date().toISOString(),
-        handoffCompletedBy: context.session?.itemId || 'staff',
-        parkingSpotReleased: !!parkingSpotId,
-      },
-    },
-  });
-
+  const result = await completePickupHandoff(context, orderId);
   return {
     success: true,
     orderId,
-    orderNumber: order.displayId,
+    orderNumber: result.order.displayId,
     status: 'delivered',
-    message: `Order #${order.displayId} has been handed off successfully.`,
+    message: `Order #${result.order.displayId} has been handed off successfully.`,
   };
 }

@@ -6,36 +6,29 @@ import {
 } from "@keystone-6/core/fields";
 import { isSignedIn } from "../access";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { ownerStoreScopedFilter } from '../lib/storeAccess';
 
 export const ShoppingList = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
     filter: {
       query: ({ session }) => {
-        // Users can only see their own shopping lists
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
+        const store = ownerStoreScopedFilter('user')({ session });
+        return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
       update: ({ session }) => {
-        // Users can only update their own shopping lists
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
+        const store = ownerStoreScopedFilter('user')({ session });
+        return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
       delete: ({ session }) => {
-        // Users can only delete their own shopping lists
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
+        const store = ownerStoreScopedFilter('user')({ session });
+        return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
     },
   },
@@ -48,6 +41,9 @@ export const ShoppingList = list({
   fields: {
     // Owner of the shopping list
     user: relationship({
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: () => false, update: () => false },
       ref: "User",
       label: "User",
       ui: {

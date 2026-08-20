@@ -33,69 +33,118 @@ model Address {
 }
 
 model BackInStockAlert {
-  id         String    @id @default(cuid())
-  user       User?     @relation("BackInStockAlert_user", fields: [userId], references: [id])
-  userId     String?   @map("user")
-  product    String    @default("")
-  notifiedAt DateTime?
-  isActive   Boolean   @default(true)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @default(now()) @updatedAt
+  id           String    @id @default(cuid())
+  user         User      @relation("BackInStockAlert_user", fields: [userId], references: [id])
+  userId       String    @map("user")
+  product      String    @default("")
+  productRef   Product?  @relation("BackInStockAlert_productRef", fields: [productRefId], references: [id])
+  productRefId String?   @map("productRef")
+  notifiedAt   DateTime?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
 
   @@index([userId])
   @@index([product])
+  @@index([productRefId])
 }
 
 model Cart {
-  id              String           @id @default(cuid())
-  customer        User?            @relation("Cart_customer", fields: [customerId], references: [id])
-  customerId      String?          @map("customer")
-  sessionId       String           @default("")
-  items           CartItem[]       @relation("CartItem_cart")
-  paymentSessions PaymentSession[] @relation("PaymentSession_cart")
-  itemCount       Int?             @default(0)
-  subtotal        Float?           @default(0)
-  expiresAt       DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @default(now()) @updatedAt
+  id               String            @id @default(cuid())
+  store            Store             @relation("Cart_store", fields: [storeId], references: [id])
+  storeId          String            @map("store")
+  customer         User?             @relation("Cart_customer", fields: [customerId], references: [id])
+  customerId       String?           @unique @map("customer")
+  sessionId        String            @unique @default("")
+  items            CartItem[]        @relation("CartItem_cart")
+  paymentSessions  PaymentSession[]  @relation("PaymentSession_cart")
+  checkoutAttempts CheckoutAttempt[] @relation("CheckoutAttempt_cart")
+  itemCount        Int?              @default(0)
+  subtotal         Float?            @default(0)
+  subtotalCents    Int               @default(0)
+  expiresAt        DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @default(now()) @updatedAt
 
+  @@index([storeId])
   @@index([customerId])
-  @@index([sessionId])
+}
+
+model CheckoutAttempt {
+  id                String                    @id @default(cuid())
+  idempotencyKey    String                    @unique @default("")
+  providerCode      String                    @default("")
+  providerPaymentId String                    @default("")
+  amountCents       Int
+  currencyCode      String                    @default("")
+  status            CheckoutAttemptStatusType @default(pending)
+  attempts          Int                       @default(0)
+  fencingToken      Int                       @default(0)
+  leaseToken        String?
+  leaseExpiresAt    DateTime?
+  lastError         String                    @default("")
+  requestData       Json?                     @default("{}")
+  settledAt         DateTime?
+  finalizedAt       DateTime?
+  compensationAt    DateTime?
+  store             Store                     @relation("CheckoutAttempt_store", fields: [storeId], references: [id])
+  storeId           String                    @map("store")
+  cart              Cart                      @relation("CheckoutAttempt_cart", fields: [cartId], references: [id])
+  cartId            String                    @map("cart")
+  paymentSession    PaymentSession            @relation("CheckoutAttempt_paymentSession", fields: [paymentSessionId], references: [id])
+  paymentSessionId  String                    @map("paymentSession")
+  order             Order?                    @relation("CheckoutAttempt_order", fields: [orderId], references: [id])
+  orderId           String?                   @map("order")
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @default(now()) @updatedAt
+
+  @@index([storeId])
+  @@index([cartId])
+  @@index([paymentSessionId])
+  @@index([orderId])
 }
 
 model CartItem {
   id                     String                              @id @default(cuid())
-  cart                   Cart?                               @relation("CartItem_cart", fields: [cartId], references: [id])
-  cartId                 String?                             @map("cart")
-  product                Product?                            @relation("CartItem_product", fields: [productId], references: [id])
-  productId              String?                             @map("product")
+  cart                   Cart                                @relation("CartItem_cart", fields: [cartId], references: [id])
+  cartId                 String                              @map("cart")
+  product                Product                             @relation("CartItem_product", fields: [productId], references: [id])
+  productId              String                              @map("product")
   quantity               Int                                 @default(1)
   subtotal               Float?                              @default(0)
+  subtotalCents          Int                                 @default(0)
   substitutionPreference CartItemSubstitutionPreferenceType? @default(allow)
   addedAt                DateTime                            @default(now())
   createdAt              DateTime                            @default(now())
   updatedAt              DateTime                            @default(now()) @updatedAt
 
+  @@unique([cartId, productId])
   @@index([cartId])
   @@index([productId])
 }
 
 model Coupon {
-  id                String                 @id @default(cuid())
-  code              String                 @unique @default("")
-  discountType      CouponDiscountTypeType @default(percentage)
-  discountValue     Float?
-  minPurchase       Float?                 @default(0)
-  maxUses           Int?                   @default(0)
-  currentUses       Int?                   @default(0)
-  validFrom         DateTime?
-  validTo           DateTime?
-  productCategories Json?
-  excludedProducts  Json?
-  isActive          Boolean                @default(true)
-  userCoupons       UserCoupon[]           @relation("UserCoupon_coupon")
-  createdAt         DateTime               @default(now())
-  updatedAt         DateTime               @default(now()) @updatedAt
+  id                 String                 @id @default(cuid())
+  code               String                 @unique @default("")
+  discountType       CouponDiscountTypeType @default(percentage)
+  discountValue      Float?
+  discountValueCents Int                    @default(0)
+  minPurchase        Float?                 @default(0)
+  minPurchaseCents   Int                    @default(0)
+  maxUses            Int?                   @default(0)
+  currentUses        Int?                   @default(0)
+  validFrom          DateTime?
+  validTo            DateTime?
+  productCategories  Json?
+  excludedProducts   Json?
+  isActive           Boolean                @default(true)
+  store              Store                  @relation("Coupon_store", fields: [storeId], references: [id])
+  storeId            String                 @map("store")
+  userCoupons        UserCoupon[]           @relation("UserCoupon_coupon")
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @default(now()) @updatedAt
+
+  @@index([storeId])
 }
 
 model Department {
@@ -108,12 +157,15 @@ model Department {
   isActive         Boolean                        @default(true)
   temperatureZone  DepartmentTemperatureZoneType? @default(ambient)
   requiredLicenses Json                           @default("[]")
+  store            Store                          @relation("Department_store", fields: [storeId], references: [id])
+  storeId          String                         @map("store")
   manager          User?                          @relation("Department_manager", fields: [managerId], references: [id])
   managerId        String?                        @map("manager")
   products         Product[]                      @relation("Product_departmentRef")
   createdAt        DateTime                       @default(now())
   updatedAt        DateTime                       @default(now()) @updatedAt
 
+  @@index([storeId])
   @@index([managerId])
 }
 
@@ -125,17 +177,23 @@ model DeliveryRoute {
   status      DeliveryRouteStatusType?    @default(planning)
   startedAt   DateTime?
   completedAt DateTime?
+  store       Store                       @relation("DeliveryRoute_store", fields: [storeId], references: [id])
+  storeId     String                      @map("store")
   driver      User?                       @relation("DeliveryRoute_driver", fields: [driverId], references: [id])
   driverId    String?                     @map("driver")
   orders      Order[]                     @relation("Order_deliveryRoute")
   createdAt   DateTime                    @default(now())
   updatedAt   DateTime                    @default(now()) @updatedAt
 
+  @@index([storeId])
   @@index([driverId])
 }
 
 model DeliverySlot {
   id              String   @id @default(cuid())
+  store           Store    @relation("DeliverySlot_store", fields: [storeId], references: [id])
+  storeId         String   @map("store")
+  orders          Order[]  @relation("Order_deliverySlot")
   date            DateTime
   startTime       String   @default("")
   endTime         String   @default("")
@@ -146,45 +204,111 @@ model DeliverySlot {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @default(now()) @updatedAt
 
+  @@index([storeId])
   @@index([date])
 }
 
 model FavoriteProduct {
-  id          String   @id @default(cuid())
-  user        User?    @relation("FavoriteProduct_user", fields: [userId], references: [id])
-  userId      String?  @map("user")
-  product     String   @default("")
-  favoritedAt DateTime @default(now())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @default(now()) @updatedAt
+  id           String   @id @default(cuid())
+  user         User     @relation("FavoriteProduct_user", fields: [userId], references: [id])
+  userId       String   @map("user")
+  product      String   @default("")
+  productRef   Product? @relation("FavoriteProduct_productRef", fields: [productRefId], references: [id])
+  productRefId String?  @map("productRef")
+  favoritedAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
 
   @@index([userId])
   @@index([product])
+  @@index([productRefId])
+}
+
+model GroceryOutboxEvent {
+  id            String    @id @default(cuid())
+  store         Store     @relation("GroceryOutboxEvent_store", fields: [storeId], references: [id])
+  storeId       String    @map("store")
+  eventKey      String    @unique @default("")
+  eventType     String    @default("")
+  aggregateType String    @default("")
+  aggregateId   String    @default("")
+  schemaVersion Int       @default(1)
+  payload       Json?
+  payloadHash   String    @default("")
+  occurredAt    DateTime
+  status        String    @default("pending")
+  attempts      Int?      @default(0)
+  claimToken    String    @default("")
+  claimedAt     DateTime?
+  deliveredAt   DateTime?
+  lastError     String    @default("")
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@index([storeId])
+  @@index([aggregateId])
+  @@index([occurredAt])
+  @@index([status])
 }
 
 model InventoryLot {
-  id                              String          @id @default(cuid())
-  lotNumber                       String          @unique @default("")
-  expirationDate                  DateTime
-  receivedDate                    DateTime        @default(now())
-  quantity                        Int
-  quantityRemaining               Int
-  costPerUnit                     Float
-  location                        String          @default("")
-  product                         Product?        @relation("InventoryLot_product", fields: [productId], references: [id])
-  productId                       String?         @map("product")
-  supplier                        Supplier?       @relation("InventoryLot_supplier", fields: [supplierId], references: [id])
-  supplierId                      String?         @map("supplier")
-  createdAt                       DateTime        @default(now())
-  updatedAt                       DateTime        @default(now()) @updatedAt
-  from_OrderLineItem_inventoryLot OrderLineItem[] @relation("OrderLineItem_inventoryLot")
+  id                                    String                         @id @default(cuid())
+  lotNumber                             String                         @unique @default("")
+  expirationDate                        DateTime
+  receivedDate                          DateTime                       @default(now())
+  quantity                              Int
+  quantityRemaining                     Int
+  costPerUnit                           Float
+  costPerUnitCents                      Int                            @default(0)
+  location                              String                         @default("")
+  store                                 Store                          @relation("InventoryLot_store", fields: [storeId], references: [id])
+  storeId                               String                         @map("store")
+  product                               Product?                       @relation("InventoryLot_product", fields: [productId], references: [id])
+  productId                             String?                        @map("product")
+  supplier                              Supplier?                      @relation("InventoryLot_supplier", fields: [supplierId], references: [id])
+  supplierId                            String?                        @map("supplier")
+  orderLineAllocations                  OrderLineInventoryAllocation[] @relation("OrderLineInventoryAllocation_inventoryLot")
+  createdAt                             DateTime                       @default(now())
+  updatedAt                             DateTime                       @default(now()) @updatedAt
+  from_InventoryAdjustment_inventoryLot InventoryAdjustment[]          @relation("InventoryAdjustment_inventoryLot")
+  from_OrderLineItem_inventoryLot       OrderLineItem[]                @relation("OrderLineItem_inventoryLot")
 
+  @@index([storeId])
   @@index([productId])
   @@index([supplierId])
 }
 
+model InventoryAdjustment {
+  id                 String                        @id @default(cuid())
+  idempotencyKey     String                        @unique @default("")
+  reason             InventoryAdjustmentReasonType
+  quantityBefore     Int
+  quantityAfter      Int
+  quantityDelta      Int
+  productStockBefore Int
+  productStockAfter  Int
+  note               String                        @default("")
+  store              Store                         @relation("InventoryAdjustment_store", fields: [storeId], references: [id])
+  storeId            String                        @map("store")
+  product            Product?                      @relation("InventoryAdjustment_product", fields: [productId], references: [id])
+  productId          String?                       @map("product")
+  inventoryLot       InventoryLot?                 @relation("InventoryAdjustment_inventoryLot", fields: [inventoryLotId], references: [id])
+  inventoryLotId     String?                       @map("inventoryLot")
+  adjustedBy         User?                         @relation("InventoryAdjustment_adjustedBy", fields: [adjustedById], references: [id])
+  adjustedById       String?                       @map("adjustedBy")
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @default(now()) @updatedAt
+
+  @@index([storeId])
+  @@index([productId])
+  @@index([inventoryLotId])
+  @@index([adjustedById])
+}
+
 model LoyaltyProgram {
   id                String   @id @default(cuid())
+  store             Store    @relation("LoyaltyProgram_store", fields: [storeId], references: [id])
+  storeId           String   @map("store")
   name              String   @default("")
   pointsPerDollar   Float    @default(1)
   tierConfiguration Json?
@@ -194,6 +318,8 @@ model LoyaltyProgram {
   isActive          Boolean  @default(true)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @default(now()) @updatedAt
+
+  @@index([storeId])
 }
 
 model LoyaltyTransaction {
@@ -217,8 +343,8 @@ model LoyaltyTransaction {
 
 model NotificationPreference {
   id             String   @id @default(cuid())
-  user           User?    @relation("NotificationPreference_user", fields: [userId], references: [id])
-  userId         String?  @map("user")
+  user           User     @relation("NotificationPreference_user", fields: [userId], references: [id])
+  userId         String   @map("user")
   orderUpdates   Boolean  @default(true)
   deliveryAlerts Boolean  @default(true)
   priceDrops     Boolean  @default(false)
@@ -233,10 +359,16 @@ model NotificationPreference {
 
 model Order {
   id                            String                           @id @default(cuid())
-  displayId                     Int
+  displayId                     Int                              @unique
   email                         String                           @default("")
   status                        OrderStatusType                  @default(pending)
   taxRate                       Float?
+  currencyCode                  String                           @default("USD")
+  subtotalCents                 Int                              @default(0)
+  taxCents                      Int                              @default(0)
+  deliveryFeeCents              Int                              @default(0)
+  discountCents                 Int                              @default(0)
+  totalCents                    Int                              @default(0)
   canceledAt                    DateTime?
   metadata                      Json?
   noNotification                Boolean                          @default(false)
@@ -244,152 +376,268 @@ model Order {
   deliveryTimeWindow            OrderDeliveryTimeWindowType
   deliveryInstructions          String                           @default("")
   substitutionPreference        OrderSubstitutionPreferenceType? @default(best_match)
+  store                         Store                            @relation("Order_store", fields: [storeId], references: [id])
+  storeId                       String                           @map("store")
   user                          User?                            @relation("Order_user", fields: [userId], references: [id])
   userId                        String?                          @map("user")
   shippingAddress               Address?                         @relation("Order_shippingAddress", fields: [shippingAddressId], references: [id])
   shippingAddressId             String?                          @map("shippingAddress")
   billingAddress                Address?                         @relation("Order_billingAddress", fields: [billingAddressId], references: [id])
   billingAddressId              String?                          @map("billingAddress")
+  checkoutAttempts              CheckoutAttempt[]                @relation("CheckoutAttempt_order")
+  payments                      Payment[]                        @relation("Payment_order")
   lineItems                     OrderLineItem[]                  @relation("OrderLineItem_order")
+  deliverySlot                  DeliverySlot?                    @relation("Order_deliverySlot", fields: [deliverySlotId], references: [id])
+  deliverySlotId                String?                          @map("deliverySlot")
+  pickupSlot                    PickupSlot?                      @relation("Order_pickupSlot", fields: [pickupSlotId], references: [id])
+  pickupSlotId                  String?                          @map("pickupSlot")
   deliveryRoute                 DeliveryRoute?                   @relation("Order_deliveryRoute", fields: [deliveryRouteId], references: [id])
   deliveryRouteId               String?                          @map("deliveryRoute")
   createdAt                     DateTime                         @default(now())
   updatedAt                     DateTime                         @default(now()) @updatedAt
   from_LoyaltyTransaction_order LoyaltyTransaction[]             @relation("LoyaltyTransaction_order")
-  from_Payment_order            Payment[]                        @relation("Payment_order")
 
+  @@index([storeId])
   @@index([userId])
   @@index([shippingAddressId])
   @@index([billingAddressId])
+  @@index([deliverySlotId])
+  @@index([pickupSlotId])
   @@index([deliveryRouteId])
 }
 
 model OrderItemSubstitution {
-  id                 String    @id @default(cuid())
-  orderItem          String    @default("")
-  originalProduct    String    @default("")
-  substitutedProduct String    @default("")
-  reason             String    @default("")
-  customerApproved   Boolean   @default(false)
+  id                 String         @id @default(cuid())
+  idempotencyKey     String         @unique @default("")
+  orderItem          String         @default("")
+  lineItem           OrderLineItem? @relation("OrderItemSubstitution_lineItem", fields: [lineItemId], references: [id])
+  lineItemId         String?        @map("lineItem")
+  recordedBy         User?          @relation("OrderItemSubstitution_recordedBy", fields: [recordedById], references: [id])
+  recordedById       String?        @map("recordedBy")
+  originalProduct    String         @default("")
+  substitutedProduct String         @default("")
+  reason             String         @default("")
+  customerApproved   Boolean        @default(false)
   approvedAt         DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @default(now()) @updatedAt
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @default(now()) @updatedAt
+
+  @@index([lineItemId])
+  @@index([recordedById])
 }
 
 model OrderLineItem {
-  id             String        @id @default(cuid())
-  title          String        @default("")
-  sku            String        @default("")
-  quantity       Int
-  unitPrice      Float
-  thumbnail      String        @default("")
-  metadata       Json?
-  order          Order?        @relation("OrderLineItem_order", fields: [orderId], references: [id])
-  orderId        String?       @map("order")
-  product        Product?      @relation("OrderLineItem_product", fields: [productId], references: [id])
-  productId      String?       @map("product")
-  inventoryLot   InventoryLot? @relation("OrderLineItem_inventoryLot", fields: [inventoryLotId], references: [id])
-  inventoryLotId String?       @map("inventoryLot")
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @default(now()) @updatedAt
+  id                   String                         @id @default(cuid())
+  title                String                         @default("")
+  sku                  String                         @default("")
+  quantity             Int
+  unitPrice            Float
+  unitPriceCents       Int                            @default(0)
+  thumbnail            String                         @default("")
+  metadata             Json?
+  order                Order                          @relation("OrderLineItem_order", fields: [orderId], references: [id])
+  orderId              String                         @map("order")
+  product              Product?                       @relation("OrderLineItem_product", fields: [productId], references: [id])
+  productId            String?                        @map("product")
+  inventoryLot         InventoryLot?                  @relation("OrderLineItem_inventoryLot", fields: [inventoryLotId], references: [id])
+  inventoryLotId       String?                        @map("inventoryLot")
+  inventoryAllocations OrderLineInventoryAllocation[] @relation("OrderLineInventoryAllocation_lineItem")
+  substitutions        OrderItemSubstitution[]        @relation("OrderItemSubstitution_lineItem")
+  createdAt            DateTime                       @default(now())
+  updatedAt            DateTime                       @default(now()) @updatedAt
 
   @@index([orderId])
   @@index([productId])
   @@index([inventoryLotId])
 }
 
+model OrderLineInventoryAllocation {
+  id             String        @id @default(cuid())
+  lineItem       OrderLineItem @relation("OrderLineInventoryAllocation_lineItem", fields: [lineItemId], references: [id])
+  lineItemId     String        @map("lineItem")
+  inventoryLot   InventoryLot  @relation("OrderLineInventoryAllocation_inventoryLot", fields: [inventoryLotId], references: [id])
+  inventoryLotId String        @map("inventoryLot")
+  store          Store         @relation("OrderLineInventoryAllocation_store", fields: [storeId], references: [id])
+  storeId        String        @map("store")
+  quantity       Int
+  provenance     Json?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @default(now()) @updatedAt
+
+  @@index([lineItemId])
+  @@index([inventoryLotId])
+  @@index([storeId])
+}
+
 model ParkingSpot {
   id           String   @id @default(cuid())
+  store        Store    @relation("ParkingSpot_store", fields: [storeId], references: [id])
+  storeId      String   @map("store")
   spotNumber   String   @unique @default("")
   description  String   @default("")
   isAccessible Boolean  @default(false)
   isAvailable  Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @default(now()) @updatedAt
+
+  @@index([storeId])
 }
 
 model Payment {
-  id                String           @id @default(cuid())
-  amount            Decimal          @postgresql.Decimal(10, 2)
-  status            String           @default("pending")
-  paymentMethod     String?          @default("credit_card")
-  providerPaymentId String           @unique @default("")
-  providerChargeId  String           @default("")
-  providerRefundId  String           @default("")
-  providerData      Json?            @default("{}")
-  cardLast4         String           @default("")
-  cardBrand         String           @default("")
-  deliveryTipAmount Decimal?         @default("0.00") @postgresql.Decimal(10, 2)
+  id                String                @id @default(cuid())
+  amount            Decimal               @postgresql.Decimal(10, 2)
+  amountCents       Int                   @default(0)
+  status            String                @default("pending")
+  paymentMethod     String?               @default("credit_card")
+  providerPaymentId String                @unique @default("")
+  providerChargeId  String                @default("")
+  providerRefundId  String                @default("")
+  providerData      Json?                 @default("{}")
+  cardLast4         String                @default("")
+  cardBrand         String                @default("")
+  deliveryTipAmount Decimal?              @default("0.00") @postgresql.Decimal(10, 2)
+  deliveryTipCents  Int                   @default(0)
   processedAt       DateTime?
-  errorMessage      String           @default("")
-  notes             String           @default("")
-  order             Order?           @relation("Payment_order", fields: [orderId], references: [id])
-  orderId           String?          @map("order")
-  paymentProvider   PaymentProvider? @relation("Payment_paymentProvider", fields: [paymentProviderId], references: [id])
-  paymentProviderId String?          @map("paymentProvider")
-  processedBy       User?            @relation("Payment_processedBy", fields: [processedById], references: [id])
-  processedById     String?          @map("processedBy")
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @default(now()) @updatedAt
+  errorMessage      String                @default("")
+  notes             String                @default("")
+  store             Store                 @relation("Payment_store", fields: [storeId], references: [id])
+  storeId           String                @map("store")
+  order             Order                 @relation("Payment_order", fields: [orderId], references: [id])
+  orderId           String                @map("order")
+  paymentProvider   PaymentProvider?      @relation("Payment_paymentProvider", fields: [paymentProviderId], references: [id])
+  paymentProviderId String?               @map("paymentProvider")
+  refunds           PaymentRefund[]       @relation("PaymentRefund_payment")
+  webhookEvents     PaymentWebhookEvent[] @relation("PaymentWebhookEvent_payment")
+  processedBy       User?                 @relation("Payment_processedBy", fields: [processedById], references: [id])
+  processedById     String?               @map("processedBy")
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @default(now()) @updatedAt
 
+  @@index([storeId])
   @@index([orderId])
   @@index([paymentProviderId])
   @@index([processedById])
 }
 
 model PaymentProvider {
-  id                          String           @id @default(cuid())
-  name                        String           @default("")
-  code                        String           @unique @default("")
-  isInstalled                 Boolean          @default(true)
-  credentials                 Json?            @default("{}")
-  metadata                    Json?            @default("{}")
-  createPaymentFunction       String           @default("manual")
-  capturePaymentFunction      String           @default("manual")
-  refundPaymentFunction       String           @default("manual")
-  getPaymentStatusFunction    String           @default("manual")
-  generatePaymentLinkFunction String           @default("manual")
-  handleWebhookFunction       String           @default("manual")
-  payments                    Payment[]        @relation("Payment_paymentProvider")
-  sessions                    PaymentSession[] @relation("PaymentSession_paymentProvider")
-  createdAt                   DateTime         @default(now())
-  updatedAt                   DateTime         @default(now()) @updatedAt
+  id          String           @id @default(cuid())
+  name        String           @default("")
+  code        String           @unique @default("")
+  isInstalled Boolean          @default(true)
+  metadata    Json?            @default("{}")
+  payments    Payment[]        @relation("Payment_paymentProvider")
+  sessions    PaymentSession[] @relation("PaymentSession_paymentProvider")
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @default(now()) @updatedAt
+}
+
+model PaymentRefund {
+  id                           String                  @id @default(cuid())
+  idempotencyKey               String                  @unique @default("")
+  amount                       Decimal                 @postgresql.Decimal(10, 2)
+  amountCents                  Int
+  status                       PaymentRefundStatusType @default(processing)
+  providerCode                 String                  @default("")
+  providerPaymentId            String                  @default("")
+  providerRefundId             String                  @default("")
+  providerStatus               String                  @default("")
+  providerData                 Json?                   @default("{}")
+  providerEventId              String?
+  providerEventCreatedAt       DateTime?
+  providerEventVersion         Int                     @default(0)
+  failureMessage               String                  @default("")
+  reconciliationAttempts       Int                     @default(0)
+  reconciliationOwner          String?
+  reconciliationToken          String?
+  reconciliationLeaseExpiresAt DateTime?
+  reconciliationNextAttemptAt  DateTime?
+  reconciliationDeadLetterAt   DateTime?
+  reconciliationLastError      String?
+  requestedAt                  DateTime
+  processedAt                  DateTime?
+  payment                      Payment                 @relation("PaymentRefund_payment", fields: [paymentId], references: [id])
+  paymentId                    String                  @map("payment")
+  requestedBy                  User                    @relation("PaymentRefund_requestedBy", fields: [requestedById], references: [id])
+  requestedById                String                  @map("requestedBy")
+  createdAt                    DateTime                @default(now())
+  updatedAt                    DateTime                @default(now()) @updatedAt
+
+  @@index([paymentId])
+  @@index([requestedById])
 }
 
 model PaymentSession {
-  id                String           @id @default(cuid())
-  isSelected        Boolean          @default(false)
-  isInitiated       Boolean          @default(false)
-  amount            Decimal          @default("0.00") @postgresql.Decimal(10, 2)
-  data              Json?            @default("{}")
-  idempotencyKey    String           @default("")
-  cart              Cart?            @relation("PaymentSession_cart", fields: [cartId], references: [id])
-  cartId            String?          @map("cart")
-  paymentProvider   PaymentProvider? @relation("PaymentSession_paymentProvider", fields: [paymentProviderId], references: [id])
-  paymentProviderId String?          @map("paymentProvider")
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @default(now()) @updatedAt
+  id                     String            @id @default(cuid())
+  isSelected             Boolean           @default(false)
+  isInitiated            Boolean           @default(false)
+  amount                 Decimal           @default("0.00") @postgresql.Decimal(10, 2)
+  amountCents            Int               @default(0)
+  reservedOrderDisplayId Int?              @unique
+  data                   Json?             @default("{}")
+  idempotencyKey         String            @unique @default("")
+  cart                   Cart?             @relation("PaymentSession_cart", fields: [cartId], references: [id])
+  cartId                 String?           @map("cart")
+  checkoutAttempts       CheckoutAttempt[] @relation("CheckoutAttempt_paymentSession")
+  paymentProvider        PaymentProvider?  @relation("PaymentSession_paymentProvider", fields: [paymentProviderId], references: [id])
+  paymentProviderId      String?           @map("paymentProvider")
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @default(now()) @updatedAt
 
   @@index([cartId])
   @@index([paymentProviderId])
 }
 
+model PaymentWebhookEvent {
+  id                String                        @id @default(cuid())
+  replayKey         String                        @unique @default("")
+  providerCode      String                        @default("")
+  providerEventId   String                        @default("")
+  providerCreatedAt DateTime?
+  providerVersion   Int                           @default(0)
+  eventType         String                        @default("")
+  payloadHash       String                        @default("")
+  claimToken        String                        @default("")
+  status            PaymentWebhookEventStatusType @default(processing)
+  paymentRecordId   String                        @default("")
+  store             Store                         @relation("PaymentWebhookEvent_store", fields: [storeId], references: [id])
+  storeId           String                        @map("store")
+  payment           Payment?                      @relation("PaymentWebhookEvent_payment", fields: [paymentId], references: [id])
+  paymentId         String?                       @map("payment")
+  processedAt       DateTime?
+  createdAt         DateTime                      @default(now())
+  updatedAt         DateTime                      @default(now()) @updatedAt
+
+  @@index([providerCode])
+  @@index([providerEventId])
+  @@index([storeId])
+  @@index([paymentId])
+}
+
 model PickupSlot {
   id            String   @id @default(cuid())
+  store         Store    @relation("PickupSlot_store", fields: [storeId], references: [id])
+  storeId       String   @map("store")
+  orders        Order[]  @relation("Order_pickupSlot")
   date          DateTime
   startTime     String   @default("")
   endTime       String   @default("")
   maxOrders     Int      @default(10)
   currentOrders Int?     @default(0)
+  isActive      Boolean  @default(true)
   isAvailable   Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
+
+  @@index([storeId])
 }
 
 model POItem {
   id               String         @id @default(cuid())
+  productTitle     String         @default("")
+  productSku       String         @default("")
   quantity         Int
   unitCost         Float
+  unitCostCents    Int            @default(0)
   quantityReceived Int?           @default(0)
   purchaseOrder    PurchaseOrder? @relation("POItem_purchaseOrder", fields: [purchaseOrderId], references: [id])
   purchaseOrderId  String?        @map("purchaseOrder")
@@ -404,9 +652,11 @@ model POItem {
 
 model PriceAlert {
   id           String    @id @default(cuid())
-  user         User?     @relation("PriceAlert_user", fields: [userId], references: [id])
-  userId       String?   @map("user")
+  user         User      @relation("PriceAlert_user", fields: [userId], references: [id])
+  userId       String    @map("user")
   product      String    @default("")
+  productRef   Product?  @relation("PriceAlert_productRef", fields: [productRefId], references: [id])
+  productRefId String?   @map("productRef")
   targetPrice  Decimal   @postgresql.Decimal(12, 2)
   currentPrice Decimal?  @postgresql.Decimal(12, 2)
   isTriggered  Boolean   @default(false)
@@ -416,42 +666,55 @@ model PriceAlert {
 
   @@index([userId])
   @@index([product])
+  @@index([productRefId])
 }
 
 model Product {
-  id                         String                    @id @default(cuid())
-  title                      String                    @default("")
-  description                Json                      @default("[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\"}]}]")
-  handle                     String                    @unique @default("")
-  sku                        String                    @default("")
-  status                     ProductStatusType         @default(draft)
-  metadata                   Json?
-  price                      Float?
-  compareAtPrice             Float?
-  costPrice                  Float?
-  inStock                    Boolean                   @default(true)
-  stockQuantity              Int?                      @default(0)
-  lowStockThreshold          Int?                      @default(10)
-  imageUrl                   String                    @default("")
-  thumbnailUrl               String                    @default("")
-  department                 ProductDepartmentType?
-  isPerishable               Boolean                   @default(false)
-  shelfLife                  Int?
-  pricingMethod              ProductPricingMethodType? @default(unit)
-  unitOfMeasure              ProductUnitOfMeasureType? @default(each)
-  organicCertified           Boolean                   @default(false)
-  allergens                  Json                      @default("[]")
-  supplier                   Supplier?                 @relation("Product_supplier", fields: [supplierId], references: [id])
-  supplierId                 String?                   @map("supplier")
-  departmentRef              Department?               @relation("Product_departmentRef", fields: [departmentRefId], references: [id])
-  departmentRefId            String?                   @map("departmentRef")
-  inventoryLots              InventoryLot[]            @relation("InventoryLot_product")
-  createdAt                  DateTime                  @default(now())
-  updatedAt                  DateTime                  @default(now()) @updatedAt
-  from_CartItem_product      CartItem[]                @relation("CartItem_product")
-  from_OrderLineItem_product OrderLineItem[]           @relation("OrderLineItem_product")
-  from_POItem_product        POItem[]                  @relation("POItem_product")
+  id                               String                    @id @default(cuid())
+  title                            String                    @default("")
+  description                      Json                      @default("[{\"type\":\"paragraph\",\"children\":[{\"text\":\"\"}]}]")
+  handle                           String                    @unique @default("")
+  sku                              String                    @default("")
+  status                           ProductStatusType         @default(draft)
+  metadata                         Json?
+  price                            Float?
+  priceCents                       Int                       @default(0)
+  compareAtPrice                   Float?
+  costPrice                        Float?
+  costPriceCents                   Int                       @default(0)
+  inStock                          Boolean                   @default(false)
+  stockQuantity                    Int?                      @default(0)
+  lowStockThreshold                Int?                      @default(10)
+  imageUrl                         String                    @default("")
+  thumbnailUrl                     String                    @default("")
+  department                       ProductDepartmentType?
+  isPerishable                     Boolean                   @default(false)
+  shelfLife                        Int?
+  pricingMethod                    ProductPricingMethodType? @default(unit)
+  unitOfMeasure                    ProductUnitOfMeasureType? @default(each)
+  organicCertified                 Boolean                   @default(false)
+  allergens                        Json                      @default("[]")
+  store                            Store                     @relation("Product_store", fields: [storeId], references: [id])
+  storeId                          String                    @map("store")
+  supplier                         Supplier?                 @relation("Product_supplier", fields: [supplierId], references: [id])
+  supplierId                       String?                   @map("supplier")
+  departmentRef                    Department?               @relation("Product_departmentRef", fields: [departmentRefId], references: [id])
+  departmentRefId                  String?                   @map("departmentRef")
+  inventoryLots                    InventoryLot[]            @relation("InventoryLot_product")
+  favoriteProducts                 FavoriteProduct[]         @relation("FavoriteProduct_productRef")
+  backInStockAlerts                BackInStockAlert[]        @relation("BackInStockAlert_productRef")
+  priceAlerts                      PriceAlert[]              @relation("PriceAlert_productRef")
+  shoppingListItems                ShoppingListItem[]        @relation("ShoppingListItem_productRef")
+  subscriptions                    Subscription[]            @relation("Subscription_productRef")
+  recipeIngredients                RecipeIngredient[]        @relation("RecipeIngredient_productRef")
+  createdAt                        DateTime                  @default(now())
+  updatedAt                        DateTime                  @default(now()) @updatedAt
+  from_CartItem_product            CartItem[]                @relation("CartItem_product")
+  from_InventoryAdjustment_product InventoryAdjustment[]     @relation("InventoryAdjustment_product")
+  from_OrderLineItem_product       OrderLineItem[]           @relation("OrderLineItem_product")
+  from_POItem_product              POItem[]                  @relation("POItem_product")
 
+  @@index([storeId])
   @@index([supplierId])
   @@index([departmentRefId])
 }
@@ -459,18 +722,25 @@ model Product {
 model PurchaseOrder {
   id                   String                   @id @default(cuid())
   poNumber             String                   @unique @default("")
+  idempotencyKey       String?                  @unique
+  supplierName         String                   @default("")
+  supplierEmail        String                   @default("")
   orderDate            DateTime                 @default(now())
   expectedDeliveryDate DateTime?
   status               PurchaseOrderStatusType? @default(draft)
   totalAmount          Float?
+  totalAmountCents     Int                      @default(0)
   receivedAt           DateTime?
   notes                String                   @default("")
+  store                Store                    @relation("PurchaseOrder_store", fields: [storeId], references: [id])
+  storeId              String                   @map("store")
   supplier             Supplier?                @relation("PurchaseOrder_supplier", fields: [supplierId], references: [id])
   supplierId           String?                  @map("supplier")
   items                POItem[]                 @relation("POItem_purchaseOrder")
   createdAt            DateTime                 @default(now())
   updatedAt            DateTime                 @default(now()) @updatedAt
 
+  @@index([storeId])
   @@index([supplierId])
 }
 
@@ -491,18 +761,30 @@ model Recipe {
 }
 
 model RecipeIngredient {
-  id         String   @id @default(cuid())
-  recipe     Recipe?  @relation("RecipeIngredient_recipe", fields: [recipeId], references: [id])
-  recipeId   String?  @map("recipe")
-  product    String   @default("")
-  quantity   Float
-  unit       String   @default("")
-  notes      String   @default("")
-  isOptional Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @default(now()) @updatedAt
+  id           String   @id @default(cuid())
+  recipe       Recipe?  @relation("RecipeIngredient_recipe", fields: [recipeId], references: [id])
+  recipeId     String?  @map("recipe")
+  product      String   @default("")
+  productRef   Product? @relation("RecipeIngredient_productRef", fields: [productRefId], references: [id])
+  productRefId String?  @map("productRef")
+  quantity     Float
+  unit         String   @default("")
+  notes        String   @default("")
+  isOptional   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
 
   @@index([recipeId])
+  @@index([productRefId])
+}
+
+model RateLimitBucket {
+  id              String   @id @default(cuid())
+  key             String   @unique @default("")
+  windowStartedAt DateTime
+  requestCount    Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
 }
 
 model Role {
@@ -517,15 +799,19 @@ model Role {
   canManageUsers      Boolean  @default(false)
   canManageOnboarding Boolean  @default(false)
   canAccessDashboard  Boolean  @default(false)
+  store               Store    @relation("Role_store", fields: [storeId], references: [id])
+  storeId             String   @map("store")
   assignedTo          User[]   @relation("User_role")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @default(now()) @updatedAt
+
+  @@index([storeId])
 }
 
 model ShoppingList {
   id        String             @id @default(cuid())
-  user      User?              @relation("ShoppingList_user", fields: [userId], references: [id])
-  userId    String?            @map("user")
+  user      User               @relation("ShoppingList_user", fields: [userId], references: [id])
+  userId    String             @map("user")
   name      String             @default("")
   isDefault Boolean            @default(false)
   items     ShoppingListItem[] @relation("ShoppingListItem_list")
@@ -536,30 +822,36 @@ model ShoppingList {
 }
 
 model ShoppingListItem {
-  id        String        @id @default(cuid())
-  list      ShoppingList? @relation("ShoppingListItem_list", fields: [listId], references: [id])
-  listId    String?       @map("list")
-  product   String        @default("")
-  quantity  Int           @default(1)
-  unit      String        @default("")
-  checked   Boolean       @default(false)
-  notes     String        @default("")
-  addedAt   DateTime      @default(now())
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @default(now()) @updatedAt
+  id           String       @id @default(cuid())
+  list         ShoppingList @relation("ShoppingListItem_list", fields: [listId], references: [id])
+  listId       String       @map("list")
+  product      String       @default("")
+  productRef   Product      @relation("ShoppingListItem_productRef", fields: [productRefId], references: [id])
+  productRefId String       @map("productRef")
+  quantity     Int          @default(1)
+  unit         String       @default("")
+  checked      Boolean      @default(false)
+  notes        String       @default("")
+  addedAt      DateTime     @default(now())
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @default(now()) @updatedAt
 
   @@index([listId])
+  @@index([productRefId])
 }
 
 model Subscription {
   id               String                    @id @default(cuid())
-  user             User?                     @relation("Subscription_user", fields: [userId], references: [id])
-  userId           String?                   @map("user")
+  user             User                      @relation("Subscription_user", fields: [userId], references: [id])
+  userId           String                    @map("user")
   product          String                    @default("")
+  productRef       Product                   @relation("Subscription_productRef", fields: [productRefId], references: [id])
+  productRefId     String                    @map("productRef")
   quantity         Int                       @default(1)
   frequency        SubscriptionFrequencyType @default(weekly)
   nextDeliveryDate DateTime?
   discount         Float?                    @default(0)
+  discountBps      Int                       @default(0)
   isActive         Boolean                   @default(true)
   pausedUntil      DateTime?
   createdAt        DateTime                  @default(now())
@@ -567,12 +859,13 @@ model Subscription {
 
   @@index([userId])
   @@index([product])
+  @@index([productRefId])
 }
 
 model SubstitutionPreference {
   id                      String   @id @default(cuid())
-  user                    User?    @relation("SubstitutionPreference_user", fields: [userId], references: [id])
-  userId                  String?  @map("user")
+  user                    User     @relation("SubstitutionPreference_user", fields: [userId], references: [id])
+  userId                  String   @map("user")
   allowSubstitutions      Boolean  @default(true)
   preferSimilarBrand      Boolean  @default(true)
   preferSimilarSize       Boolean  @default(true)
@@ -583,60 +876,130 @@ model SubstitutionPreference {
   @@index([userId])
 }
 
+model Store {
+  id                            String                         @id @default(cuid())
+  code                          String                         @unique @default("")
+  name                          String                         @default("")
+  timezone                      String                         @default("America/Los_Angeles")
+  currencyCode                  String                         @default("USD")
+  isActive                      Boolean                        @default(true)
+  users                         User[]                         @relation("User_store")
+  roles                         Role[]                         @relation("Role_store")
+  settings                      StoreSettings[]                @relation("StoreSettings_store")
+  loyaltyPrograms               LoyaltyProgram[]               @relation("LoyaltyProgram_store")
+  carts                         Cart[]                         @relation("Cart_store")
+  orders                        Order[]                        @relation("Order_store")
+  products                      Product[]                      @relation("Product_store")
+  departments                   Department[]                   @relation("Department_store")
+  coupons                       Coupon[]                       @relation("Coupon_store")
+  suppliers                     Supplier[]                     @relation("Supplier_store")
+  inventoryLots                 InventoryLot[]                 @relation("InventoryLot_store")
+  inventoryAdjustments          InventoryAdjustment[]          @relation("InventoryAdjustment_store")
+  checkoutAttempts              CheckoutAttempt[]              @relation("CheckoutAttempt_store")
+  deliverySlots                 DeliverySlot[]                 @relation("DeliverySlot_store")
+  pickupSlots                   PickupSlot[]                   @relation("PickupSlot_store")
+  parkingSpots                  ParkingSpot[]                  @relation("ParkingSpot_store")
+  deliveryRoutes                DeliveryRoute[]                @relation("DeliveryRoute_store")
+  purchaseOrders                PurchaseOrder[]                @relation("PurchaseOrder_store")
+  payments                      Payment[]                      @relation("Payment_store")
+  orderLineInventoryAllocations OrderLineInventoryAllocation[] @relation("OrderLineInventoryAllocation_store")
+  paymentWebhookEvents          PaymentWebhookEvent[]          @relation("PaymentWebhookEvent_store")
+  outboxEvents                  GroceryOutboxEvent[]           @relation("GroceryOutboxEvent_store")
+  createdAt                     DateTime                       @default(now())
+  updatedAt                     DateTime                       @default(now()) @updatedAt
+}
+
+model StoreSettings {
+  id                  Int      @id @default(autoincrement())
+  store               Store    @relation("StoreSettings_store", fields: [storeId], references: [id])
+  storeId             String   @unique @map("store")
+  name                String   @default("Juniper Market")
+  tagline             String   @default("Neighborhood grocery · delivery & curbside pickup")
+  homepageTitle       String   @default("Fresh from the neighborhood")
+  homepageDescription String   @default("Seasonal produce, pantry staples, and household essentials selected for everyday shopping.")
+  contactEmail        String   @default("hello@junipermarket.example")
+  contactPhone        String   @default("(415) 555-0148")
+  address             String   @default("184 Juniper Street, San Francisco, CA 94107")
+  logoUrl             String   @default("/logo.svg")
+  brandHue            Int?
+  currencyCode        String   @default("USD")
+  taxRateBps          Int      @default(875)
+  locale              String   @default("en-US")
+  timezone            String   @default("America/Los_Angeles")
+  countryCode         String   @default("US")
+  hours               Json?    @default("{\"monday\":\"8:00 AM - 8:00 PM\",\"tuesday\":\"8:00 AM - 8:00 PM\",\"wednesday\":\"8:00 AM - 8:00 PM\",\"thursday\":\"8:00 AM - 8:00 PM\",\"friday\":\"8:00 AM - 9:00 PM\",\"saturday\":\"8:00 AM - 9:00 PM\",\"sunday\":\"9:00 AM - 7:00 PM\"}")
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now()) @updatedAt
+
+  @@index([storeId])
+}
+
 model Supplier {
-  id             String                   @id @default(cuid())
-  name           String                   @default("")
-  contactName    String                   @default("")
-  email          String                   @default("")
-  phone          String                   @default("")
-  paymentTerms   SupplierPaymentTermType? @default(net_30)
-  deliveryDays   Json                     @default("[]")
-  minimumOrder   Float?
-  products       Product[]                @relation("Product_supplier")
-  inventoryLots  InventoryLot[]           @relation("InventoryLot_supplier")
-  purchaseOrders PurchaseOrder[]          @relation("PurchaseOrder_supplier")
-  createdAt      DateTime                 @default(now())
-  updatedAt      DateTime                 @default(now()) @updatedAt
+  id                String                   @id @default(cuid())
+  name              String                   @default("")
+  contactName       String                   @default("")
+  email             String                   @default("")
+  phone             String                   @default("")
+  paymentTerms      SupplierPaymentTermType? @default(net_30)
+  deliveryDays      Json                     @default("[]")
+  minimumOrder      Float?
+  minimumOrderCents Int                      @default(0)
+  store             Store                    @relation("Supplier_store", fields: [storeId], references: [id])
+  storeId           String                   @map("store")
+  products          Product[]                @relation("Product_supplier")
+  inventoryLots     InventoryLot[]           @relation("InventoryLot_supplier")
+  purchaseOrders    PurchaseOrder[]          @relation("PurchaseOrder_supplier")
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @default(now()) @updatedAt
+
+  @@index([storeId])
 }
 
 model User {
-  id                               String                    @id @default(cuid())
-  name                             String                    @default("")
-  email                            String                    @unique @default("")
-  password                         String
-  role                             Role?                     @relation("User_role", fields: [roleId], references: [id])
-  roleId                           String?                   @map("role")
-  onboardingStatus                 UserOnboardingStatusType? @default(not_started)
-  createdAt                        DateTime                  @default(now())
-  updatedAt                        DateTime                  @default(now()) @updatedAt
-  passwordResetToken               String?
-  passwordResetIssuedAt            DateTime?
-  passwordResetRedeemedAt          DateTime?
-  from_Address_user                Address[]                 @relation("Address_user")
-  from_BackInStockAlert_user       BackInStockAlert[]        @relation("BackInStockAlert_user")
-  from_Cart_customer               Cart[]                    @relation("Cart_customer")
-  from_Department_manager          Department[]              @relation("Department_manager")
-  from_DeliveryRoute_driver        DeliveryRoute[]           @relation("DeliveryRoute_driver")
-  from_FavoriteProduct_user        FavoriteProduct[]         @relation("FavoriteProduct_user")
-  from_LoyaltyTransaction_user     LoyaltyTransaction[]      @relation("LoyaltyTransaction_user")
-  from_NotificationPreference_user NotificationPreference[]  @relation("NotificationPreference_user")
-  from_Order_user                  Order[]                   @relation("Order_user")
-  from_Payment_processedBy         Payment[]                 @relation("Payment_processedBy")
-  from_PriceAlert_user             PriceAlert[]              @relation("PriceAlert_user")
-  from_ShoppingList_user           ShoppingList[]            @relation("ShoppingList_user")
-  from_Subscription_user           Subscription[]            @relation("Subscription_user")
-  from_SubstitutionPreference_user SubstitutionPreference[]  @relation("SubstitutionPreference_user")
-  from_UserCoupon_user             UserCoupon[]              @relation("UserCoupon_user")
+  id                                    String                    @id @default(cuid())
+  name                                  String                    @default("")
+  email                                 String                    @unique @default("")
+  password                              String
+  store                                 Store                     @relation("User_store", fields: [storeId], references: [id])
+  storeId                               String                    @map("store")
+  role                                  Role?                     @relation("User_role", fields: [roleId], references: [id])
+  roleId                                String?                   @map("role")
+  paymentRefunds                        PaymentRefund[]           @relation("PaymentRefund_requestedBy")
+  onboardingStatus                      UserOnboardingStatusType? @default(not_started)
+  createdAt                             DateTime                  @default(now())
+  updatedAt                             DateTime                  @default(now()) @updatedAt
+  passwordResetToken                    String?
+  passwordResetIssuedAt                 DateTime?
+  passwordResetRedeemedAt               DateTime?
+  from_Address_user                     Address[]                 @relation("Address_user")
+  from_BackInStockAlert_user            BackInStockAlert[]        @relation("BackInStockAlert_user")
+  from_Cart_customer                    Cart[]                    @relation("Cart_customer")
+  from_Department_manager               Department[]              @relation("Department_manager")
+  from_DeliveryRoute_driver             DeliveryRoute[]           @relation("DeliveryRoute_driver")
+  from_FavoriteProduct_user             FavoriteProduct[]         @relation("FavoriteProduct_user")
+  from_InventoryAdjustment_adjustedBy   InventoryAdjustment[]     @relation("InventoryAdjustment_adjustedBy")
+  from_LoyaltyTransaction_user          LoyaltyTransaction[]      @relation("LoyaltyTransaction_user")
+  from_NotificationPreference_user      NotificationPreference[]  @relation("NotificationPreference_user")
+  from_Order_user                       Order[]                   @relation("Order_user")
+  from_OrderItemSubstitution_recordedBy OrderItemSubstitution[]   @relation("OrderItemSubstitution_recordedBy")
+  from_Payment_processedBy              Payment[]                 @relation("Payment_processedBy")
+  from_PriceAlert_user                  PriceAlert[]              @relation("PriceAlert_user")
+  from_ShoppingList_user                ShoppingList[]            @relation("ShoppingList_user")
+  from_Subscription_user                Subscription[]            @relation("Subscription_user")
+  from_SubstitutionPreference_user      SubstitutionPreference[]  @relation("SubstitutionPreference_user")
+  from_UserCoupon_user                  UserCoupon[]              @relation("UserCoupon_user")
 
+  @@index([storeId])
   @@index([roleId])
 }
 
 model UserCoupon {
   id        String    @id @default(cuid())
-  user      User?     @relation("UserCoupon_user", fields: [userId], references: [id])
-  userId    String?   @map("user")
-  coupon    Coupon?   @relation("UserCoupon_coupon", fields: [couponId], references: [id])
-  couponId  String?   @map("coupon")
+  user      User      @relation("UserCoupon_user", fields: [userId], references: [id])
+  userId    String    @map("user")
+  coupon    Coupon    @relation("UserCoupon_coupon", fields: [couponId], references: [id])
+  couponId  String    @map("coupon")
   clippedAt DateTime? @default(now())
   usedAt    DateTime?
   used      Boolean   @default(false)
@@ -645,6 +1008,17 @@ model UserCoupon {
 
   @@index([userId])
   @@index([couponId])
+}
+
+enum CheckoutAttemptStatusType {
+  pending
+  settled_pending_finalize
+  finalizing
+  finalized
+  compensation_required
+  compensation_processing
+  compensated
+  failed
 }
 
 enum CartItemSubstitutionPreferenceType {
@@ -678,6 +1052,13 @@ enum DeliveryRouteStatusType {
   planning
   in_progress
   completed
+}
+
+enum InventoryAdjustmentReasonType {
+  cycle_count
+  damage
+  spoilage
+  correction
 }
 
 enum LoyaltyTransactionTypeType {
@@ -714,6 +1095,20 @@ enum OrderSubstitutionPreferenceType {
   call_me
   best_match
   refund
+}
+
+enum PaymentRefundStatusType {
+  processing
+  succeeded
+  failed
+  canceled
+}
+
+enum PaymentWebhookEventStatusType {
+  processing
+  processed
+  ignored
+  unmatched
 }
 
 enum ProductStatusType {

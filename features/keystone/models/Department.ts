@@ -8,7 +8,9 @@ import {
   integer,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
 
 export const Department = list({
   access: {
@@ -17,6 +19,17 @@ export const Department = list({
       create: permissions.canManageProducts,
       update: permissions.canManageProducts,
       delete: permissions.canManageProducts,
+    },
+    filter: {
+      query: async ({ session, context }) => await permissions.canManageProducts({ session, context }) ? storeScopedFilter({ session }) : publicStoreScopedFilter(),
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
     },
   },
   ui: {
@@ -80,6 +93,7 @@ export const Department = list({
       },
     }),
     requiredLicenses: multiselect({
+      access: { read: permissions.canManageProducts },
       type: "enum",
       options: [
         { label: "Alcohol License", value: "alcohol" },
@@ -92,7 +106,14 @@ export const Department = list({
       },
     }),
     // Relationships
+    store: relationship({
+      ref: 'Store.departments',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageProducts, update: () => false },
+    }),
     manager: relationship({
+      access: { read: permissions.canManageProducts },
       ref: "User",
       label: "Department Manager",
       ui: {

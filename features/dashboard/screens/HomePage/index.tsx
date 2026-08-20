@@ -22,7 +22,6 @@ interface ListCardProps {
 type PlatformItem = {
   title: string
   href: string
-  description?: string
   icon?: React.ComponentType<{ className?: string }>
 }
 
@@ -153,7 +152,6 @@ function EmptyState() {
 }
 
 export async function HomePage() {
-  // Fetch admin meta server-side
   const adminMetaResponse = await getAdminMetaAction()
 
   if (!adminMetaResponse.success) {
@@ -171,10 +169,8 @@ export async function HomePage() {
 
   const adminMeta = adminMetaResponse.data
   const lists = adminMeta?.lists || []
-  // Lists are already enhanced with gqlNames from getAdminMetaAction
   const enhancedLists = lists.filter((list: any) => !list.isHidden)
 
-  // Fetch list counts server-side
   let countData: Record<string, number | null> = {}
   if (enhancedLists.length > 0) {
     const countResponse = await getListCounts(enhancedLists)
@@ -210,13 +206,12 @@ export async function HomePage() {
 
   return (
     <PageContainer title="Dashboard" header={header} breadcrumbs={breadcrumbs}>
-      <div className="w-full max-w-6xl p-4 md:p-6 flex flex-col gap-8">
+      <div className="w-full max-w-4xl p-4 md:p-6 flex flex-col gap-4">
         {hasPlatformPages && (
           <div className="mb-4">
             <h2 className="tracking-wide uppercase font-medium mb-2 text-muted-foreground text-sm">
               Platform Pages
             </h2>
-
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 md:gap-4">
               {standaloneItems.map((item) => (
                 <PlatformLinkCard key={item.href} item={item} />
@@ -233,8 +228,7 @@ export async function HomePage() {
             <h2 className="tracking-wide uppercase font-medium mb-2 text-muted-foreground text-sm">
               Data Models
             </h2>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 md:gap-4">
               {enhancedLists.map((list: any) => (
                 <ListCard
                   key={list.key}

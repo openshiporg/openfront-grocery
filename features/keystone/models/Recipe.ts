@@ -7,18 +7,13 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
-import { isSignedIn, permissions } from "../access";
 
 export const Recipe = list({
-  access: {
-    operation: {
-      query: () => true, // Public can view recipes
-      create: permissions.canManageProducts,
-      update: permissions.canManageProducts,
-      delete: permissions.canManageProducts,
-    },
-  },
+  // Recipes are retained as a dormant migration-compatible model, not part of
+  // the bounded launch surface. Keep global legacy rows inaccessible.
+  access: { operation: { query: () => false, create: () => false, update: () => false, delete: () => false } },
   ui: {
+    isHidden: true,
     labelField: "name",
     listView: {
       initialColumns: ["name", "prepTime", "cookTime", "servings", "difficulty"],

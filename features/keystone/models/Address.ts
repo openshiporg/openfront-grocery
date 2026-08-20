@@ -4,6 +4,7 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { isSignedIn, permissions } from "../access";
+import { ownerScopedFilter, ownerStoreScopedFilter } from '../lib/storeAccess';
 import { trackingFields } from "./trackingFields";
 
 export const Address = list({
@@ -15,33 +16,21 @@ export const Address = list({
       delete: isSignedIn,
     },
     filter: {
-      query: ({ session }) => {
-        if (permissions.canManageUsers({ session })) {
-          return true;
-        }
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
+      query: async ({ session, context }) => {
+        const store = ownerStoreScopedFilter('user')({ session });
+        if (store === false) return false;
+        if (await permissions.canManageUsers({ session, context })) return store;
+        if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
         return false;
       },
-      update: ({ session }) => {
-        if (permissions.canManageUsers({ session })) {
-          return true;
-        }
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        if (permissions.canManageUsers({ session })) {
-          return true;
-        }
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
+      update: ownerScopedFilter('user'),
+      delete: ownerScopedFilter('user'),
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.itemId) return resolvedData;
+      return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     },
   },
   ui: {
@@ -82,6 +71,7 @@ export const Address = list({
     }),
     // Relationships
     user: relationship({
+      access: { create: () => false, update: () => false },
       ref: "User",
       label: "User",
     }),

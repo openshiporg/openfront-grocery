@@ -45,7 +45,14 @@ export default function PickupOperationsClient({ slots, parkingSpots, readyOrder
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [view, setView] = useState('all');
+  const [sort, setSort] = useState('date');
   const [isPending, startTransition] = useTransition();
+  const query = search.trim().toLowerCase();
+  const visibleSlots = [...slots].filter((slot) => !query || `${slot.date} ${slot.startTime} ${slot.endTime}`.toLowerCase().includes(query)).filter((slot) => view === 'all' || (view === 'open' ? slot.isAvailable : view === 'closed' ? !slot.isAvailable : slot.maxOrders > 0 && slot.currentOrders / slot.maxOrders >= 0.8)).sort((a, b) => sort === 'pressure' ? (b.currentOrders / Math.max(1, b.maxOrders)) - (a.currentOrders / Math.max(1, a.maxOrders)) : sort === 'capacity' ? (a.maxOrders - a.currentOrders) - (b.maxOrders - b.currentOrders) : `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`));
+  const visibleReady = readyOrders.filter((order) => !query || `${order.displayId} ${order.email}`.toLowerCase().includes(query));
+  const visibleWaiting = waitingOrders.filter((order) => !query || `${order.displayId} ${order.email} ${order.metadata?.parkingSpotNumber || ''} ${order.metadata?.vehicleDescription || ''}`.toLowerCase().includes(query));
 
   const runAction = (key: string, fn: () => Promise<void>) => {
     setMessage(null);
@@ -70,6 +77,12 @@ export default function PickupOperationsClient({ slots, parkingSpots, readyOrder
         </div>
       )}
 
+      <div className="grid gap-3 rounded-xl border bg-background p-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <label className="grid gap-1 text-xs font-medium text-muted-foreground">Search pickup<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Date, window, order, customer, spot, or vehicle" className="h-10 min-w-0 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" /></label>
+        <label className="grid gap-1 text-xs font-medium text-muted-foreground">Slot state<select value={view} onChange={(event) => setView(event.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="all">All slots</option><option value="open">Open</option><option value="closed">Closed</option><option value="pressure">80%+ booked</option></select></label>
+        <label className="grid gap-1 text-xs font-medium text-muted-foreground">Sort slots<select value={sort} onChange={(event) => setSort(event.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="date">Date and time</option><option value="pressure">Highest pressure</option><option value="capacity">Least capacity left</option></select></label>
+      </div>
+
       <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
         <section className="rounded-2xl border bg-background shadow-sm overflow-hidden">
           <div className="border-b px-4 py-4 md:px-6">
@@ -77,10 +90,10 @@ export default function PickupOperationsClient({ slots, parkingSpots, readyOrder
             <p className="text-sm text-muted-foreground">Watch slot pressure and manually open/close capacity when curbside demand changes.</p>
           </div>
           <div className="divide-y">
-            {slots.length === 0 ? (
-              <div className="px-6 py-10 text-sm text-muted-foreground">No pickup slots configured.</div>
+            {visibleSlots.length === 0 ? (
+              <div className="px-6 py-10 text-sm text-muted-foreground">No pickup slots match the current controls.</div>
             ) : (
-              slots.map((slot) => {
+              visibleSlots.map((slot) => {
                 const pressure = slot.maxOrders > 0 ? Math.min(100, Math.round((slot.currentOrders / slot.maxOrders) * 100)) : 0;
                 return (
                   <div key={slot.id} className="px-4 py-4 md:px-6 space-y-3">
@@ -167,17 +180,17 @@ export default function PickupOperationsClient({ slots, parkingSpots, readyOrder
                     <span className={`rounded-full px-3 py-1 text-xs font-medium ${spot.isAvailable ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200 text-zinc-700'}`}>
                       {spot.isAvailable ? 'Ready' : 'Occupied'}
                     </span>
-                    <button
+                    {spot.isAvailable ? <button
                       type="button"
                       disabled={isPending}
                       onClick={() => runAction(`spot-${spot.id}`, async () => {
-                        await updateParkingSpotState({ spotId: spot.id, isAvailable: !spot.isAvailable });
-                        setMessage(`${spot.isAvailable ? 'Marked' : 'Returned'} spot ${spot.spotNumber} ${spot.isAvailable ? 'occupied' : 'ready'}.`);
+                        await updateParkingSpotState({ spotId: spot.id, isAvailable: false });
+                        setMessage(`Marked spot ${spot.spotNumber} unavailable.`);
                       })}
                       className="rounded-md border px-3 py-1.5 text-sm disabled:opacity-50"
                     >
-                      Toggle
-                    </button>
+                      Mark unavailable
+                    </button> : <span className="text-xs text-muted-foreground">Occupied spots release through handoff</span>}
                   </div>
                 </div>
               ))
@@ -191,11 +204,11 @@ export default function PickupOperationsClient({ slots, parkingSpots, readyOrder
           <h2 className="text-base font-semibold">Ready for pickup</h2>
           <p className="text-sm text-muted-foreground">Packed pickup orders waiting for the customer to arrive.</p>
         </div>
-        {readyOrders.length === 0 ? (
-          <div className="px-6 py-10 text-sm text-muted-foreground">No pickup orders are waiting for customer arrival.</div>
+        {visibleReady.length === 0 ? (
+          <div className="px-6 py-10 text-sm text-muted-foreground">No ready pickup orders match the current search.</div>
         ) : (
           <div className="divide-y">
-            {readyOrders.map((order) => {
+            {visibleReady.map((order) => {
               const metadata = order.metadata || {};
               return (
                 <div key={order.id} className="px-4 py-4 md:px-6 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
@@ -221,11 +234,11 @@ export default function PickupOperationsClient({ slots, parkingSpots, readyOrder
           <h2 className="text-base font-semibold">Curbside arrival queue</h2>
           <p className="text-sm text-muted-foreground">Orders that have checked in and are waiting for handoff.</p>
         </div>
-        {waitingOrders.length === 0 ? (
-          <div className="px-6 py-10 text-sm text-muted-foreground">No customers are waiting in the curbside queue.</div>
+        {visibleWaiting.length === 0 ? (
+          <div className="px-6 py-10 text-sm text-muted-foreground">No curbside arrivals match the current search.</div>
         ) : (
           <div className="divide-y">
-            {waitingOrders.map((order) => {
+            {visibleWaiting.map((order) => {
               const metadata = order.metadata || {};
               return (
                 <div key={order.id} className="px-4 py-4 md:px-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">

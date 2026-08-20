@@ -2,10 +2,9 @@
 
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useState, useTransition } from 'react';
-import { Leaf, Search, SlidersHorizontal } from 'lucide-react';
+import { Leaf, Search } from 'lucide-react';
 
-import { UrbanBadge, UrbanButton, UrbanPanel, UrbanSelect, UrbanTextInput } from '@/features/storefront/modules/urban/UrbanPrimitives';
-
+import { UrbanBadge, UrbanButton, UrbanSelect, UrbanTextInput } from '@/features/storefront/modules/urban/UrbanPrimitives';
 interface CatalogControlsProps {
   departments: Array<{ id: string; name: string; handle: string }>;
   activeDepartment?: string;
@@ -49,90 +48,56 @@ export default function CatalogControls({
   };
 
   return (
-    <UrbanPanel className="mt-6">
-      <div className="border-b border-[#5a4136] bg-[#1a1c1c] px-4 py-3 sm:px-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <UrbanBadge tone="muted"><SlidersHorizontal className="h-3 w-3" /> Inventory filters</UrbanBadge>
-          {isPending ? <span className="font-market-label text-xs font-black uppercase tracking-[0.16em] text-[#ffb693]">Updating signal…</span> : null}
-        </div>
-      </div>
-
-      <div className="p-4 sm:p-5">
-        <div className="grid gap-4 lg:grid-cols-[1fr_190px_190px_auto] lg:items-end">
-          <form onSubmit={submitSearch} className="space-y-2">
-            <label htmlFor="catalog-search" className="font-market-label text-xs font-black uppercase tracking-[0.18em] text-[#e2bfb0]">
-              Search inventory
-            </label>
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-              <div className="relative min-w-0">
-                <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#e2bfb0]" />
-                <UrbanTextInput
-                  id="catalog-search"
-                  value={searchValue}
-                  onChange={(event) => setSearchValue(event.target.value)}
-                  placeholder="Search bananas, oat milk, rice, SKU..."
-                  className="pl-10"
-                />
-              </div>
-              <UrbanButton type="submit" disabled={isPending}>Search</UrbanButton>
+    <section className="border border-[var(--sf-rule)] bg-[var(--sf-paper-2)] p-4 sm:p-5">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_160px_160px_auto] lg:items-end">
+        <form onSubmit={submitSearch} className="space-y-2">
+          <label htmlFor="catalog-search" className="block text-xs font-semibold uppercase tracking-[0.1em] text-[var(--sf-ink-faint)]">Search</label>
+          <div className="flex min-w-0 border border-[var(--sf-rule-strong)]">
+            <div className="relative min-w-0 flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--sf-ink-faint)]" />
+              <UrbanTextInput id="catalog-search" value={searchValue} onChange={(event) => setSearchValue(event.target.value)} placeholder="Bananas, oat milk, olive oil…" className="border-0 pl-9 focus-visible:outline-none" />
             </div>
-          </form>
+            <UrbanButton type="submit" disabled={isPending} className="shrink-0 rounded-none border-0 border-l border-[var(--sf-rule-strong)]">Go</UrbanButton>
+          </div>
+        </form>
 
-          <label className="space-y-2 text-sm">
-            <span className="block font-market-label text-xs font-black uppercase tracking-[0.18em] text-[#e2bfb0]">Sort</span>
-            <UrbanSelect value={sort} onChange={(event) => updateParam('sort', event.target.value)}>
-              <option value="name">Name A-Z</option>
-              <option value="price-asc">Price low to high</option>
-              <option value="price-desc">Price high to low</option>
-              <option value="newest">Newest</option>
-              <option value="low-stock">Low stock first</option>
-            </UrbanSelect>
-          </label>
+        <label className="space-y-2 text-sm">
+          <span className="block text-xs font-semibold uppercase tracking-[0.1em] text-[var(--sf-ink-faint)]">Sort</span>
+          <UrbanSelect value={sort} onChange={(event) => updateParam('sort', event.target.value)}>
+            <option value="name">Name A–Z</option>
+            <option value="price-asc">Price low to high</option>
+            <option value="price-desc">Price high to low</option>
+            <option value="newest">Newest</option>
+            <option value="low-stock">Low stock first</option>
+          </UrbanSelect>
+        </label>
 
-          <label className="space-y-2 text-sm">
-            <span className="block font-market-label text-xs font-black uppercase tracking-[0.18em] text-[#e2bfb0]">Availability</span>
-            <UrbanSelect value={availability} onChange={(event) => updateParam('availability', event.target.value)}>
-              <option value="in-stock">In stock only</option>
-              <option value="low-stock">Low stock</option>
-              <option value="all">All products</option>
-            </UrbanSelect>
-          </label>
+        <label className="space-y-2 text-sm">
+          <span className="block text-xs font-semibold uppercase tracking-[0.1em] text-[var(--sf-ink-faint)]">Stock</span>
+          <UrbanSelect value={availability} onChange={(event) => updateParam('availability', event.target.value)}>
+            <option value="in-stock">In stock</option>
+            <option value="low-stock">Low stock</option>
+            <option value="all">All products</option>
+          </UrbanSelect>
+        </label>
 
-          <label className="inline-flex h-[46px] items-center gap-2 border border-[#5a4136] bg-[#282a2b] px-4 py-3 font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#e2e2e2]">
-            <input
-              type="checkbox"
-              checked={organic}
-              onChange={(event) => updateParam('organic', event.target.checked)}
-              className="h-4 w-4 border-[#5a4136] bg-[#1e2020] text-[#ffb693]"
-            />
-            <Leaf className="h-4 w-4 text-[#ffb693]" /> Organic
-          </label>
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => updateParam('department', '')}
-            className={`px-4 py-2 font-market-label text-xs font-black uppercase tracking-[0.14em] transition ${
-              !activeDepartment ? 'bg-[#ffb693] text-[#561f00]' : 'border border-[#5a4136] bg-[#282a2b] text-[#e2bfb0] hover:border-[#ffb693] hover:text-[#ffb693]'
-            }`}
-          >
-            All sectors
-          </button>
-          {departments.map((dept) => (
-            <button
-              key={dept.id}
-              type="button"
-              onClick={() => updateParam('department', dept.handle)}
-              className={`px-4 py-2 font-market-label text-xs font-black uppercase tracking-[0.14em] transition ${
-                activeDepartment === dept.handle ? 'bg-[#ffb693] text-[#561f00]' : 'border border-[#5a4136] bg-[#282a2b] text-[#e2bfb0] hover:border-[#ffb693] hover:text-[#ffb693]'
-              }`}
-            >
-              {dept.name}
-            </button>
-          ))}
-        </div>
+        <label className="flex h-11 items-center gap-2 border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-3 text-sm font-medium">
+          <input type="checkbox" checked={organic} onChange={(event) => updateParam('organic', event.target.checked)} className="h-4 w-4 accent-[var(--sf-accent)]" />
+          <Leaf className="h-4 w-4 text-[var(--sf-sage)]" /> Organic
+        </label>
       </div>
-    </UrbanPanel>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button type="button" onClick={() => updateParam('department', '')} className={`border px-3 py-1.5 text-sm font-medium transition ${!activeDepartment ? 'border-[var(--sf-accent)] bg-[var(--sf-accent)] text-white' : 'border-[var(--sf-rule)] bg-[var(--sf-paper)] text-[var(--sf-ink-muted)] hover:border-[var(--sf-accent)]'}`}>
+          All aisles
+        </button>
+        {departments.map((dept) => (
+          <button key={dept.id} type="button" onClick={() => updateParam('department', dept.handle)} className={`border px-3 py-1.5 text-sm font-medium transition ${activeDepartment === dept.handle ? 'border-[var(--sf-accent)] bg-[var(--sf-accent)] text-white' : 'border-[var(--sf-rule)] bg-[var(--sf-paper)] text-[var(--sf-ink-muted)] hover:border-[var(--sf-accent)]'}`}>
+            {dept.name}
+          </button>
+        ))}
+      </div>
+      {isPending ? <p className="mt-2 text-xs text-[var(--sf-ink-faint)]">Updating catalog…</p> : null}
+    </section>
   );
 }

@@ -4,54 +4,31 @@ import { revalidatePath } from 'next/cache';
 import { gql } from 'graphql-request';
 import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
 
-const DELIVERY_STATUS_TRANSITIONS: Record<string, string> = {
-  pending: 'picking',
-  picking: 'packed',
-  packed: 'out_for_delivery',
-};
-
-const PICKUP_STATUS_TRANSITIONS: Record<string, string> = {
-  pending: 'picking',
-  picking: 'packed',
-  packed: 'packed',
-};
-
 export async function advanceOrderStatus(input: {
   orderId: string;
   currentStatus: string;
   fulfillmentMethod?: 'delivery' | 'pickup';
-  metadata?: Record<string, any> | null;
+  readyForPickup?: boolean;
 }) {
-  const isPickup = input.fulfillmentMethod === 'pickup';
-  const nextStatus = (isPickup ? PICKUP_STATUS_TRANSITIONS : DELIVERY_STATUS_TRANSITIONS)[input.currentStatus];
-
-  if (!nextStatus) {
-    throw new Error(`No workflow transition configured for status ${input.currentStatus}`);
-  }
+  const target = input.currentStatus === 'pending'
+    ? 'picking'
+    : input.currentStatus === 'picking'
+      ? 'packed'
+      : input.currentStatus === 'packed' && input.fulfillmentMethod === 'pickup' && !input.readyForPickup
+        ? 'ready_for_pickup'
+        : null;
+  if (!target) throw new Error(`No fulfillment transition is available from ${input.currentStatus}`);
 
   const response = await keystoneClient(gql`
-    mutation AdvanceFulfillmentOrder($id: ID!, $data: OrderUpdateInput!) {
-      updateOrder(where: { id: $id }, data: $data) {
-        id
+    mutation AdvanceFulfillmentOrder($orderId: ID!, $target: String!) {
+      advanceOrderFulfillment(orderId: $orderId, target: $target) {
+        orderId
         status
+        stage
+        reused
       }
     }
-  `, {
-    id: input.orderId,
-    data: {
-      status: nextStatus,
-      ...(isPickup && input.currentStatus === 'packed'
-        ? {
-            metadata: {
-              ...(input.metadata || {}),
-              fulfillmentMethod: 'pickup',
-              pickupReadyAt: new Date().toISOString(),
-              readyForPickup: true,
-            },
-          }
-        : {}),
-    },
-  });
+  `, { orderId: input.orderId, target });
 
   if (!response.success) {
     throw new Error(response.error);
@@ -65,68 +42,37 @@ export async function advanceOrderStatus(input: {
 
 export async function saveOrderItemSubstitution(input: {
   orderItemId: string;
-  originalProduct: string;
   substitutedProduct: string;
   reason?: string;
   customerApproved?: boolean;
+  idempotencyKey: string;
 }) {
-  const existingResponse = await keystoneClient<{
-    orderItemSubstitutions: Array<{ id: string }>;
-  }>(gql`
-    query FindOrderItemSubstitution($orderItemId: String!) {
-      orderItemSubstitutions(where: { orderItem: { equals: $orderItemId } }, take: 1) {
-        id
+  const response = await keystoneClient(gql`
+    mutation RecordOrderItemSubstitution(
+      $orderItemId: ID!
+      $substitutedProduct: String!
+      $reason: String
+      $customerApproved: Boolean
+      $idempotencyKey: String!
+    ) {
+      recordOrderItemSubstitution(
+        orderItemId: $orderItemId
+        substitutedProduct: $substitutedProduct
+        reason: $reason
+        customerApproved: $customerApproved
+        idempotencyKey: $idempotencyKey
+      ) {
+        substitutionId
+        orderItemId
+        customerApproved
+        reused
       }
     }
-  `, {
-    orderItemId: input.orderItemId,
-  });
+  `, input);
 
-  if (!existingResponse.success) {
-    throw new Error(existingResponse.error);
-  }
-
-  const existingId = existingResponse.data.orderItemSubstitutions?.[0]?.id;
-  const payload = {
-    orderItem: input.orderItemId,
-    originalProduct: input.originalProduct,
-    substitutedProduct: input.substitutedProduct,
-    reason: input.reason || '',
-    customerApproved: Boolean(input.customerApproved),
-    approvedAt: input.customerApproved ? new Date().toISOString() : null,
-  };
-
-  if (existingId) {
-    const updateResponse = await keystoneClient(gql`
-      mutation UpdateOrderItemSubstitution($id: ID!, $data: OrderItemSubstitutionUpdateInput!) {
-        updateOrderItemSubstitution(where: { id: $id }, data: $data) {
-          id
-        }
-      }
-    `, {
-      id: existingId,
-      data: payload,
-    });
-
-    if (!updateResponse.success) {
-      throw new Error(updateResponse.error);
-    }
-  } else {
-    const createResponse = await keystoneClient(gql`
-      mutation CreateOrderItemSubstitution($data: OrderItemSubstitutionCreateInput!) {
-        createOrderItemSubstitution(data: $data) {
-          id
-        }
-      }
-    `, {
-      data: payload,
-    });
-
-    if (!createResponse.success) {
-      throw new Error(createResponse.error);
-    }
-  }
+  if (!response.success) throw new Error(response.error);
 
   revalidatePath('/dashboard/platform/fulfillment');
   revalidatePath('/dashboard/platform/orders');
+  return response.data;
 }

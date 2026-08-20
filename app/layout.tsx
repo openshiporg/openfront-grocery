@@ -1,19 +1,9 @@
 import type { Metadata } from "next";
-import { Archivo_Narrow, Geist, Geist_Mono, Work_Sans } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const workSans = Work_Sans({
-  variable: "--font-market-body",
-  subsets: ["latin"],
-});
-
-const archivoNarrow = Archivo_Narrow({
-  variable: "--font-market-label",
   subsets: ["latin"],
 });
 
@@ -24,7 +14,14 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Openfront Grocery",
-  description: "Fresh grocery storefront and operations platform for delivery, pickup, fulfillment, and subscriptions.",
+  description: "Source-owned grocery delivery, pickup, and retail operations.",
+  applicationName: "Openfront Grocery",
+  icons: {
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
+  },
+  manifest: "/manifest.webmanifest",
 };
 
 export default function RootLayout({
@@ -34,13 +31,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <link href="/favicon.svg" rel="icon" />
-      </head>
       <body
-        className={`${geistSans.variable} ${workSans.variable} ${archivoNarrow.variable} ${geistMono.variable} antialiased min-h-screen bg-background font-sans`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased min-h-screen bg-background font-sans`}
       >
-        {children}
+        <main>{children}</main>
       </body>
     </html>
   );

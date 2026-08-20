@@ -7,7 +7,9 @@ import {
   decimal,
 } from "@keystone-6/core/fields";
 import { isSignedIn } from "../access";
+import { ownerScopedFilter } from '../lib/storeAccess';
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 
 export const PriceAlert = list({
   access: {
@@ -18,27 +20,15 @@ export const PriceAlert = list({
       delete: isSignedIn,
     },
     filter: {
-      query: ({ session }) => {
-        // Users can only see their own price alerts
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      update: ({ session }) => {
-        // Users can only update their own price alerts
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        // Users can only delete their own price alerts
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
+      query: ownerScopedFilter('user'),
+      update: ownerScopedFilter('user'),
+      delete: ownerScopedFilter('user'),
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.itemId) throw new Error('An authenticated owner is required');
+      return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     },
   },
   ui: {
@@ -50,6 +40,9 @@ export const PriceAlert = list({
   fields: {
     // User who created the price alert
     user: relationship({
+      access: { create: () => false, update: () => false },
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       ref: "User",
       label: "User",
       ui: {
@@ -60,10 +53,15 @@ export const PriceAlert = list({
     product: text({
       validation: { isRequired: true },
       isIndexed: true,
-      label: "Product",
+      label: "Product Snapshot",
       ui: {
-        description: "Product ID to monitor for price changes",
+        description: "Legacy product display snapshot",
       },
+    }),
+    productRef: relationship({
+      ref: 'Product.priceAlerts',
+      access: { create: () => false, update: () => false },
+      label: 'Product',
     }),
     // Target price the user wants to be notified at
     targetPrice: decimal({

@@ -34,11 +34,25 @@ export function CustomSetupSteps({
   const validateAndApplyJson = () => {
     try {
       const parsed = JSON.parse(customJson);
-      const requiredKeys = ['departments', 'suppliers', 'products', 'inventoryLots', 'deliverySlots', 'pickupSlots', 'customers', 'orders'];
+      const requiredKeys = ['departments', 'suppliers', 'products', 'inventoryLots', 'deliverySlots', 'pickupSlots', 'parkingSpots', 'coupons', 'paymentProviders'];
       const missingKeys = requiredKeys.filter((key) => !Array.isArray(parsed[key]));
 
       if (missingKeys.length > 0) {
         setJsonError(`Missing array sections: ${missingKeys.join(', ')}`);
+        return;
+      }
+      if (!parsed.storeSettings || parsed.storeSettings.isActive !== true || parsed.storeSettings.currencyCode !== 'USD') {
+        setJsonError('Store settings must initialize one active USD Store.');
+        return;
+      }
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: parsed.storeSettings.timezone }).format();
+      } catch {
+        setJsonError('Store settings must include a valid IANA timezone.');
+        return;
+      }
+      if (parsed.paymentProviders.length !== 1 || parsed.paymentProviders[0]?.code !== 'pp_stripe_default') {
+        setJsonError('Payment providers must contain exactly the static Stripe registry entry.');
         return;
       }
 

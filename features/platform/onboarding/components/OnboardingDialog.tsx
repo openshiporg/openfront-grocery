@@ -35,6 +35,7 @@ import { SectionRenderer } from './SectionRenderer';
 import { STORE_TEMPLATES, SECTION_DEFINITIONS, type TemplateType } from '../config/templates';
 import { useOnboardingState } from '../hooks/useOnboardingState';
 import { useOnboardingApi } from '../hooks/useOnboardingApi';
+import { getItemsFromJsonData } from '../utils/dataUtils';
 
 interface OnboardingDialogProps {
   isOpen: boolean;
@@ -90,35 +91,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
   if (!isOpen) return null;
 
   const displayNames = SECTION_DEFINITIONS.reduce((acc, section) => {
-    acc[section.type] = (currentJsonData?.[section.type] || []).map((item: any) => {
-      switch (section.type) {
-        case 'departments':
-          return item.name;
-        case 'suppliers':
-          return item.name;
-        case 'products':
-          return item.title;
-        case 'inventoryLots':
-          return item.lotNumber;
-        case 'deliverySlots':
-        case 'pickupSlots':
-          return item.label;
-        case 'parkingSpots':
-          return item.spotNumber;
-        case 'paymentProviders':
-          return item.name || item.code;
-        case 'customers':
-          return item.name;
-        case 'orders':
-          return `Order #${item.displayId}`;
-        case 'coupons':
-          return item.code;
-        case 'loyaltyPrograms':
-          return item.name;
-        default:
-          return 'Item';
-      }
-    });
+    acc[section.type] = getItemsFromJsonData(currentJsonData, section.type);
     return acc;
   }, {} as Record<string, string[]>);
 
@@ -138,13 +111,13 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                     <Apps className="size-5 text-foreground" aria-hidden={true} />
                   </div>
                   <div className="space-y-0.5">
-                    <h3 className="text-sm font-medium text-foreground">Demo grocery seed</h3>
+                    <h3 className="text-sm font-medium text-foreground">Grocery launch baseline</h3>
                     <p className="text-sm text-muted-foreground">
                       {step === 'done'
-                        ? 'Your grocery demo data is ready'
+                        ? 'Your connected grocery baseline is ready'
                         : selectedTemplate === 'custom'
-                        ? 'Customize the grocery seed JSON'
-                        : 'Choose a grocery demo template'}
+                        ? 'Customize the launch data JSON'
+                        : 'Choose a launch template'}
                     </p>
                   </div>
                 </div>
@@ -155,7 +128,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                   <>
                     <h4 className="text-sm font-medium text-foreground mb-2">Setup complete</h4>
                     <p className="text-sm text-muted-foreground mb-4">
-                      Your {selectedTemplate === 'minimal' ? 'basic' : selectedTemplate === 'full' ? 'complete' : 'custom'} grocery demo dataset is ready.
+                      Your {selectedTemplate === 'minimal' ? 'basic' : selectedTemplate === 'full' ? 'complete' : 'custom'} Store-owned launch dataset is ready. Customer, order, payment, revenue, and loyalty history are never fabricated.
                     </p>
                     <div className="flex items-center space-x-2 text-sm text-emerald-600 dark:text-emerald-500 mb-4">
                       <CircleCheck className="h-4 w-4 fill-emerald-500 text-background" />
@@ -237,7 +210,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                   </>
                 ) : (
                   <>
-                    <h4 className="text-sm font-medium text-foreground">Seeding grocery demo data</h4>
+                    <h4 className="text-sm font-medium text-foreground">Creating connected grocery data</h4>
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">{progressMessage}</p>
                   </>
                 )}
@@ -277,11 +250,11 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                     {isLoading ? (
                       <Button disabled className="w-full sm:w-auto">
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Seeding...
+                        Initializing…
                       </Button>
                     ) : (
                       <Button onClick={runOnboarding} className="w-full sm:w-auto">
-                        Seed demo data
+                        Initialize Store
                       </Button>
                     )}
                   </div>
@@ -352,11 +325,11 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                 {isLoading ? (
                   <Button disabled className="flex-1">
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Seeding...
+                    Initializing…
                   </Button>
                 ) : (
                   <Button onClick={runOnboarding} className="flex-1">
-                    Seed demo data
+                    Initialize Store
                   </Button>
                 )}
               </div>

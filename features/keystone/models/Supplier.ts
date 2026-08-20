@@ -3,11 +3,14 @@ import {
   text,
   select,
   float,
+  integer,
   relationship,
   multiselect,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
-import { isSignedIn, permissions } from "../access";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const Supplier = list({
   access: {
@@ -16,6 +19,29 @@ export const Supplier = list({
       create: permissions.canManageSuppliers,
       update: permissions.canManageSuppliers,
       delete: permissions.canManageSuppliers,
+    },
+    filter: {
+      query: storeScopedFilter,
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+    },
+    validate: {
+      delete: async ({ item, context, addValidationError }) => {
+        const [lotCount, purchaseOrderCount, productCount] = await Promise.all([
+          context.prisma.inventoryLot.count({ where: { supplierId: String(item.id) } }),
+          context.prisma.purchaseOrder.count({ where: { supplierId: String(item.id) } }),
+          context.prisma.product.count({ where: { supplierId: String(item.id) } }),
+        ]);
+        if (lotCount > 0 || purchaseOrderCount > 0 || productCount > 0) {
+          addValidationError('Suppliers with products, inventory, or purchase orders cannot be deleted');
+        }
+      },
     },
   },
   ui: {
@@ -66,23 +92,37 @@ export const Supplier = list({
       },
     }),
     minimumOrder: float({
-      label: "Minimum Order Amount",
-      ui: {
-        description: "Minimum order value for this supplier",
-      },
+      access: { update: () => false },
+      label: "Minimum Order Amount (legacy display)",
+      ui: { description: "Legacy display value; minimumOrderCents is authoritative" },
+    }),
+    minimumOrderCents: integer({
+      defaultValue: 0,
+      validation: { isRequired: true, min: 0 },
+      access: { create: () => false, update: () => false },
+      label: "Minimum Order (minor units)",
     }),
     // Relationships
+    store: relationship({
+      ref: 'Store.suppliers',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageSuppliers, update: () => false },
+    }),
     products: relationship({
+      access: { update: () => false },
       ref: "Product.supplier",
       many: true,
       label: "Products",
     }),
     inventoryLots: relationship({
+      access: { update: () => false },
       ref: "InventoryLot.supplier",
       many: true,
       label: "Inventory Lots",
     }),
     purchaseOrders: relationship({
+      access: { update: () => false },
       ref: "PurchaseOrder.supplier",
       many: true,
       label: "Purchase Orders",

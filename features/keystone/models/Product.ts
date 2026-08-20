@@ -11,7 +11,9 @@ import {
 } from "@keystone-6/core/fields";
 import { document } from "@keystone-6/fields-document";
 import { trackingFields } from "./trackingFields";
-import { isSignedIn, permissions } from "../access";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { permissions } from "../access";
+import { publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
 
 export const Product = list({
   access: {
@@ -22,15 +24,80 @@ export const Product = list({
       delete: permissions.canManageProducts,
     },
     filter: {
-      query: ({ session }) => {
-        if (permissions.canManageProducts({ session })) {
-          return true;
+      query: async ({ session, context }) => {
+        const store = storeScopedFilter({ session });
+        if (await permissions.canManageProducts({ session, context })) return store;
+        return { AND: [publicStoreScopedFilter(), { status: { equals: "published" } }] };
+      },
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) return resolvedData;
+      return {
+        ...resolvedData,
+        priceCents: resolvedData.price !== undefined ? Math.round(Number(resolvedData.price) * 100) : resolvedData.priceCents,
+        costPriceCents: resolvedData.costPrice !== undefined ? Math.round(Number(resolvedData.costPrice) * 100) : resolvedData.costPriceCents,
+        store: { connect: { id: context.session.data.store.id } },
+      };
+    },
+    validate: {
+      create: async ({ resolvedData, context, addValidationError }) => {
+        const storeId = context.session?.data.store?.id;
+        const supplierId = resolvedData.supplier?.connect?.id;
+        const departmentId = resolvedData.departmentRef?.connect?.id;
+        if (supplierId) {
+          const supplier = await context.prisma.supplier.findUnique({ where: { id: String(supplierId) }, select: { storeId: true } });
+          if (!supplier || supplier.storeId !== storeId) addValidationError('Supplier must belong to the active store');
         }
-        return {
-          status: {
-            equals: "published",
-          },
-        };
+        if (departmentId) {
+          const department = await context.prisma.department.findUnique({ where: { id: String(departmentId) }, select: { storeId: true } });
+          if (!department || department.storeId !== storeId) addValidationError('Department must belong to the active store');
+        }
+      },
+      update: async ({ resolvedData, context, addValidationError }) => {
+        const storeId = context.session?.data.store?.id;
+        const supplierId = resolvedData.supplier?.connect?.id;
+        const departmentId = resolvedData.departmentRef?.connect?.id;
+        if (supplierId) {
+          const supplier = await context.prisma.supplier.findUnique({ where: { id: String(supplierId) }, select: { storeId: true } });
+          if (!supplier || supplier.storeId !== storeId) addValidationError('Supplier must belong to the active store');
+        }
+        if (departmentId) {
+          const department = await context.prisma.department.findUnique({ where: { id: String(departmentId) }, select: { storeId: true } });
+          if (!department || department.storeId !== storeId) addValidationError('Department must belong to the active store');
+        }
+      },
+      delete: async ({ item, context, addValidationError }) => {
+        const productId = String(item.id);
+        const [lotCount, poItemCount, orderLineItemCount, cartItemCount, shoppingListItemCount, subscriptionCount, recipeIngredientCount, favoriteProductCount, alertCount] = await Promise.all([
+          context.prisma.inventoryLot.count({ where: { productId } }),
+          context.prisma.pOItem.count({ where: { productId } }),
+          context.prisma.orderLineItem.count({ where: { productId } }),
+          context.prisma.cartItem.count({ where: { productId } }),
+          context.prisma.shoppingListItem.count({ where: { productRefId: productId } }),
+          context.prisma.subscription.count({ where: { productRefId: productId } }),
+          context.prisma.recipeIngredient.count({ where: { productRefId: productId } }),
+          context.prisma.favoriteProduct.count({ where: { productRefId: productId } }),
+          Promise.all([
+            context.prisma.backInStockAlert.count({ where: { productRefId: productId } }),
+            context.prisma.priceAlert.count({ where: { productRefId: productId } }),
+          ]).then(([backInStock, price]) => backInStock + price),
+        ]);
+        if (Number(item.stockQuantity || 0) > 0 || lotCount > 0) {
+          addValidationError('Stocked products must be archived instead of deleted');
+        }
+        if (poItemCount > 0) {
+          addValidationError('Products referenced by purchase orders must be archived instead of deleted');
+        }
+        if (orderLineItemCount > 0) {
+          addValidationError('Products referenced by order history must be archived instead of deleted');
+        }
+        if (cartItemCount + shoppingListItemCount + subscriptionCount + recipeIngredientCount + favoriteProductCount + alertCount > 0) {
+          addValidationError('Product catalog references cannot be deleted');
+        }
       },
     },
   },
@@ -77,16 +144,17 @@ export const Product = list({
       defaultValue: "draft",
       validation: { isRequired: true },
     }),
-    metadata: json(),
+    metadata: json({ access: { read: permissions.canManageProducts } }),
 
     // Pricing fields
     price: float({
-      label: "Price",
+      label: "Legacy display price (USD)",
       ui: {
         description: "Product price in dollars",
       },
       validation: { min: 0 },
     }),
+    priceCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative price (minor units)' }),
     compareAtPrice: float({
       label: "Compare at Price",
       ui: {
@@ -95,30 +163,39 @@ export const Product = list({
       validation: { min: 0 },
     }),
     costPrice: float({
+      access: { read: permissions.canManageProducts },
       label: "Cost Price",
       ui: {
         description: "Cost to purchase from supplier",
       },
       validation: { min: 0 },
     }),
+    costPriceCents: integer({ access: { read: permissions.canManageProducts, create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative cost (minor units)' }),
 
     // Inventory fields
     inStock: checkbox({
-      defaultValue: true,
+      access: { read: permissions.canManageProducts, create: () => false, update: () => false },
+      defaultValue: false,
       label: "In Stock",
       ui: {
-        description: "Product is available for purchase",
+        description: "Reporting cache only; public sellability is derived from Store-owned unexpired inventory lots",
       },
     }),
     stockQuantity: integer({
+      access: {
+        read: permissions.canManageProducts,
+        create: () => false,
+        update: () => false,
+      },
       defaultValue: 0,
       label: "Stock Quantity",
       ui: {
-        description: "Available inventory count",
+        description: "Reporting cache only; public sellable quantity is derived from Store-owned unexpired inventory lots",
       },
       validation: { min: 0 },
     }),
     lowStockThreshold: integer({
+      access: { read: permissions.canManageProducts },
       defaultValue: 10,
       label: "Low Stock Threshold",
       ui: {
@@ -232,7 +309,14 @@ export const Product = list({
     }),
 
     // Relationships
+    store: relationship({
+      ref: 'Store.products',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageProducts, update: () => false },
+    }),
     supplier: relationship({
+      access: { read: permissions.canManageProducts },
       ref: "Supplier.products",
       label: "Supplier",
     }),
@@ -241,10 +325,20 @@ export const Product = list({
       label: "Department Reference",
     }),
     inventoryLots: relationship({
+      access: {
+        read: permissions.canManageProducts,
+        update: () => false,
+      },
       ref: "InventoryLot.product",
       many: true,
       label: "Inventory Lots",
     }),
+    favoriteProducts: relationship({ ref: 'FavoriteProduct.productRef', many: true, access: { update: () => false } }),
+    backInStockAlerts: relationship({ ref: 'BackInStockAlert.productRef', many: true, access: { update: () => false } }),
+    priceAlerts: relationship({ ref: 'PriceAlert.productRef', many: true, access: { update: () => false } }),
+    shoppingListItems: relationship({ ref: 'ShoppingListItem.productRef', many: true, access: { update: () => false } }),
+    subscriptions: relationship({ ref: 'Subscription.productRef', many: true, access: { update: () => false } }),
+    recipeIngredients: relationship({ ref: 'RecipeIngredient.productRef', many: true, access: { update: () => false } }),
     ...trackingFields,
   },
 });

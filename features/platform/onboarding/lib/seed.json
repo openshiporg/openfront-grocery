@@ -1,10 +1,55 @@
 {
+  "storeSettings": {
+    "name": "Juniper Market",
+    "tagline": "Neighborhood grocery · delivery & curbside pickup",
+    "homepageTitle": "Fresh from the neighborhood",
+    "homepageDescription": "Seasonal produce, pantry staples, and household essentials selected for everyday shopping.",
+    "contactEmail": "hello@junipermarket.example",
+    "contactPhone": "(415) 555-0148",
+    "address": "184 Juniper Street, San Francisco, CA 94107",
+    "logoUrl": "/logo.svg",
+    "brandHue": 35,
+    "currencyCode": "USD",
+    "taxRateBps": 875,
+    "locale": "en-US",
+    "timezone": "America/Los_Angeles",
+    "countryCode": "US",
+    "hours": {
+      "monday": "8:00 AM - 8:00 PM",
+      "tuesday": "8:00 AM - 8:00 PM",
+      "wednesday": "8:00 AM - 8:00 PM",
+      "thursday": "8:00 AM - 8:00 PM",
+      "friday": "8:00 AM - 9:00 PM",
+      "saturday": "8:00 AM - 9:00 PM",
+      "sunday": "9:00 AM - 7:00 PM",
+      "fulfillmentPolicy": {
+        "horizonDays": 7,
+        "cutoffMinutes": 120,
+        "blackoutDates": [],
+        "deliveryWindows": [
+          { "startTime": "08:00", "endTime": "10:00", "capacity": 20, "deliveryFee": 0, "isActive": true },
+          { "startTime": "10:00", "endTime": "12:00", "capacity": 20, "deliveryFee": 299, "isActive": true },
+          { "startTime": "12:00", "endTime": "14:00", "capacity": 18, "deliveryFee": 499, "isActive": true },
+          { "startTime": "16:00", "endTime": "18:00", "capacity": 24, "deliveryFee": 699, "isActive": true },
+          { "startTime": "18:00", "endTime": "20:00", "capacity": 16, "deliveryFee": 399, "isActive": true }
+        ],
+        "pickupWindows": [
+          { "startTime": "09:00", "endTime": "10:00", "maxOrders": 12, "isActive": true },
+          { "startTime": "11:00", "endTime": "12:00", "maxOrders": 12, "isActive": true },
+          { "startTime": "13:00", "endTime": "14:00", "maxOrders": 12, "isActive": true },
+          { "startTime": "16:00", "endTime": "17:00", "maxOrders": 16, "isActive": true },
+          { "startTime": "18:00", "endTime": "19:00", "maxOrders": 12, "isActive": true }
+        ]
+      }
+    },
+    "isActive": true
+  },
   "departments": [
     {
       "name": "Produce",
       "handle": "produce",
       "description": "Fresh fruits, vegetables, herbs, and grab-and-go produce.",
-      "imageUrl": "https://images.unsplash.com/photo-1542838132-92c53300491e?w=800&h=600&fit=crop",
+      "imageUrl": "/images/produce-market.jpg",
       "sortOrder": 1,
       "temperatureZone": "ambient",
       "requiredLicenses": []
@@ -13,7 +58,7 @@
       "name": "Dairy & Eggs",
       "handle": "dairy",
       "description": "Milk, yogurt, eggs, butter, and refrigerated basics.",
-      "imageUrl": "https://images.unsplash.com/photo-1563636619-e9143da7973b?w=800&h=600&fit=crop",
+      "imageUrl": "/images/dairy-eggs.jpg",
       "sortOrder": 2,
       "temperatureZone": "refrigerated",
       "requiredLicenses": []
@@ -22,7 +67,7 @@
       "name": "Meat & Seafood",
       "handle": "meat-seafood",
       "description": "Fresh fish, premium cuts, and butcher counter staples.",
-      "imageUrl": "https://images.unsplash.com/photo-1607623814075-e51df1bdc82f?w=800&h=600&fit=crop",
+      "imageUrl": "/images/meat-seafood-counter.jpg",
       "sortOrder": 3,
       "temperatureZone": "refrigerated",
       "requiredLicenses": []
@@ -31,7 +76,7 @@
       "name": "Bakery",
       "handle": "bakery",
       "description": "Fresh breads, pastries, and daily bakery picks.",
-      "imageUrl": "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=800&h=600&fit=crop",
+      "imageUrl": "/images/bakery-bread.jpg",
       "sortOrder": 4,
       "temperatureZone": "ambient",
       "requiredLicenses": []
@@ -40,7 +85,7 @@
       "name": "Frozen",
       "handle": "frozen",
       "description": "Frozen fruit, vegetables, entrees, and ice cream.",
-      "imageUrl": "https://images.unsplash.com/photo-1585238342024-78d387f4a707?w=800&h=600&fit=crop",
+      "imageUrl": "/images/frozen-aisle.jpg",
       "sortOrder": 5,
       "temperatureZone": "frozen",
       "requiredLicenses": []
@@ -49,7 +94,7 @@
       "name": "Pantry",
       "handle": "pantry",
       "description": "Rice, pasta, grains, canned goods, sauces, and staples.",
-      "imageUrl": "https://images.unsplash.com/photo-1514996937319-344454492b37?w=800&h=600&fit=crop",
+      "imageUrl": "/images/pantry-shelves.jpg",
       "sortOrder": 6,
       "temperatureZone": "ambient",
       "requiredLicenses": []
@@ -62,7 +107,11 @@
       "email": "local-harvest@example.com",
       "phone": "415-555-1101",
       "paymentTerms": "net_30",
-      "deliveryDays": ["mon", "wed", "fri"],
+      "deliveryDays": [
+        "mon",
+        "wed",
+        "fri"
+      ],
       "minimumOrder": 150
     },
     {
@@ -71,7 +120,11 @@
       "email": "bay-dairy@example.com",
       "phone": "415-555-2202",
       "paymentTerms": "net_30",
-      "deliveryDays": ["mon", "thu", "sat"],
+      "deliveryDays": [
+        "mon",
+        "thu",
+        "sat"
+      ],
       "minimumOrder": 200
     },
     {
@@ -80,7 +133,11 @@
       "email": "ocean-catch@example.com",
       "phone": "415-555-3303",
       "paymentTerms": "cod",
-      "deliveryDays": ["tue", "thu", "sat"],
+      "deliveryDays": [
+        "tue",
+        "thu",
+        "sat"
+      ],
       "minimumOrder": 250
     }
   ],
@@ -96,15 +153,15 @@
       "inStock": true,
       "stockQuantity": 120,
       "lowStockThreshold": 20,
-      "imageUrl": "https://images.unsplash.com/photo-1574226516831-e1dff420e37f?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1574226516831-e1dff420e37f?w=400&h=400&fit=crop",
+      "imageUrl": "/images/organic-bananas.jpg",
+      "thumbnailUrl": "/images/organic-bananas.jpg",
       "departmentCode": "produce",
       "departmentHandle": "produce",
       "supplierEmail": "local-harvest@example.com",
       "isPerishable": true,
       "shelfLife": 7,
-      "pricingMethod": "weight",
-      "unitOfMeasure": "lb",
+      "pricingMethod": "unit",
+      "unitOfMeasure": "each",
       "organicCertified": true,
       "allergens": []
     },
@@ -119,8 +176,8 @@
       "inStock": true,
       "stockQuantity": 80,
       "lowStockThreshold": 12,
-      "imageUrl": "https://images.unsplash.com/photo-1519162808019-7de1683fa2ad?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1519162808019-7de1683fa2ad?w=400&h=400&fit=crop",
+      "imageUrl": "/images/avocados-hass.jpg",
+      "thumbnailUrl": "/images/avocados-hass.jpg",
       "departmentCode": "produce",
       "departmentHandle": "produce",
       "supplierEmail": "local-harvest@example.com",
@@ -142,8 +199,8 @@
       "inStock": true,
       "stockQuantity": 42,
       "lowStockThreshold": 10,
-      "imageUrl": "https://images.unsplash.com/photo-1550583724-b2692b85b150?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1550583724-b2692b85b150?w=400&h=400&fit=crop",
+      "imageUrl": "/images/whole-milk-gallon.jpg",
+      "thumbnailUrl": "/images/whole-milk-gallon.jpg",
       "departmentCode": "dairy",
       "departmentHandle": "dairy",
       "supplierEmail": "bay-dairy@example.com",
@@ -152,7 +209,9 @@
       "pricingMethod": "unit",
       "unitOfMeasure": "gallon",
       "organicCertified": false,
-      "allergens": ["milk"]
+      "allergens": [
+        "milk"
+      ]
     },
     {
       "title": "Plain Greek Yogurt",
@@ -165,8 +224,8 @@
       "inStock": true,
       "stockQuantity": 26,
       "lowStockThreshold": 8,
-      "imageUrl": "https://images.unsplash.com/photo-1488477181946-6428a0291777?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1488477181946-6428a0291777?w=400&h=400&fit=crop",
+      "imageUrl": "/images/greek-yogurt-plain.jpg",
+      "thumbnailUrl": "/images/greek-yogurt-plain.jpg",
       "departmentCode": "dairy",
       "departmentHandle": "dairy",
       "supplierEmail": "bay-dairy@example.com",
@@ -175,7 +234,9 @@
       "pricingMethod": "unit",
       "unitOfMeasure": "each",
       "organicCertified": false,
-      "allergens": ["milk"]
+      "allergens": [
+        "milk"
+      ]
     },
     {
       "title": "Fresh Salmon Fillet",
@@ -188,17 +249,19 @@
       "inStock": true,
       "stockQuantity": 18,
       "lowStockThreshold": 6,
-      "imageUrl": "https://images.unsplash.com/photo-1544943910-4c1dc44aab44?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1544943910-4c1dc44aab44?w=400&h=400&fit=crop",
+      "imageUrl": "/images/fresh-salmon-fillet.jpg",
+      "thumbnailUrl": "/images/fresh-salmon-fillet.jpg",
       "departmentCode": "meat",
       "departmentHandle": "meat-seafood",
       "supplierEmail": "ocean-catch@example.com",
       "isPerishable": true,
       "shelfLife": 4,
-      "pricingMethod": "weight",
-      "unitOfMeasure": "lb",
+      "pricingMethod": "unit",
+      "unitOfMeasure": "each",
       "organicCertified": false,
-      "allergens": ["fish"]
+      "allergens": [
+        "fish"
+      ]
     },
     {
       "title": "Sourdough Bread",
@@ -211,8 +274,8 @@
       "inStock": true,
       "stockQuantity": 24,
       "lowStockThreshold": 6,
-      "imageUrl": "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=400&h=400&fit=crop",
+      "imageUrl": "/images/sourdough-bread.jpg",
+      "thumbnailUrl": "/images/sourdough-bread.jpg",
       "departmentCode": "bakery",
       "departmentHandle": "bakery",
       "supplierEmail": "local-harvest@example.com",
@@ -221,7 +284,9 @@
       "pricingMethod": "unit",
       "unitOfMeasure": "each",
       "organicCertified": false,
-      "allergens": ["wheat"]
+      "allergens": [
+        "wheat"
+      ]
     },
     {
       "title": "Frozen Blueberries",
@@ -234,8 +299,8 @@
       "inStock": true,
       "stockQuantity": 34,
       "lowStockThreshold": 8,
-      "imageUrl": "https://images.unsplash.com/photo-1464965911861-746a04b4bca6?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1464965911861-746a04b4bca6?w=400&h=400&fit=crop",
+      "imageUrl": "/images/frozen-blueberries.jpg",
+      "thumbnailUrl": "/images/frozen-blueberries.jpg",
       "departmentCode": "frozen",
       "departmentHandle": "frozen",
       "supplierEmail": "local-harvest@example.com",
@@ -257,8 +322,8 @@
       "inStock": true,
       "stockQuantity": 54,
       "lowStockThreshold": 12,
-      "imageUrl": "https://images.unsplash.com/photo-1586201375761-83865001e31c?w=800&h=800&fit=crop",
-      "thumbnailUrl": "https://images.unsplash.com/photo-1586201375761-83865001e31c?w=400&h=400&fit=crop",
+      "imageUrl": "/images/jasmine-rice.jpg",
+      "thumbnailUrl": "/images/jasmine-rice.jpg",
       "departmentCode": "pantry",
       "departmentHandle": "pantry",
       "supplierEmail": "local-harvest@example.com",
@@ -271,48 +336,218 @@
     }
   ],
   "inventoryLots": [
-    { "lotNumber": "LOT-BAN-001", "productHandle": "organic-bananas", "supplierEmail": "local-harvest@example.com", "expirationOffsetDays": 6, "receivedOffsetDays": -1, "quantity": 120, "quantityRemaining": 110, "costPerUnit": 0.39, "location": "Produce A1" },
-    { "lotNumber": "LOT-AVO-001", "productHandle": "avocados-hass", "supplierEmail": "local-harvest@example.com", "expirationOffsetDays": 5, "receivedOffsetDays": -1, "quantity": 80, "quantityRemaining": 74, "costPerUnit": 1.1, "location": "Produce A2" },
-    { "lotNumber": "LOT-MILK-001", "productHandle": "whole-milk-gallon", "supplierEmail": "bay-dairy@example.com", "expirationOffsetDays": 8, "receivedOffsetDays": -2, "quantity": 42, "quantityRemaining": 34, "costPerUnit": 2.65, "location": "Cooler D1" },
-    { "lotNumber": "LOT-YOG-001", "productHandle": "greek-yogurt-plain", "supplierEmail": "bay-dairy@example.com", "expirationOffsetDays": 12, "receivedOffsetDays": -2, "quantity": 26, "quantityRemaining": 21, "costPerUnit": 3.15, "location": "Cooler D2" },
-    { "lotNumber": "LOT-SALMON-001", "productHandle": "fresh-salmon-fillet", "supplierEmail": "ocean-catch@example.com", "expirationOffsetDays": 3, "receivedOffsetDays": 0, "quantity": 18, "quantityRemaining": 15, "costPerUnit": 9.25, "location": "Seafood F1" },
-    { "lotNumber": "LOT-BREAD-001", "productHandle": "sourdough-bread", "supplierEmail": "local-harvest@example.com", "expirationOffsetDays": 2, "receivedOffsetDays": 0, "quantity": 24, "quantityRemaining": 20, "costPerUnit": 2.05, "location": "Bakery Shelf 1" },
-    { "lotNumber": "LOT-BLUE-001", "productHandle": "frozen-blueberries", "supplierEmail": "local-harvest@example.com", "expirationOffsetDays": 120, "receivedOffsetDays": -5, "quantity": 34, "quantityRemaining": 30, "costPerUnit": 3.85, "location": "Freezer B2" },
-    { "lotNumber": "LOT-RICE-001", "productHandle": "jasmine-rice", "supplierEmail": "local-harvest@example.com", "expirationOffsetDays": 240, "receivedOffsetDays": -7, "quantity": 54, "quantityRemaining": 48, "costPerUnit": 5.2, "location": "Pantry 4C" }
+    {
+      "lotNumber": "LOT-BAN-001",
+      "productHandle": "organic-bananas",
+      "supplierEmail": "local-harvest@example.com",
+      "expirationOffsetDays": 6,
+      "receivedOffsetDays": -1,
+      "quantity": 120,
+      "quantityRemaining": 110,
+      "costPerUnit": 0.39,
+      "location": "Produce A1"
+    },
+    {
+      "lotNumber": "LOT-AVO-001",
+      "productHandle": "avocados-hass",
+      "supplierEmail": "local-harvest@example.com",
+      "expirationOffsetDays": 5,
+      "receivedOffsetDays": -1,
+      "quantity": 80,
+      "quantityRemaining": 74,
+      "costPerUnit": 1.1,
+      "location": "Produce A2"
+    },
+    {
+      "lotNumber": "LOT-MILK-001",
+      "productHandle": "whole-milk-gallon",
+      "supplierEmail": "bay-dairy@example.com",
+      "expirationOffsetDays": 8,
+      "receivedOffsetDays": -2,
+      "quantity": 42,
+      "quantityRemaining": 34,
+      "costPerUnit": 2.65,
+      "location": "Cooler D1"
+    },
+    {
+      "lotNumber": "LOT-YOG-001",
+      "productHandle": "greek-yogurt-plain",
+      "supplierEmail": "bay-dairy@example.com",
+      "expirationOffsetDays": 12,
+      "receivedOffsetDays": -2,
+      "quantity": 26,
+      "quantityRemaining": 21,
+      "costPerUnit": 3.15,
+      "location": "Cooler D2"
+    },
+    {
+      "lotNumber": "LOT-SALMON-001",
+      "productHandle": "fresh-salmon-fillet",
+      "supplierEmail": "ocean-catch@example.com",
+      "expirationOffsetDays": 3,
+      "receivedOffsetDays": 0,
+      "quantity": 18,
+      "quantityRemaining": 15,
+      "costPerUnit": 9.25,
+      "location": "Seafood F1"
+    },
+    {
+      "lotNumber": "LOT-BREAD-001",
+      "productHandle": "sourdough-bread",
+      "supplierEmail": "local-harvest@example.com",
+      "expirationOffsetDays": 2,
+      "receivedOffsetDays": 0,
+      "quantity": 24,
+      "quantityRemaining": 20,
+      "costPerUnit": 2.05,
+      "location": "Bakery Shelf 1"
+    },
+    {
+      "lotNumber": "LOT-BLUE-001",
+      "productHandle": "frozen-blueberries",
+      "supplierEmail": "local-harvest@example.com",
+      "expirationOffsetDays": 120,
+      "receivedOffsetDays": -5,
+      "quantity": 34,
+      "quantityRemaining": 30,
+      "costPerUnit": 3.85,
+      "location": "Freezer B2"
+    },
+    {
+      "lotNumber": "LOT-RICE-001",
+      "productHandle": "jasmine-rice",
+      "supplierEmail": "local-harvest@example.com",
+      "expirationOffsetDays": 240,
+      "receivedOffsetDays": -7,
+      "quantity": 54,
+      "quantityRemaining": 48,
+      "costPerUnit": 5.2,
+      "location": "Pantry 4C"
+    }
   ],
   "deliverySlots": [
-    { "label": "AM Rush", "dayOffset": 1, "startTime": "08:00", "endTime": "10:00", "capacity": 20, "currentBookings": 4, "deliveryFee": 0, "isActive": true },
-    { "label": "Late Morning", "dayOffset": 1, "startTime": "10:00", "endTime": "12:00", "capacity": 20, "currentBookings": 8, "deliveryFee": 299, "isActive": true },
-    { "label": "Early Afternoon", "dayOffset": 1, "startTime": "12:00", "endTime": "14:00", "capacity": 18, "currentBookings": 6, "deliveryFee": 499, "isActive": true },
-    { "label": "After Work", "dayOffset": 1, "startTime": "16:00", "endTime": "18:00", "capacity": 24, "currentBookings": 10, "deliveryFee": 699, "isActive": true },
-    { "label": "Evening", "dayOffset": 2, "startTime": "18:00", "endTime": "20:00", "capacity": 16, "currentBookings": 3, "deliveryFee": 399, "isActive": true }
+    {
+      "label": "AM Rush",
+      "dayOffset": 1,
+      "startTime": "08:00",
+      "endTime": "10:00",
+      "capacity": 20,
+      "currentBookings": 4,
+      "deliveryFee": 0,
+      "isActive": true
+    },
+    {
+      "label": "Late Morning",
+      "dayOffset": 1,
+      "startTime": "10:00",
+      "endTime": "12:00",
+      "capacity": 20,
+      "currentBookings": 8,
+      "deliveryFee": 299,
+      "isActive": true
+    },
+    {
+      "label": "Early Afternoon",
+      "dayOffset": 1,
+      "startTime": "12:00",
+      "endTime": "14:00",
+      "capacity": 18,
+      "currentBookings": 6,
+      "deliveryFee": 499,
+      "isActive": true
+    },
+    {
+      "label": "After Work",
+      "dayOffset": 1,
+      "startTime": "16:00",
+      "endTime": "18:00",
+      "capacity": 24,
+      "currentBookings": 10,
+      "deliveryFee": 699,
+      "isActive": true
+    },
+    {
+      "label": "Evening",
+      "dayOffset": 2,
+      "startTime": "18:00",
+      "endTime": "20:00",
+      "capacity": 16,
+      "currentBookings": 3,
+      "deliveryFee": 399,
+      "isActive": true
+    }
   ],
   "pickupSlots": [
-    { "label": "Curbside 9AM", "dayOffset": 1, "startTime": "09:00", "endTime": "10:00", "maxOrders": 12, "currentOrders": 3, "isAvailable": true },
-    { "label": "Curbside 11AM", "dayOffset": 1, "startTime": "11:00", "endTime": "12:00", "maxOrders": 12, "currentOrders": 5, "isAvailable": true },
-    { "label": "Curbside 1PM", "dayOffset": 1, "startTime": "13:00", "endTime": "14:00", "maxOrders": 12, "currentOrders": 4, "isAvailable": true },
-    { "label": "Curbside 4PM", "dayOffset": 1, "startTime": "16:00", "endTime": "17:00", "maxOrders": 16, "currentOrders": 7, "isAvailable": true },
-    { "label": "Curbside 6PM", "dayOffset": 2, "startTime": "18:00", "endTime": "19:00", "maxOrders": 12, "currentOrders": 2, "isAvailable": true }
+    {
+      "label": "Curbside 9AM",
+      "dayOffset": 1,
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "maxOrders": 12,
+      "currentOrders": 3,
+      "isAvailable": true
+    },
+    {
+      "label": "Curbside 11AM",
+      "dayOffset": 1,
+      "startTime": "11:00",
+      "endTime": "12:00",
+      "maxOrders": 12,
+      "currentOrders": 5,
+      "isAvailable": true
+    },
+    {
+      "label": "Curbside 1PM",
+      "dayOffset": 1,
+      "startTime": "13:00",
+      "endTime": "14:00",
+      "maxOrders": 12,
+      "currentOrders": 4,
+      "isAvailable": true
+    },
+    {
+      "label": "Curbside 4PM",
+      "dayOffset": 1,
+      "startTime": "16:00",
+      "endTime": "17:00",
+      "maxOrders": 16,
+      "currentOrders": 7,
+      "isAvailable": true
+    },
+    {
+      "label": "Curbside 6PM",
+      "dayOffset": 2,
+      "startTime": "18:00",
+      "endTime": "19:00",
+      "maxOrders": 12,
+      "currentOrders": 2,
+      "isAvailable": true
+    }
   ],
   "parkingSpots": [
-    { "spotNumber": "A1", "description": "Front curbside lane", "isAccessible": false, "isAvailable": true },
-    { "spotNumber": "A2", "description": "Front curbside lane", "isAccessible": false, "isAvailable": true },
-    { "spotNumber": "B1", "description": "Side pickup lane", "isAccessible": false, "isAvailable": true },
-    { "spotNumber": "ADA-1", "description": "Accessible curbside pickup", "isAccessible": true, "isAvailable": true }
-  ],
-  "loyaltyPrograms": [
     {
-      "name": "Fresh Rewards",
-      "pointsPerDollar": 1,
-      "tierConfiguration": [
-        { "name": "Bronze", "threshold": 0, "benefits": ["1x points"] },
-        { "name": "Silver", "threshold": 500, "benefits": ["1.25x points", "Free pickup"] },
-        { "name": "Gold", "threshold": 1500, "benefits": ["1.5x points", "Free delivery over $50", "Birthday reward"] }
-      ],
-      "redemptionRules": { "pointsPerDollar": 100, "minimumRedemption": 100, "maximumRedemption": 3000 },
-      "expirationRules": { "enabled": true, "expirationDays": 365, "warningDays": 30 },
-      "tierBenefits": { "gold": ["priority slots", "exclusive weekend deals"] },
-      "isActive": true
+      "spotNumber": "A1",
+      "description": "Front curbside lane",
+      "isAccessible": false,
+      "isAvailable": true
+    },
+    {
+      "spotNumber": "A2",
+      "description": "Front curbside lane",
+      "isAccessible": false,
+      "isAvailable": true
+    },
+    {
+      "spotNumber": "B1",
+      "description": "Side pickup lane",
+      "isAccessible": false,
+      "isAvailable": true
+    },
+    {
+      "spotNumber": "ADA-1",
+      "description": "Accessible curbside pickup",
+      "isAccessible": true,
+      "isAvailable": true
     }
   ],
   "coupons": [
@@ -338,7 +573,10 @@
       "currentUses": 0,
       "validFromOffsetDays": -1,
       "validToOffsetDays": 14,
-      "productCategories": ["produce", "dairy"],
+      "productCategories": [
+        "produce",
+        "dairy"
+      ],
       "excludedProducts": [],
       "isActive": true
     }
@@ -348,111 +586,10 @@
       "name": "Stripe Checkout",
       "code": "pp_stripe_default",
       "isInstalled": true,
-      "credentials": {},
-      "metadata": { "provider": "stripe" },
-      "createPaymentFunction": "stripe",
-      "capturePaymentFunction": "stripe",
-      "refundPaymentFunction": "stripe",
-      "getPaymentStatusFunction": "stripe",
-      "generatePaymentLinkFunction": "stripe",
-      "handleWebhookFunction": "stripe"
-    },
-    {
-      "name": "Manual Demo",
-      "code": "pp_manual_default",
-      "isInstalled": true,
-      "credentials": {},
-      "metadata": { "provider": "manual" },
-      "createPaymentFunction": "manual",
-      "capturePaymentFunction": "manual",
-      "refundPaymentFunction": "manual",
-      "getPaymentStatusFunction": "manual",
-      "generatePaymentLinkFunction": "manual",
-      "handleWebhookFunction": "manual"
-    }
-  ],
-  "customers": [
-    {
-      "name": "Alex Shopper",
-      "email": "alex.shopper@example.com",
-      "password": "grocerydemo123",
-      "phone": "415-555-9090",
-      "addresses": [
-        {
-          "key": "home",
-          "firstName": "Alex",
-          "lastName": "Shopper",
-          "address1": "123 Market Street",
-          "address2": "Apt 5B",
-          "city": "San Francisco",
-          "province": "CA",
-          "postalCode": "94105",
-          "phone": "415-555-9090"
-        }
-      ],
-      "substitutionPreference": {
-        "allowSubstitutions": true,
-        "preferSimilarBrand": true,
-        "preferSimilarSize": true,
-        "contactBeforeSubstitute": false
-      },
-      "shoppingLists": [
-        {
-          "name": "Weekly Groceries",
-          "isDefault": true,
-          "items": [
-            { "product": "Organic Bananas", "quantity": 2, "unit": "lb", "checked": false, "notes": "Ripen over the week" },
-            { "product": "Whole Milk", "quantity": 1, "unit": "gallon", "checked": false, "notes": "" },
-            { "product": "Jasmine Rice", "quantity": 1, "unit": "bag", "checked": false, "notes": "Pantry refill" }
-          ]
-        }
-      ],
-      "subscriptions": [
-        {
-          "product": "whole-milk-gallon",
-          "quantity": 1,
-          "frequency": "weekly",
-          "nextDeliveryOffsetDays": 7,
-          "discount": 5,
-          "isActive": true
-        }
-      ]
-    }
-  ],
-  "orders": [
-    {
-      "displayId": 1001,
-      "customerEmail": "alex.shopper@example.com",
-      "email": "alex.shopper@example.com",
-      "status": "picking",
-      "taxRate": 0.0875,
-      "deliveryDayOffset": 1,
-      "deliveryTimeWindow": "time_10_12",
-      "deliveryInstructions": "Buzz 5B and leave at the apartment door if no answer.",
-      "substitutionPreference": "best_match",
-      "shippingAddressKey": "home",
-      "lineItems": [
-        { "productHandle": "organic-bananas", "quantity": 3 },
-        { "productHandle": "whole-milk-gallon", "quantity": 1 },
-        { "productHandle": "jasmine-rice", "quantity": 1 }
-      ]
-    },
-    {
-      "displayId": 1002,
-      "customerEmail": "alex.shopper@example.com",
-      "email": "alex.shopper@example.com",
-      "status": "delivered",
-      "taxRate": 0.0875,
-      "deliveryDayOffset": -2,
-      "deliveryTimeWindow": "time_16_18",
-      "deliveryInstructions": "Front desk will accept the order.",
-      "substitutionPreference": "call_me",
-      "shippingAddressKey": "home",
-      "lineItems": [
-        { "productHandle": "sourdough-bread", "quantity": 2 },
-        { "productHandle": "greek-yogurt-plain", "quantity": 1 },
-        { "productHandle": "avocados-hass", "quantity": 4 }
-      ]
+      "metadata": {
+        "provider": "stripe",
+        "configuration": "server_environment"
+      }
     }
   ]
 }

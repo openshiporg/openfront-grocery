@@ -7,16 +7,19 @@ import {
   json,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
-import { isSignedIn, permissions } from "../access";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const DeliveryRoute = list({
   access: {
     operation: {
       query: permissions.canManageDelivery,
-      create: permissions.canManageDelivery,
-      update: permissions.canManageDelivery,
-      delete: permissions.canManageDelivery,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
+    filter: { query: storeScopedFilter, update: storeScopedFilter, delete: storeScopedFilter },
   },
   ui: {
     listView: {
@@ -74,6 +77,12 @@ export const DeliveryRoute = list({
       },
     }),
     // Relationships
+    store: relationship({
+      ref: 'Store.deliveryRoutes',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: () => false, update: () => false },
+    }),
     driver: relationship({
       ref: "User",
       label: "Driver",

@@ -1,4 +1,6 @@
 import type { Context } from '.keystone/types';
+import { requireSessionStore } from '../lib/storeScope';
+import { requireStoreProduct } from '../lib/catalogAccess';
 
 // Helper to calculate next delivery date based on frequency
 function calculateNextDeliveryDate(frequency: string, fromDate?: Date): Date {
@@ -42,16 +44,10 @@ export async function createSubscription(
   }
 
   const sudoContext = context.sudo();
+  const store = await requireSessionStore(context);
 
-  // Verify product exists
-  const product = await sudoContext.query.Product.findOne({
-    where: { id: productId },
-    query: 'id title price inStock',
-  });
-
-  if (!product) {
-    throw new Error('Product not found');
-  }
+  // Verify the product belongs to the caller's active Store and is published.
+  const product = await requireStoreProduct(context, productId, store.id, { publishedOnly: true });
 
   // Check if user already has an active subscription for this product
   const existingSubscriptions = await sudoContext.query.Subscription.findMany({
@@ -64,7 +60,30 @@ export async function createSubscription(
   });
 
   if (existingSubscriptions.length > 0) {
-    throw new Error('You already have an active subscription for this product');
+    const existing = await sudoContext.query.Subscription.findOne({
+      where: { id: existingSubscriptions[0].id },
+      query: `
+        id
+        product
+        quantity
+        frequency
+        nextDeliveryDate
+        discount
+        isActive
+        pausedUntil
+      `,
+    });
+    return {
+      id: existing.id,
+      productId: existing.product,
+      quantity: existing.quantity,
+      frequency: existing.frequency,
+      nextDeliveryDate: existing.nextDeliveryDate,
+      discount: existing.discount,
+      isActive: existing.isActive,
+      isPaused: !!existing.pausedUntil,
+      pausedUntil: existing.pausedUntil,
+    };
   }
 
   // Calculate next delivery date
@@ -75,11 +94,13 @@ export async function createSubscription(
     data: {
       user: { connect: { id: context.session.itemId } },
       product: productId,
+      productRef: { connect: { id: product.id } },
       quantity,
       frequency: frequency as 'weekly' | 'biweekly' | 'monthly',
       nextDeliveryDate: nextDeliveryDate.toISOString(),
       isActive: true,
-      discount: 5, // Default 5% subscription discount
+      discount: 5, // Legacy display value; discountBps is authoritative
+      discountBps: 500,
     },
     query: `
       id
@@ -190,6 +211,56 @@ export async function updateSubscription(
   };
 }
 
+export async function resumeSubscription(
+  root: any,
+  { subscriptionId }: { subscriptionId: string },
+  context: Context
+) {
+  if (!context.session?.itemId) {
+    throw new Error('Must be logged in to resume a subscription');
+  }
+
+  const sudoContext = context.sudo();
+  const subscription = await sudoContext.query.Subscription.findOne({
+    where: { id: subscriptionId },
+    query: 'id user { id } product quantity frequency nextDeliveryDate discount isActive pausedUntil',
+  });
+  if (!subscription) throw new Error('Subscription not found');
+  if (subscription.user?.id !== context.session.itemId) {
+    throw new Error('You can only resume your own subscriptions');
+  }
+  if (subscription.isActive && !subscription.pausedUntil) {
+    return {
+      id: subscription.id,
+      productId: subscription.product,
+      quantity: subscription.quantity,
+      frequency: subscription.frequency,
+      nextDeliveryDate: subscription.nextDeliveryDate,
+      discount: subscription.discount,
+      isActive: true,
+      isPaused: false,
+      pausedUntil: null,
+    };
+  }
+
+  const updated = await sudoContext.query.Subscription.updateOne({
+    where: { id: subscriptionId },
+    data: { isActive: true, pausedUntil: null },
+    query: 'id product quantity frequency nextDeliveryDate discount isActive pausedUntil',
+  });
+  return {
+    id: updated.id,
+    productId: updated.product,
+    quantity: updated.quantity,
+    frequency: updated.frequency,
+    nextDeliveryDate: updated.nextDeliveryDate,
+    discount: updated.discount,
+    isActive: updated.isActive,
+    isPaused: false,
+    pausedUntil: null,
+  };
+}
+
 // Pause a subscription
 export async function pauseSubscription(
   root: any,
@@ -292,7 +363,21 @@ export async function cancelSubscription(
   }
 
   if (!subscription.isActive) {
-    throw new Error('Subscription is already cancelled');
+    const existing = await sudoContext.query.Subscription.findOne({
+      where: { id: subscriptionId },
+      query: 'id product quantity frequency nextDeliveryDate discount isActive pausedUntil',
+    });
+    return {
+      id: existing.id,
+      productId: existing.product,
+      quantity: existing.quantity,
+      frequency: existing.frequency,
+      nextDeliveryDate: existing.nextDeliveryDate,
+      discount: existing.discount,
+      isActive: false,
+      isPaused: false,
+      pausedUntil: null,
+    };
   }
 
   // Deactivate the subscription

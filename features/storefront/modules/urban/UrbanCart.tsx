@@ -1,45 +1,66 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Package, Trash2 } from 'lucide-react';
 
 import { removeFromCart, updateCartItem, updateSubstitutionPreference } from '@/features/storefront/lib/data/cart';
 import type { GroceryCart, GroceryCartItem, GroceryUser } from '@/features/storefront/types';
-import { UrbanBadge, UrbanButton, UrbanButtonLink, UrbanEmptyState, UrbanPanel, UrbanSelect, formatMoney, formatUnit, productImage } from './UrbanPrimitives';
+import {
+  UrbanButton,
+  UrbanButtonLink,
+  UrbanEmptyState,
+  UrbanProductArtwork,
+  UrbanSelect,
+  formatMoney,
+  formatUnit,
+} from './UrbanPrimitives';
 
-function CartLine({ item, onChanged }: { item: GroceryCartItem; onChanged: () => void }) {
-  const [quantity, setQuantity] = useState(item.quantity);
-  const [isPending, startTransition] = useTransition();
-  const image = productImage(item.product);
+type PersistedCartMutation = () => Promise<GroceryCart | null>;
 
+function CartLine({
+  item,
+  disabled,
+  commit,
+}: {
+  item: GroceryCartItem;
+  disabled: boolean;
+  commit: (mutation: PersistedCartMutation) => Promise<void>;
+}) {
   const updateQuantity = (next: number) => {
-    const safe = Math.max(1, next);
-    setQuantity(safe);
-    startTransition(async () => {
-      await updateCartItem(item.id, safe);
-      onChanged();
-    });
+    const quantity = Math.max(1, next);
+    void commit(() => updateCartItem(item.id, quantity));
   };
+  const requiresRemediation = !item.product.inStock;
 
   return (
-    <UrbanPanel className="grid gap-4 p-3 sm:grid-cols-[112px_1fr_auto]">
-      <Link href={`/products/${item.product.handle}`} className="flex h-28 w-28 items-center justify-center bg-[#282a2b]">
-        {image ? <img src={image} alt={item.product.name} className="h-full w-full object-cover opacity-80 mix-blend-luminosity" /> : <Package className="h-8 w-8 text-[#ffb693]/45" />}
+    <div className="grid gap-4 border-b border-[var(--sf-rule)] py-5 sm:grid-cols-[100px_minmax(0,1fr)_auto]">
+      <Link href={`/products/${item.product.handle}`} className="block overflow-hidden border border-[var(--sf-rule)] bg-[var(--sf-paper-3)]">
+        {item.product ? <UrbanProductArtwork product={item.product} className="aspect-square" /> : <div className="flex aspect-square items-center justify-center"><Package className="h-8 w-8 text-[var(--sf-sage)]" /></div>}
       </Link>
       <div className="min-w-0">
-        <div className="flex flex-wrap items-start gap-2">
-          <h3 className="font-market-label text-2xl font-black uppercase leading-none tracking-[-0.03em] text-[#e2e2e2]">{item.product.name}</h3>
-          <UrbanBadge tone="muted">{formatUnit(item.product.unit)}</UrbanBadge>
-        </div>
-        <p className="mt-2 font-market-label text-2xl font-black text-[#ffb693]">{formatMoney(item.product.price)}</p>
-        <div className="mt-4 grid max-w-xl gap-3 sm:grid-cols-[160px_1fr]">
-          <div className="grid grid-cols-3 border border-[#5a4136] bg-[#282a2b]">
-            <button onClick={() => updateQuantity(quantity - 1)} disabled={isPending} className="px-3 py-2 font-market-label text-lg font-black text-[#ffb693] hover:bg-[#333535]">-</button>
-            <span className="border-x border-[#5a4136] px-4 py-2 text-center font-market-label text-lg font-black text-[#e2e2e2]">{quantity}</span>
-            <button onClick={() => updateQuantity(quantity + 1)} disabled={isPending} className="px-3 py-2 font-market-label text-lg font-black text-[#ffb693] hover:bg-[#333535]">+</button>
+        <Link href={`/products/${item.product.handle}`} className="font-[family-name:var(--sf-font-display)] text-xl font-semibold text-[var(--sf-ink)] hover:text-[var(--sf-accent)]">
+          {item.product.name}
+        </Link>
+        <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">{formatUnit(item.product.unit)} · {formatMoney(item.product.price)} each</p>
+        {requiresRemediation ? (
+          <p className="mt-3 border border-[var(--sf-danger-bg)] bg-[var(--sf-danger-bg)] px-3 py-2 text-sm text-[var(--sf-danger)]" role="alert">
+            {item.product.stockQuantity > 0
+              ? `Only ${item.product.stockQuantity} ${item.product.stockQuantity === 1 ? 'unit is' : 'units are'} available. Reduce the quantity or remove this item.`
+              : 'No unexpired inventory is available. Remove this item before checkout.'}
+          </p>
+        ) : null}
+        <div className="mt-4 grid max-w-md gap-3 sm:grid-cols-[140px_1fr]">
+          <div className="grid grid-cols-3 border border-[var(--sf-rule-strong)]">
+            <button type="button" aria-label={`Decrease ${item.product.name} quantity`} onClick={() => updateQuantity(item.quantity - 1)} disabled={disabled} className="px-2 py-2 text-lg font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)] focus-visible:outline-2 focus-visible:outline-[var(--sf-focus)] disabled:cursor-wait disabled:opacity-50">−</button>
+            <span className="border-x border-[var(--sf-rule)] px-2 py-2 text-center text-sm font-medium" aria-live="polite">{item.quantity}</span>
+            <button type="button" aria-label={`Increase ${item.product.name} quantity`} onClick={() => updateQuantity(item.quantity + 1)} disabled={disabled || item.quantity >= item.product.stockQuantity} className="px-2 py-2 text-lg font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)] focus-visible:outline-2 focus-visible:outline-[var(--sf-focus)] disabled:cursor-not-allowed disabled:opacity-50">+</button>
           </div>
-          <UrbanSelect defaultValue={item.substitutionPreference || 'allow'} onChange={(event) => startTransition(async () => { await updateSubstitutionPreference(item.id, event.target.value as any); onChanged(); })}>
+          <UrbanSelect
+            value={item.substitutionPreference || 'allow'}
+            disabled={disabled}
+            onChange={(event) => void commit(() => updateSubstitutionPreference(item.id, event.target.value as 'allow' | 'contact' | 'remove'))}
+          >
             <option value="allow">Best substitute</option>
             <option value="contact">Contact me</option>
             <option value="remove">Remove if unavailable</option>
@@ -47,39 +68,82 @@ function CartLine({ item, onChanged }: { item: GroceryCartItem; onChanged: () =>
         </div>
       </div>
       <div className="flex flex-row items-center justify-between gap-4 sm:flex-col sm:items-end">
-        <p className="font-market-label text-3xl font-black text-[#ffb693]">{formatMoney(item.subtotal)}</p>
-        <button onClick={() => startTransition(async () => { await removeFromCart(item.id); onChanged(); })} disabled={isPending} className="inline-flex items-center gap-2 border border-[#5a4136] px-3 py-2 font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#e2bfb0] hover:border-[#ffb4ab] hover:text-[#ffb4ab]">
+        <p className="font-[family-name:var(--sf-font-display)] text-xl font-semibold">{formatMoney(item.subtotal)}</p>
+        <button type="button" onClick={() => void commit(() => removeFromCart(item.id))} disabled={disabled} className="inline-flex items-center gap-2 border border-[var(--sf-danger-bg)] bg-[var(--sf-danger-bg)] px-3 py-2 text-sm font-medium text-[var(--sf-danger)] transition hover:opacity-90 focus-visible:outline-2 focus-visible:outline-[var(--sf-focus)] disabled:cursor-wait disabled:opacity-50">
           <Trash2 className="h-4 w-4" /> Remove
         </button>
       </div>
-    </UrbanPanel>
+    </div>
   );
 }
 
 export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; user?: GroceryUser | null }) {
-  const [, setVersion] = useState(0);
-  const bump = () => setVersion((value) => value + 1);
+  const [currentCart, setCurrentCart] = useState(cart);
+  const [isMutating, setIsMutating] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const mutationInFlight = useRef(false);
 
-  if (!cart || cart.items.length === 0) {
-    return <UrbanEmptyState title="Basket is empty" actionHref="/products" actionLabel="Deploy essentials">Add live inventory to your Urban Express basket.</UrbanEmptyState>;
+  useEffect(() => {
+    if (!mutationInFlight.current) setCurrentCart(cart);
+  }, [cart]);
+
+  const commit = async (mutation: PersistedCartMutation) => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setIsMutating(true);
+    setMutationError(null);
+
+    try {
+      const confirmedCart = await mutation();
+      if (!confirmedCart) {
+        setMutationError('Your basket was not updated. Please try again.');
+        return;
+      }
+      // Quantity, line money, subtotal, tax, and total are replaced together
+      // from the persisted Keystone mutation response. No optimistic partial
+      // projection is exposed to checkout.
+      setCurrentCart(confirmedCart);
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : 'Your basket was not updated. Please try again.');
+    } finally {
+      mutationInFlight.current = false;
+      setIsMutating(false);
+    }
+  };
+
+  if (!currentCart || currentCart.items.length === 0) {
+    return <UrbanEmptyState title="Your basket is empty" actionHref="/products" actionLabel="Browse catalog">Add items from produce, pantry, dairy, and household aisles.</UrbanEmptyState>;
   }
 
+  const requiresRemediation = currentCart.items.some((item) => !item.product.inStock);
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-      <div className="space-y-3">
-        {cart.items.map((item) => <CartLine key={item.id} item={item} onChanged={bump} />)}
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]" aria-busy={isMutating}>
+      <div>
+        {currentCart.items.map((item) => <CartLine key={item.id} item={item} disabled={isMutating} commit={commit} />)}
       </div>
-      <UrbanPanel className="h-max p-5">
-        <h2 className="font-market-label text-3xl font-black uppercase tracking-[-0.04em] text-[#e2e2e2]">Order signal</h2>
-        <div className="mt-5 space-y-3 border-y border-[#5a4136] py-5 text-sm text-[#e2bfb0]">
-          <div className="flex justify-between"><span>Subtotal</span><span>{formatMoney(cart.subtotal)}</span></div>
-          <div className="flex justify-between"><span>Tax</span><span>{formatMoney(cart.tax)}</span></div>
-          <div className="flex justify-between"><span>Delivery fee</span><span>{formatMoney(cart.deliveryFee)}</span></div>
-          <div className="flex justify-between font-market-label text-3xl font-black uppercase text-[#ffb693]"><span>Total</span><span>{formatMoney(cart.total)}</span></div>
+      <aside className="lg:sticky lg:top-24 lg:self-start">
+        <div className="border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] p-5">
+          <h2 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold text-[var(--sf-ink)]">Order summary</h2>
+          <dl className="mt-4 space-y-2 border-y border-[var(--sf-rule)] py-4 text-sm">
+            <div className="flex justify-between text-[var(--sf-ink-muted)]"><dt>Subtotal</dt><dd>{formatMoney(currentCart.subtotal)}</dd></div>
+            <div className="flex justify-between text-[var(--sf-ink-muted)]"><dt>Tax</dt><dd>{formatMoney(currentCart.tax)}</dd></div>
+            <div className="flex justify-between text-[var(--sf-ink-muted)]"><dt>Delivery fee</dt><dd>{formatMoney(currentCart.deliveryFee)}</dd></div>
+            <div className="flex justify-between pt-2 font-[family-name:var(--sf-font-display)] text-lg font-semibold text-[var(--sf-ink)]"><dt>Total</dt><dd>{formatMoney(currentCart.total)}</dd></div>
+          </dl>
+          {isMutating ? (
+            <UrbanButton type="button" className="mt-4 w-full" disabled>Updating basket…</UrbanButton>
+          ) : requiresRemediation ? (
+            <UrbanButton type="button" className="mt-4 w-full" disabled>Resolve unavailable items</UrbanButton>
+          ) : (
+            <UrbanButtonLink href="/checkout" className="mt-4 w-full">Continue to checkout</UrbanButtonLink>
+          )}
+          <p className="mt-3 min-h-5 text-center text-sm text-[var(--sf-danger)]" aria-live="polite">
+            {mutationError || (requiresRemediation ? 'Reduce or remove unavailable items before checkout.' : null)}
+          </p>
+          {!user ? <Link href="/dashboard/signin?from=/cart" className="mt-1 block text-center text-sm font-medium text-[var(--sf-accent)]">Sign in for saved slots</Link> : null}
         </div>
-        <UrbanButtonLink href="/checkout" className="mt-5 w-full">Secure checkout</UrbanButtonLink>
-        {!user ? <Link href="/dashboard/signin?from=/cart" className="mt-3 block text-center font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#b6c6ed]">Sign in for saved slots</Link> : null}
-      </UrbanPanel>
+      </aside>
     </div>
   );
 }

@@ -10,28 +10,37 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const Coupon = list({
   access: {
     operation: {
-      query: () => true, // Public can view coupons
+      query: isSignedIn,
       create: permissions.canManageProducts,
       update: permissions.canManageProducts,
       delete: permissions.canManageProducts,
     },
     filter: {
-      query: ({ session }) => {
-        if (permissions.canManageProducts({ session })) {
-          return true;
-        }
-        // Public can only see active coupons
-        return {
-          isActive: {
-            equals: true,
-          },
-        };
-      },
+      query: storeScopedFilter,
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) throw new Error('An active store is required');
+      return {
+        ...resolvedData,
+        discountValueCents: resolvedData.discountValue !== undefined
+          ? Math.round(Number(resolvedData.discountValue) * 100)
+          : resolvedData.discountValueCents,
+        minPurchaseCents: resolvedData.minPurchase !== undefined
+          ? Math.round(Number(resolvedData.minPurchase || 0) * 100)
+          : resolvedData.minPurchaseCents,
+        store: { connect: { id: context.session.data.store.id } },
+      };
     },
   },
   ui: {
@@ -70,14 +79,16 @@ export const Coupon = list({
       },
       validation: { min: 0 },
     }),
+    discountValueCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative fixed discount (minor units)' }),
     minPurchase: float({
-      label: "Minimum Purchase",
+      label: "Legacy display minimum purchase",
       ui: {
         description: "Minimum order amount required to use this coupon",
       },
       validation: { min: 0 },
       defaultValue: 0,
     }),
+    minPurchaseCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative minimum purchase (minor units)' }),
     maxUses: integer({
       label: "Maximum Uses",
       ui: {
@@ -127,6 +138,12 @@ export const Coupon = list({
     }),
 
     // Relationships
+    store: relationship({
+      ref: 'Store.coupons',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageProducts, update: () => false },
+    }),
     userCoupons: relationship({
       ref: "UserCoupon.coupon",
       many: true,

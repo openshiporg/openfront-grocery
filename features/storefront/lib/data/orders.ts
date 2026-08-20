@@ -1,136 +1,6 @@
 import type { GroceryOrder, GroceryParkingSpot } from '../../types';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
-
-function mapOrderStatus(status: string): GroceryOrder['status'] {
-  const statusMap: Record<string, GroceryOrder['status']> = {
-    pending: 'pending',
-    confirmed: 'confirmed',
-    processing: 'processing',
-    picking: 'picking',
-    packed: 'processing',
-    picked: 'picking',
-    out_for_delivery: 'out_for_delivery',
-    shipped: 'out_for_delivery',
-    delivered: 'delivered',
-    completed: 'delivered',
-    cancelled: 'cancelled',
-    canceled: 'cancelled',
-  };
-  return statusMap[status?.toLowerCase()] || 'pending';
-}
-
-function mapSubstitutionPreference(pref: string): 'allow' | 'contact' | 'remove' {
-  const prefMap: Record<string, 'allow' | 'contact' | 'remove'> = {
-    best_match: 'allow',
-    allow: 'allow',
-    call_me: 'contact',
-    contact: 'contact',
-    refund: 'remove',
-    remove: 'remove',
-  };
-  return prefMap[pref?.toLowerCase()] || 'allow';
-}
-
-function mapLineItems(lineItems: any[] = [], substitutions: any[] = []) {
-  const substitutionByItem = new Map(substitutions.map((substitution) => [substitution.orderItem, substitution]));
-
-  return lineItems.map((item: any) => {
-    const substitution = substitutionByItem.get(item.id);
-
-    return {
-      id: item.id,
-      title: item.title,
-      variant: undefined,
-      quantity: item.quantity,
-      unit_price: Math.round((item.unitPrice || 0) * 100),
-      thumbnail: item.thumbnail,
-      product: item.product
-        ? {
-            id: item.product.id,
-            handle: item.product.handle,
-          }
-        : undefined,
-      substitutionPreference: item.metadata?.substitutionPreference || null,
-      substitution: substitution
-        ? {
-            id: substitution.id,
-            originalProduct: substitution.originalProduct,
-            substitutedProduct: substitution.substitutedProduct,
-            reason: substitution.reason,
-            customerApproved: Boolean(substitution.customerApproved),
-            approvedAt: substitution.approvedAt,
-          }
-        : undefined,
-    };
-  });
-}
-
-function mapOrder(order: any): GroceryOrder {
-  const items = mapLineItems(order.lineItems || [], order.orderItemSubstitutions || []);
-  const subtotal = items.reduce((sum, item) => sum + item.unit_price * item.quantity, 0);
-  const taxTotal = Math.round(subtotal * (order.taxRate || 0));
-  const shippingTotal = Math.round((order.metadata?.deliveryFee || 0) * 100);
-  const total = subtotal + taxTotal + shippingTotal;
-  const metadata = order.metadata || {};
-  const fulfillmentSlot = metadata.selectedFulfillmentSlot;
-  const fulfillmentMethod = metadata.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery';
-  const pickupReady = fulfillmentMethod === 'pickup' && Boolean(metadata.readyForPickup);
-
-  return {
-    id: order.id,
-    orderNumber: String(order.displayId || order.id.slice(-8).toUpperCase()),
-    status: pickupReady && order.status === 'packed' ? 'out_for_delivery' : mapOrderStatus(order.status),
-    email: order.email,
-    createdAt: order.createdAt,
-    updatedAt: order.updatedAt,
-    subtotal,
-    tax_total: taxTotal,
-    shipping_total: shippingTotal,
-    discount_total: 0,
-    total,
-    shippingAddress: order.shippingAddress,
-    fulfillmentMethod,
-    deliverySlot: order.deliveryDate
-      ? {
-          date: new Date(order.deliveryDate).toISOString(),
-          startTime: fulfillmentSlot?.startTime || (order.deliveryTimeWindow?.startsWith('time_8')
-            ? '08:00'
-            : order.deliveryTimeWindow?.startsWith('time_10')
-            ? '10:00'
-            : order.deliveryTimeWindow?.startsWith('time_12')
-            ? '12:00'
-            : order.deliveryTimeWindow?.startsWith('time_14')
-            ? '14:00'
-            : order.deliveryTimeWindow?.startsWith('time_16')
-            ? '16:00'
-            : '18:00'),
-          endTime: fulfillmentSlot?.endTime || (order.deliveryTimeWindow?.endsWith('10')
-            ? '10:00'
-            : order.deliveryTimeWindow?.endsWith('12')
-            ? '12:00'
-            : order.deliveryTimeWindow?.endsWith('14')
-            ? '14:00'
-            : order.deliveryTimeWindow?.endsWith('16')
-            ? '16:00'
-            : order.deliveryTimeWindow?.endsWith('18')
-            ? '18:00'
-            : '20:00'),
-        }
-      : undefined,
-    pickupCheckIn: fulfillmentMethod === 'pickup'
-      ? {
-          customerArrived: Boolean(metadata.customerArrived),
-          checkInTime: metadata.checkInTime || null,
-          parkingSpotId: metadata.parkingSpotId || null,
-          parkingSpotNumber: metadata.parkingSpotNumber || null,
-          vehicleDescription: metadata.vehicleDescription || null,
-        }
-      : undefined,
-    deliveryInstructions: order.deliveryInstructions,
-    substitutionPreference: mapSubstitutionPreference(order.substitutionPreference),
-    items,
-  };
-}
+import { mapStorefrontOrder } from './order-mappers';
 
 async function getOrderSubstitutions(lineItemIds: string[]) {
   if (!lineItemIds.length) return [];
@@ -217,7 +87,7 @@ export async function getOrderById(id: string): Promise<GroceryOrder | null> {
     if (!order) return null;
 
     const substitutions = await getOrderSubstitutions((order.lineItems || []).map((item: any) => item.id));
-    return mapOrder({ ...order, orderItemSubstitutions: substitutions });
+    return mapStorefrontOrder({ ...order, orderItemSubstitutions: substitutions });
   } catch (error) {
     console.error('Error fetching order:', error);
     return null;
@@ -272,7 +142,7 @@ export async function getOrdersByUser(): Promise<GroceryOrder[]> {
       orderItemSubstitutions: substitutions.filter((substitution: any) =>
         (order.lineItems || []).some((item: any) => item.id === substitution.orderItem)
       ),
-    })).map(mapOrder);
+    })).map(mapStorefrontOrder);
   } catch (error) {
     console.error('Error fetching user orders:', error);
     return [];
@@ -281,18 +151,24 @@ export async function getOrdersByUser(): Promise<GroceryOrder[]> {
 
 export async function getAvailableParkingSpots(accessibleOnly = false): Promise<GroceryParkingSpot[]> {
   try {
-    const { data } = await storefrontGraphQL<{ availableParkingSpots: GroceryParkingSpot[] }>(`
-      query GetAvailableParkingSpots($accessibleOnly: Boolean) {
-        availableParkingSpots(accessibleOnly: $accessibleOnly) {
-          id
-          spotNumber
-          description
-          isAccessible
-          isAvailable
+    const { data } = await storefrontGraphQL<{
+      publicGroceryAvailability: { parkingSpots: GroceryParkingSpot[] };
+    }>(`
+      query GetAvailableParkingSpots {
+        publicGroceryAvailability(days: 7) {
+          parkingSpots {
+            id
+            spotNumber
+            description
+            isAccessible
+          }
         }
       }
-    `, { accessibleOnly }, { cache: 'no-store' });
-    return data?.availableParkingSpots || [];
+    `, undefined, { cache: 'no-store' });
+    const spots = data?.publicGroceryAvailability?.parkingSpots || [];
+    return spots
+      .filter((spot) => !accessibleOnly || spot.isAccessible)
+      .map((spot) => ({ ...spot, isAvailable: true }));
   } catch (error) {
     console.error('Error fetching parking spots:', error);
     return [];

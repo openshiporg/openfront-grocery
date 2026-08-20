@@ -10,11 +10,17 @@
 !.yarn/releases
 !.yarn/versions
 
+# local runtime artifacts (may contain generated credentials and logs)
+/.runtime
+
 # testing
 /coverage
+/test-results
+/playwright-report
 
 # next.js
 /.next/
+/.next-*
 /out/
 
 # production
@@ -30,8 +36,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files (only the documented, secret-free template is distributable)
 .env*
+!.env.example
 
 # vercel
 .vercel

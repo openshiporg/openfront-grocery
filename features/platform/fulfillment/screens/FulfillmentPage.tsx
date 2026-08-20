@@ -1,91 +1,25 @@
-import { gql } from 'graphql-request';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { PlatformErrorState, PlatformMetricGrid, PlatformTruthNotice } from '@/features/platform/components/PlatformPrimitives';
 import FulfillmentBoardClient from '@/features/platform/fulfillment/components/FulfillmentBoardClient';
-
-const FULFILLMENT_QUERY = gql`
-  query GroceryFulfillmentBoard {
-    picking: orders(where: { status: { equals: picking } }, orderBy: { createdAt: asc }, take: 20) {
-      id
-      displayId
-      email
-      status
-      deliveryTimeWindow
-      substitutionPreference
-      metadata
-      lineItems { id quantity title sku }
-    }
-    packed: orders(where: { status: { equals: packed } }, orderBy: { updatedAt: desc }, take: 20) {
-      id
-      displayId
-      email
-      status
-      deliveryTimeWindow
-      substitutionPreference
-      metadata
-      lineItems { id quantity title sku }
-    }
-    pending: orders(where: { status: { equals: pending } }, orderBy: { createdAt: asc }, take: 20) {
-      id
-      displayId
-      email
-      status
-      deliveryTimeWindow
-      substitutionPreference
-      metadata
-      lineItems { id quantity title sku }
-    }
-    orderItemSubstitutions(orderBy: { createdAt: desc }, take: 200) {
-      id
-      orderItem
-      originalProduct
-      substitutedProduct
-      reason
-      customerApproved
-      approvedAt
-    }
-  }
-`;
+import { platformProjections } from '@/features/platform/lib/platformProjections';
 
 export async function FulfillmentPage() {
-  const response = await keystoneClient<any>(FULFILLMENT_QUERY);
-  const data = response.success ? response.data : { pending: [], picking: [], packed: [], orderItemSubstitutions: [] };
+  let data: Awaited<ReturnType<typeof platformProjections.fulfillment>> = null;
+  let loadError: string | null = null;
+  try { data = await platformProjections.fulfillment(); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load fulfillment.'; }
+  const safe = data || { pending: [], picking: [], packed: [], orderItemSubstitutions: [] };
+  const columns = [{ title: 'Pending', items: safe.pending }, { title: 'Picking', items: safe.picking }, { title: 'Packed', items: safe.packed }];
+  const awaitingApproval = safe.orderItemSubstitutions.filter((entry) => !entry.customerApproved).length;
+  const lineCount = [...safe.pending, ...safe.picking, ...safe.packed].reduce((sum, order) => sum + order.lineItems.length, 0);
+  const pickupCount = [...safe.pending, ...safe.picking, ...safe.packed].filter((order) => order.metadata?.fulfillmentMethod === 'pickup').length;
+  const breadcrumbs = [{ type: 'link' as const, label: 'Dashboard', href: '/dashboard' }, { type: 'page' as const, label: 'Platform' }, { type: 'page' as const, label: 'Fulfillment' }];
+  const header = <div><h1 className="text-2xl font-semibold tracking-tight">Pick & pack</h1><p className="mt-1 text-sm text-muted-foreground">Work the active order lanes, retain substitution decisions, and hand packed orders to pickup or delivery.</p></div>;
 
-  const columns = [
-    { title: 'Pending', items: data.pending || [] },
-    { title: 'Picking', items: data.picking || [] },
-    { title: 'Packed', items: data.packed || [] },
-  ];
-
-  const substitutionCount = (data.orderItemSubstitutions || []).length;
-  const waitingApprovalCount = (data.orderItemSubstitutions || []).filter((entry: any) => !entry.customerApproved).length;
-
-  const breadcrumbs = [
-    { type: 'link' as const, label: 'Dashboard', href: '/dashboard' },
-    { type: 'page' as const, label: 'Platform' },
-    { type: 'page' as const, label: 'Fulfillment' },
-  ];
-
-  const header = (
-    <div className="space-y-3">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Fulfillment Board</h1>
-        <p className="text-sm text-muted-foreground">Picker-focused workflow for starting orders, capturing substitutions, and sending packed orders onward.</p>
-      </div>
-      <div className="flex flex-wrap gap-2 text-[11px]">
-        <span className="rounded-full border px-2.5 py-1 bg-background">Substitutions logged: {substitutionCount}</span>
-        <span className="rounded-full border px-2.5 py-1 bg-background">Waiting customer approval: {waitingApprovalCount}</span>
-      </div>
-    </div>
-  );
-
-  return (
-    <PageContainer title="Fulfillment" header={header} breadcrumbs={breadcrumbs}>
-      <div className="px-4 md:px-6 pb-6">
-        <FulfillmentBoardClient columns={columns} substitutions={data.orderItemSubstitutions || []} />
-      </div>
-    </PageContainer>
-  );
+  return <PageContainer title="Fulfillment" header={header} breadcrumbs={breadcrumbs}><div className="space-y-5 px-4 pb-8 md:px-6">
+    <PlatformMetricGrid metrics={[{ label: 'Waiting to pick', value: safe.pending.length, note: 'Pending orders' }, { label: 'In picking', value: safe.picking.length, note: `${lineCount} total lines across active lanes` }, { label: 'Packed', value: safe.packed.length, note: `${pickupCount} pickup orders across lanes` }, { label: 'Awaiting approval', value: awaitingApproval, note: 'Unapproved recorded substitutions', tone: awaitingApproval ? 'warning' : 'default' }]} />
+    <PlatformTruthNotice title="Fulfillment evidence boundary">The workflow records stage transitions and substitution snapshots. It does not record actual picked quantity, short quantity, tote, staging location, quality check, temperature, seal, or custody chain.</PlatformTruthNotice>
+    {loadError ? <PlatformErrorState description={loadError} /> : <FulfillmentBoardClient columns={columns} substitutions={safe.orderItemSubstitutions} />}
+  </div></PageContainer>;
 }
 
 export default FulfillmentPage;

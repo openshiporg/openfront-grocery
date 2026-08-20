@@ -16,7 +16,7 @@ export interface GroceryProduct {
   id: string;
   name: string;
   handle: string;
-  description?: string;
+  description?: unknown;
   sku: string;
   barcode?: string;
   price: number;
@@ -29,6 +29,7 @@ export interface GroceryProduct {
   expirationDate?: string;
   inStock: boolean;
   stockQuantity: number;
+  backInStockRequested?: boolean;
   organicCertified?: boolean;
   department?: GroceryDepartment;
   supplier?: GrocerySupplier;
@@ -73,7 +74,7 @@ export interface DeliveryWindow {
 export interface GroceryOrder {
   id: string;
   orderNumber: string;
-  status: 'pending' | 'confirmed' | 'processing' | 'picking' | 'out_for_delivery' | 'delivered' | 'cancelled';
+  status: 'pending' | 'confirmed' | 'processing' | 'picking' | 'ready_for_pickup' | 'out_for_delivery' | 'delivered' | 'cancelled';
   email?: string;
   items: GroceryOrderItem[];
   subtotal: number;
@@ -113,9 +114,19 @@ export interface GroceryAddress {
 export interface GroceryStore {
   id: string;
   name: string;
+  tagline?: string;
   homepageTitle?: string;
   homepageDescription?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  address?: string;
   logoUrl?: string;
+  brandHue: number | null;
+  effectiveBrandHue: number;
+  currencyCode?: string;
+  locale?: string;
+  timezone?: string;
+  countryCode?: string;
 }
 
 export interface ShippingAddress {

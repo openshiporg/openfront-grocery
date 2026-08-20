@@ -6,7 +6,9 @@ import {
   checkbox,
 } from "@keystone-6/core/fields";
 import { isSignedIn } from "../access";
+import { ownerScopedFilter } from '../lib/storeAccess';
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 
 export const BackInStockAlert = list({
   access: {
@@ -17,27 +19,15 @@ export const BackInStockAlert = list({
       delete: isSignedIn,
     },
     filter: {
-      query: ({ session }) => {
-        // Users can only see their own back-in-stock alerts
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      update: ({ session }) => {
-        // Users can only update their own back-in-stock alerts
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        // Users can only delete their own back-in-stock alerts
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
+      query: ownerScopedFilter('user'),
+      update: ownerScopedFilter('user'),
+      delete: ownerScopedFilter('user'),
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.itemId) throw new Error('An authenticated owner is required');
+      return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     },
   },
   ui: {
@@ -49,6 +39,9 @@ export const BackInStockAlert = list({
   fields: {
     // User who created the back-in-stock alert
     user: relationship({
+      access: { create: () => false, update: () => false },
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       ref: "User",
       label: "User",
       ui: {
@@ -59,10 +52,15 @@ export const BackInStockAlert = list({
     product: text({
       validation: { isRequired: true },
       isIndexed: true,
-      label: "Product",
+      label: "Product Snapshot",
       ui: {
-        description: "Product ID to monitor for stock availability",
+        description: "Legacy product display snapshot",
       },
+    }),
+    productRef: relationship({
+      ref: 'Product.backInStockAlerts',
+      access: { create: () => false, update: () => false },
+      label: 'Product',
     }),
     // When the user was notified
     notifiedAt: timestamp({

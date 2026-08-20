@@ -1,12 +1,14 @@
 import type { GroceryDepartment, GroceryProduct } from '@/features/storefront/types';
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { Boxes, PackageSearch, SlidersHorizontal, Thermometer } from 'lucide-react';
-import { notFound } from 'next/navigation';
+import { Boxes, Thermometer } from 'lucide-react';
+import { notFound, redirect } from 'next/navigation';
 
 import { getDepartmentByHandle, getProductsByDepartment } from '@/features/storefront/lib/data/departments';
+import { catalogPageHref, catalogTotalPages, parseCatalogPage } from '@/features/storefront/lib/catalogPagination';
+import { storefrontMetadata } from '@/features/storefront/lib/metadata';
 import UrbanProductGrid from '@/features/storefront/modules/urban/UrbanProductGrid';
-import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanHeadline, UrbanMetric, UrbanPageShell, UrbanPanel } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { UrbanButtonLink, UrbanContainer, UrbanMetric, UrbanPageHeader, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 type Props = {
   params: Promise<{ handle: string; countryCode?: string }>;
@@ -17,11 +19,11 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
   const params = await props.params;
   const department: GroceryDepartment | null = await getDepartmentByHandle(params.handle);
   if (!department) notFound();
-  return {
-    title: `${department.name} | Urban Express`,
-    description: department.description ?? `Shop the ${department.name} department in Urban Express.`,
-    alternates: { canonical: `/departments/${params.handle}` },
-  };
+  return storefrontMetadata({
+    title: department.name,
+    description: department.description ?? `Shop the ${department.name} department.`,
+    canonical: `/departments/${params.handle}`,
+  });
 }
 
 export async function DepartmentPage(props: Props) {
@@ -29,58 +31,77 @@ export async function DepartmentPage(props: Props) {
   const department: GroceryDepartment | null = await getDepartmentByHandle(params.handle);
   if (!department) notFound();
 
+  const pageSize = 20;
+  const page = parseCatalogPage(searchParams.page);
   const { products, totalCount }: { products: GroceryProduct[]; totalCount: number } = await getProductsByDepartment(
     department.handle,
-    { sortBy: searchParams.sortBy, page: searchParams.page ? parseInt(searchParams.page) : 1 },
+    { sortBy: searchParams.sortBy, page, limit: pageSize },
   );
+  const totalPages = catalogTotalPages(totalCount, pageSize);
+  const pathname = `/departments/${department.handle}`;
+  if (page > totalPages) redirect(catalogPageHref(pathname, { sortBy: searchParams.sortBy }, totalPages));
 
   return (
     <UrbanPageShell>
-      <UrbanContainer className="space-y-8">
-        <nav className="font-market-label text-xs font-black uppercase tracking-[0.16em] text-[#e2bfb0]">
-          <Link href="/" className="hover:text-[#ffb693]">Urban Express</Link>
-          <span className="mx-2 text-[#5a4136]">/</span>
-          <Link href="/departments" className="hover:text-[#ffb693]">Aisles</Link>
-          <span className="mx-2 text-[#5a4136]">/</span>
-          <span className="text-[#ffb693]">{department.name}</span>
-        </nav>
+      <UrbanContainer className="space-y-8 py-8 sm:py-10">
+        <UrbanPageHeader
+          breadcrumb={[
+            { label: 'Home', href: '/' },
+            { label: 'Departments', href: '/departments' },
+            { label: department.name },
+          ]}
+          title={department.name}
+          description={department.description || 'Browse in-stock items from this aisle.'}
+          aside={
+            <div className="space-y-3">
+              <UrbanMetric label="Products" value={totalCount} icon={Boxes} />
+              <UrbanMetric label="Zone" value={department.temperatureZone || 'Standard'} icon={Thermometer} />
+            </div>
+          }
+        />
 
-        <section className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
-          <UrbanPanel className="relative overflow-hidden p-5 sm:p-8 lg:p-10">
-            <div className="absolute right-0 top-0 h-full w-1/3 bg-[linear-gradient(135deg,transparent,#ff6b00_45%,transparent)] opacity-10" />
-            <div className="relative z-10 max-w-4xl">
-              <UrbanBadge tone="orange"><PackageSearch className="h-3 w-3" /> Aisle sector</UrbanBadge>
-              <UrbanHeadline className="mt-5">{department.name}</UrbanHeadline>
-              <p className="mt-5 max-w-2xl text-sm leading-7 text-[#e2bfb0]">{department.description || 'Fast-moving grocery inventory, picker-ready and organized for urban route speed.'}</p>
-              <div className="mt-6 flex flex-wrap gap-3">
-                <UrbanButtonLink href={`/products?department=${department.handle}`}>Open inventory</UrbanButtonLink>
-                <UrbanButtonLink href="/departments" variant="ghost">All sectors</UrbanButtonLink>
-              </div>
-            </div>
-          </UrbanPanel>
-          <div className="grid gap-3">
-            <UrbanMetric label="Items in sector" value={totalCount} icon={Boxes} />
-            <UrbanMetric label="Temp zone" value={department.temperatureZone || 'Aisle'} icon={Thermometer} />
-            <UrbanMetric label="Sort mode" value={searchParams.sortBy || 'name'} icon={SlidersHorizontal} />
+        {department.imageUrl ? (
+          <div className="aspect-[21/8] overflow-hidden border border-[var(--sf-rule-strong)] bg-[var(--sf-paper-3)]">
+            <img src={department.imageUrl} alt={`${department.name} department`} className="h-full w-full object-cover" />
           </div>
-        </section>
+        ) : null}
 
-        <section>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b-2 border-[#5a4136] pb-3">
-            <div>
-              <p className="font-market-label text-xs font-black uppercase tracking-[0.22em] text-[#ffb693]">Live product feed</p>
-              <h2 className="mt-1 font-market-label text-4xl font-black uppercase tracking-[-0.04em] text-[#e2e2e2]">Picker-ready stock</h2>
-            </div>
-            <div className="flex gap-2">
-              {['name', 'price-asc', 'price-desc', 'low-stock'].map((sort) => (
-                <Link key={sort} href={`/departments/${department.handle}?sortBy=${sort}`} className={`border px-3 py-2 font-market-label text-xs font-black uppercase tracking-[0.14em] ${searchParams.sortBy === sort || (!searchParams.sortBy && sort === 'name') ? 'border-[#ffb693] bg-[#ffb693] text-[#561f00]' : 'border-[#5a4136] bg-[#282a2b] text-[#e2bfb0]'}`}>
-                  {sort.replace('-', ' ')}
-                </Link>
-              ))}
-            </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--sf-rule)] pb-4">
+          <UrbanButtonLink href={`/products?department=${department.handle}`}>Open in catalog</UrbanButtonLink>
+          <div className="flex flex-wrap gap-2">
+            {['name', 'price-asc', 'price-desc', 'low-stock'].map((sort) => (
+              <Link
+                key={sort}
+                href={catalogPageHref(pathname, { sortBy: sort }, 1)}
+                className={`border px-3 py-1.5 text-sm font-medium transition ${searchParams.sortBy === sort || (!searchParams.sortBy && sort === 'name') ? 'border-[var(--sf-accent)] bg-[var(--sf-accent)] text-white' : 'border-[var(--sf-rule)] text-[var(--sf-ink-muted)] hover:border-[var(--sf-accent)]'}`}
+              >
+                {sort.replace('-', ' ')}
+              </Link>
+            ))}
           </div>
-          <UrbanProductGrid products={products} featuredFirst />
-        </section>
+        </div>
+
+        <UrbanProductGrid products={products} featuredFirst={page === 1} />
+
+        {totalPages > 1 ? (
+          <nav aria-label={`${department.name} product pages`} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--sf-rule)] pt-5">
+            <Link
+              href={catalogPageHref(pathname, { sortBy: searchParams.sortBy }, Math.max(1, page - 1))}
+              aria-disabled={page <= 1}
+              className={`border px-4 py-2 text-sm font-medium ${page <= 1 ? 'pointer-events-none opacity-40' : 'hover:border-[var(--sf-accent)]'}`}
+            >
+              Previous
+            </Link>
+            <span className="text-sm text-[var(--sf-ink-muted)]">Page {page} of {totalPages}</span>
+            <Link
+              href={catalogPageHref(pathname, { sortBy: searchParams.sortBy }, Math.min(totalPages, page + 1))}
+              aria-disabled={page >= totalPages}
+              className={`border px-4 py-2 text-sm font-medium ${page >= totalPages ? 'pointer-events-none opacity-40' : 'hover:border-[var(--sf-accent)]'}`}
+            >
+              Next
+            </Link>
+          </nav>
+        ) : null}
       </UrbanContainer>
     </UrbanPageShell>
   );

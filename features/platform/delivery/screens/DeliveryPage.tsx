@@ -1,96 +1,26 @@
-import { gql } from 'graphql-request';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { PlatformErrorState, PlatformMetricGrid, PlatformTruthNotice } from '@/features/platform/components/PlatformPrimitives';
 import DeliveryOperationsClient from '@/features/platform/delivery/components/DeliveryOperationsClient';
-
-const DELIVERY_QUERY = gql`
-  query GroceryDeliveryBoard {
-    deliveryRoutes(orderBy: { date: desc }, take: 20) {
-      id
-      date
-      timeWindow
-      status
-      startedAt
-      completedAt
-      driver { id name email }
-      orders { id displayId status metadata }
-    }
-    readyOrders: orders(
-      where: {
-        AND: [
-          { status: { equals: packed } }
-          { metadata: { path: ["fulfillmentMethod"], equals: "delivery" } }
-        ]
-      }
-      orderBy: { updatedAt: asc }
-      take: 50
-    ) {
-      id
-      displayId
-      email
-      status
-      deliveryDate
-      deliveryTimeWindow
-      metadata
-      lineItems { id quantity }
-    }
-    drivers: users(where: { role: { canManageDelivery: { equals: true } } }, take: 25, orderBy: { name: asc }) {
-      id
-      name
-      email
-    }
-    deliverySlots(orderBy: [{ date: asc }, { startTime: asc }], take: 20) {
-      id
-      date
-      startTime
-      endTime
-      capacity
-      currentBookings
-      isActive
-      deliveryFee
-    }
-  }
-`;
+import { platformProjections } from '@/features/platform/lib/platformProjections';
 
 export async function DeliveryPage() {
-  const response = await keystoneClient<any>(DELIVERY_QUERY);
-  const routes = response.success ? response.data?.deliveryRoutes || [] : [];
-  const slots = response.success ? response.data?.deliverySlots || [] : [];
-  const readyOrders = response.success ? response.data?.readyOrders || [] : [];
-  const drivers = response.success ? response.data?.drivers || [] : [];
-
-  const constrainedSlots = slots.filter((slot: any) => slot.capacity > 0 && slot.currentBookings / slot.capacity >= 0.8).length;
-  const liveSlots = slots.filter((slot: any) => slot.isActive).length;
-  const openRoutes = routes.filter((route: any) => route.status !== 'completed').length;
-
-  const breadcrumbs = [
-    { type: 'link' as const, label: 'Dashboard', href: '/dashboard' },
-    { type: 'page' as const, label: 'Platform' },
-    { type: 'page' as const, label: 'Delivery' },
-  ];
-
-  const header = (
-    <div className="space-y-3">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Delivery Operations</h1>
-        <p className="text-sm text-muted-foreground">Dispatch-oriented visibility into route readiness and live delivery capacity controls.</p>
-      </div>
-      <div className="flex flex-wrap gap-2 text-[11px]">
-        <span className="rounded-full border px-2.5 py-1 bg-background">Live slots: {liveSlots}</span>
-        <span className="rounded-full border px-2.5 py-1 bg-background">High-pressure slots: {constrainedSlots}</span>
-        <span className="rounded-full border px-2.5 py-1 bg-background">Open routes: {openRoutes}</span>
-        <span className="rounded-full border px-2.5 py-1 bg-background">Ready to route: {readyOrders.length}</span>
-      </div>
-    </div>
-  );
-
-  return (
-    <PageContainer title="Delivery" header={header} breadcrumbs={breadcrumbs}>
-      <div className="px-4 md:px-6 pb-6">
-        <DeliveryOperationsClient slots={slots} routes={routes} readyOrders={readyOrders} drivers={drivers} />
-      </div>
-    </PageContainer>
-  );
+  let data: Awaited<ReturnType<typeof platformProjections.delivery>> = null;
+  let loadError: string | null = null;
+  try { data = await platformProjections.delivery(); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load delivery.'; }
+  const routes = data?.deliveryRoutes || [];
+  const slots = data?.deliverySlots || [];
+  const readyOrders = data?.readyOrders || [];
+  const drivers = data?.drivers || [];
+  const highPressure = slots.filter((slot) => slot.capacity > 0 && slot.currentBookings / slot.capacity >= 0.8).length;
+  const openRoutes = routes.filter((route) => route.status !== 'completed').length;
+  const remainingCapacity = slots.filter((slot) => slot.isActive).reduce((sum, slot) => sum + Math.max(0, slot.capacity - slot.currentBookings), 0);
+  const breadcrumbs = [{ type: 'link' as const, label: 'Dashboard', href: '/dashboard' }, { type: 'page' as const, label: 'Platform' }, { type: 'page' as const, label: 'Delivery' }];
+  const header = <div><h1 className="text-2xl font-semibold tracking-tight">Delivery</h1><p className="mt-1 text-sm text-muted-foreground">Control order-count capacity, group packed orders, assign an eligible driver, and complete retailer-operated routes.</p></div>;
+  return <PageContainer title="Delivery" header={header} breadcrumbs={breadcrumbs}><div className="space-y-5 px-4 pb-8 md:px-6">
+    <PlatformMetricGrid metrics={[{ label: 'Ready to route', value: readyOrders.length, note: 'Packed delivery orders' }, { label: 'Open routes', value: openRoutes, note: `${routes.filter((route) => route.status === 'in_progress').length} in progress` }, { label: 'Open order capacity', value: remainingCapacity, note: 'Across active projected slots' }, { label: 'High-pressure slots', value: highPressure, note: 'At least 80% booked', tone: highPressure ? 'warning' : 'default' }]} />
+    <PlatformTruthNotice title="Delivery boundary">Routes are manually grouped and retailer-operated. Capacity means order count—not pick minutes, cold-zone staging, vehicle volume, GPS optimization, proof images, or third-party last mile.</PlatformTruthNotice>
+    {loadError ? <PlatformErrorState description={loadError} /> : <DeliveryOperationsClient slots={slots} routes={routes} readyOrders={readyOrders} drivers={drivers} />}
+  </div></PageContainer>;
 }
 
 export default DeliveryPage;

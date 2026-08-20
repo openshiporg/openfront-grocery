@@ -1,5 +1,5 @@
-import { SubscriptionsPage, generateMetadata } from "@/features/storefront/screens/SubscriptionsPage";
+import { redirect } from 'next/navigation';
 
-export { generateMetadata };
-
-export default SubscriptionsPage;
+export default function SubscriptionsRoute() {
+  redirect('/products');
+}

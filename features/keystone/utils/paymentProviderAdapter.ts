@@ -1,43 +1,41 @@
-export async function executeAdapterFunction({ provider, functionName, args }: { provider: any; functionName: string; args: any }) {
-  const functionPath = provider?.[functionName];
+import {
+  getPaymentProviderAdapter,
+  type PaymentProviderRecord,
+} from '../../integrations/payment';
 
-  if (!functionPath) {
-    throw new Error(`Provider ${provider?.code || 'unknown'} is missing ${functionName}`);
+type AdapterFunctionName =
+  | 'createPaymentFunction'
+  | 'capturePaymentFunction'
+  | 'refundPaymentFunction'
+  | 'getPaymentStatusFunction'
+  | 'generatePaymentLinkFunction';
+
+export async function executeAdapterFunction({
+  provider,
+  functionName,
+  args,
+}: {
+  provider: PaymentProviderRecord;
+  functionName: AdapterFunctionName;
+  args: any;
+}) {
+  if (!provider?.isInstalled) {
+    throw new Error(`Payment provider ${provider?.code || 'unknown'} is not installed`);
   }
 
-  if (functionPath.startsWith('http')) {
-    const response = await fetch(functionPath, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, ...args }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP request failed: ${response.statusText}`);
-    }
-
-    return response.json();
-  }
-
-  const adapter = await import(`../../integrations/payment/${functionPath}.ts`);
-  const fn = adapter[functionName];
-
-  if (!fn) {
-    throw new Error(`Function ${functionName} not found in adapter ${functionPath}`);
-  }
-
-  return fn({ provider, ...args });
+  const adapter = getPaymentProviderAdapter(provider.code);
+  return adapter[functionName](args as never);
 }
 
-export async function createPayment({ provider, cart, order, amount, currency }: { provider: any; cart?: any; order?: any; amount: number; currency: string }) {
+export async function createPayment({ provider, cart, order, amount, currency, idempotencyKey }: { provider: PaymentProviderRecord; cart?: any; order?: any; amount: number; currency: string; idempotencyKey?: string }) {
   return executeAdapterFunction({
     provider,
     functionName: 'createPaymentFunction',
-    args: { cart, order, amount, currency },
+    args: { cart, order, amount, currency, idempotencyKey },
   });
 }
 
-export async function capturePayment({ provider, paymentId, amount }: { provider: any; paymentId: string; amount?: number }) {
+export async function capturePayment({ provider, paymentId, amount }: { provider: PaymentProviderRecord; paymentId: string; amount?: number }) {
   return executeAdapterFunction({
     provider,
     functionName: 'capturePaymentFunction',
@@ -45,18 +43,31 @@ export async function capturePayment({ provider, paymentId, amount }: { provider
   });
 }
 
-export async function refundPayment({ provider, paymentId, amount }: { provider: any; paymentId: string; amount?: number }) {
+export async function refundPayment({ provider, paymentId, amount, idempotencyKey }: { provider: PaymentProviderRecord; paymentId: string; amount?: number; idempotencyKey?: string }) {
   return executeAdapterFunction({
     provider,
     functionName: 'refundPaymentFunction',
-    args: { paymentId, amount },
+    args: { paymentId, amount, idempotencyKey },
   });
 }
 
-export async function getPaymentStatus({ provider, paymentId }: { provider: any; paymentId: string }) {
+export async function getPaymentStatus({ provider, paymentId }: { provider: PaymentProviderRecord; paymentId: string }) {
   return executeAdapterFunction({
     provider,
     functionName: 'getPaymentStatusFunction',
     args: { paymentId },
   });
+}
+
+export async function verifyPaymentWebhook({
+  providerCode,
+  rawBody,
+  headers,
+}: {
+  providerCode: string;
+  rawBody: string;
+  headers: Record<string, string>;
+}) {
+  const adapter = getPaymentProviderAdapter(providerCode);
+  return adapter.handleWebhookFunction({ rawBody, headers });
 }

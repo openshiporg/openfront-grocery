@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import seedData from '../lib/seed.json';
 import { SECTION_DEFINITIONS, type SeedSectionKey, type TemplateType } from '../config/templates';
 import { getItemsFromJsonData, getSeedForTemplate } from '../utils/dataUtils';
@@ -42,18 +42,6 @@ export function useOnboardingState() {
     isLoading: false,
   });
 
-  useEffect(() => {
-    if (state.selectedTemplate === 'custom' && state.customJsonApplied) {
-      return;
-    }
-
-    setState((prev) => ({
-      ...prev,
-      currentJsonData: getSeedForTemplate(prev.selectedTemplate, seedData),
-      customJsonApplied: prev.selectedTemplate === 'custom' ? prev.customJsonApplied : false,
-    }));
-  }, [state.selectedTemplate, state.customJsonApplied]);
-
   const getDisplayNamesFromData = useMemo(
     () => (data: any) =>
       SECTION_DEFINITIONS.reduce((acc, section) => {
@@ -68,6 +56,7 @@ export function useOnboardingState() {
     setState((prev) => ({
       ...prev,
       selectedTemplate,
+      currentJsonData: getSeedForTemplate(selectedTemplate, seedData),
       customJsonApplied: selectedTemplate === 'custom' ? prev.customJsonApplied : false,
     }));
   const setCurrentJsonData = (currentJsonData: any) =>

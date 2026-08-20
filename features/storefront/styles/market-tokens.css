@@ -1,0 +1,67 @@
+/* Hallmark · macrostructure: Workbench · tone: editorial · theme: custom corner-market
+ * vibe: sun-warm parchment, forest ink, retailer-configured accent
+ * paper: oklch(97% 0.012 85) · unset brand hue: 35 · Fraunces + DM Sans
+ */
+
+:root {
+  --sf-paper: oklch(97.2% 0.012 85);
+  --sf-paper-2: oklch(94.5% 0.018 82);
+  --sf-paper-3: oklch(91% 0.022 78);
+  --sf-ink: oklch(22% 0.04 155);
+  --sf-ink-muted: oklch(45% 0.025 150);
+  --sf-ink-faint: oklch(58% 0.018 148);
+  /* Explicit unset behavior; the Storefront layout overrides these from persisted settings. */
+  --sf-brand-hue: 35;
+  --sf-accent: oklch(52% 0.14 var(--sf-brand-hue));
+  --sf-accent-hover: oklch(44% 0.12 var(--sf-brand-hue));
+  --sf-sage: oklch(42% 0.06 155);
+  --sf-sage-light: oklch(92% 0.03 155);
+  --sf-rule: oklch(85% 0.015 85);
+  --sf-rule-strong: oklch(78% 0.02 82);
+  --sf-focus: oklch(52% 0.14 var(--sf-brand-hue));
+  --sf-danger: oklch(48% 0.16 25);
+  --sf-danger-bg: oklch(96% 0.03 25);
+  --sf-info: oklch(42% 0.06 250);
+  --sf-info-bg: oklch(94% 0.02 250);
+  --sf-warn: oklch(52% 0.12 75);
+  --sf-warn-bg: oklch(95% 0.04 85);
+  --sf-header: oklch(20% 0.035 155);
+  --sf-header-ink: oklch(94% 0.015 85);
+
+  --sf-space-xs: 0.25rem;
+  --sf-space-sm: 0.5rem;
+  --sf-space-md: 1rem;
+  --sf-space-lg: 1.5rem;
+  --sf-space-xl: 2.5rem;
+  --sf-space-2xl: 4rem;
+
+  --sf-radius-sm: 2px;
+  --sf-radius-md: 4px;
+  --sf-radius-lg: 8px;
+
+  --sf-text-display: clamp(2.25rem, 5.2vw, 3.75rem);
+  --sf-text-title: clamp(1.5rem, 2.8vw, 2.25rem);
+  --sf-text-subtitle: clamp(1.125rem, 2vw, 1.5rem);
+
+  --sf-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --sf-dur-fast: 150ms;
+  --sf-dur-normal: 280ms;
+
+  --sf-font-display: var(--font-market-display), "Fraunces", Georgia, serif;
+  --sf-font-body: var(--font-market-body), "DM Sans", system-ui, sans-serif;
+}
+
+html,
+body {
+  overflow-x: clip;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

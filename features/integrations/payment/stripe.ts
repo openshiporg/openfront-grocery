@@ -11,7 +11,7 @@ const getStripeClient = () => {
   });
 };
 
-export async function createPaymentFunction({ cart, amount, currency }: { cart?: any; amount: number; currency: string }) {
+export async function createPaymentFunction({ cart, amount, currency, idempotencyKey }: { cart?: any; amount: number; currency: string; idempotencyKey?: string }) {
   const stripe = getStripeClient();
 
   const paymentIntent = await stripe.paymentIntents.create({
@@ -24,7 +24,7 @@ export async function createPaymentFunction({ cart, amount, currency }: { cart?:
       cartId: cart?.id || '',
       sessionId: cart?.sessionId || '',
     },
-  });
+  }, idempotencyKey ? { idempotencyKey } : undefined);
 
   return {
     clientSecret: paymentIntent.client_secret,
@@ -46,13 +46,16 @@ export async function capturePaymentFunction({ paymentId, amount }: { paymentId:
   };
 }
 
-export async function refundPaymentFunction({ paymentId, amount }: { paymentId: string; amount?: number }) {
+export async function refundPaymentFunction({ paymentId, amount, idempotencyKey }: { paymentId: string; amount?: number; idempotencyKey?: string }) {
   const stripe = getStripeClient();
 
-  const refund = await stripe.refunds.create({
-    payment_intent: paymentId,
-    amount,
-  });
+  const refund = await stripe.refunds.create(
+    {
+      payment_intent: paymentId,
+      amount,
+    },
+    idempotencyKey ? { idempotencyKey } : undefined,
+  );
 
   return {
     status: refund.status,
@@ -77,24 +80,29 @@ export async function generatePaymentLinkFunction({ paymentId }: { paymentId: st
   return `https://dashboard.stripe.com/payments/${paymentId}`;
 }
 
-export async function handleWebhookFunction({ event, headers }: { event: any; headers: any }) {
+export async function handleWebhookFunction({ rawBody, headers }: { rawBody: string; headers: Record<string, string> }) {
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!webhookSecret) {
     throw new Error('Stripe webhook secret is not configured');
   }
 
-  const stripe = getStripeClient();
+  const signature = headers['stripe-signature'];
+
+  if (!signature || !rawBody) {
+    throw new Error('Stripe webhook signature and raw body are required');
+  }
 
   try {
-    const stripeEvent = stripe.webhooks.constructEvent(
-      JSON.stringify(event),
-      headers['stripe-signature'],
+    const stripeEvent = Stripe.webhooks.constructEvent(
+      rawBody,
+      signature,
       webhookSecret
     );
 
     return {
-      isValid: true,
+      isValid: true as const,
       event: stripeEvent,
+      eventId: stripeEvent.id,
       type: stripeEvent.type,
       resource: stripeEvent.data.object,
     };

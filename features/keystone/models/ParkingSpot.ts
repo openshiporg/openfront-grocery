@@ -2,17 +2,31 @@ import { list } from "@keystone-6/core";
 import {
   text,
   checkbox,
+  relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const ParkingSpot = list({
   access: {
     operation: {
-      query: () => true,
+      query: isSignedIn,
       create: permissions.canManageDelivery,
       update: permissions.canManageDelivery,
-      delete: permissions.canManageDelivery,
+      delete: () => false,
+    },
+    filter: {
+      query: storeScopedFilter,
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
     },
   },
   ui: {
@@ -22,6 +36,12 @@ export const ParkingSpot = list({
     },
   },
   fields: {
+    store: relationship({
+      ref: 'Store.parkingSpots',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageDelivery, update: () => false },
+    }),
     spotNumber: text({
       validation: { isRequired: true },
       isIndexed: "unique",
@@ -45,6 +65,7 @@ export const ParkingSpot = list({
       },
     }),
     isAvailable: checkbox({
+      access: { update: () => false },
       defaultValue: true,
       label: "Is Available",
       ui: {

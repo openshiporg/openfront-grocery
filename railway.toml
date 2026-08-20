@@ -1,7 +1,11 @@
-# Railway can't access internal databases during build, so we move
-# npm run migrate from build to start command
+# Build is immutable and never connects to the production database.
+# Railway runs migrations once in pre-deploy before starting replicas.
 [build]
-buildCommand = "keystone build --no-ui && next build"
+buildCommand = "npm run build"
 
 [deploy]
-startCommand = "npm run migrate && next start"
+# Railway runs this after build and before starting immutable app replicas.
+preDeployCommand = "npm run release:migrate"
+startCommand = "next start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300

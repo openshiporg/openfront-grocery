@@ -7,16 +7,19 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const InventoryLot = list({
   access: {
     operation: {
       query: permissions.canManageInventory,
-      create: permissions.canManageInventory,
-      update: permissions.canManageInventory,
-      delete: permissions.canManageInventory,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
+    filter: { query: storeScopedFilter, update: storeScopedFilter, delete: storeScopedFilter },
   },
   ui: {
     labelField: "lotNumber",
@@ -64,10 +67,14 @@ export const InventoryLot = list({
     }),
     costPerUnit: float({
       validation: { isRequired: true },
-      label: "Cost Per Unit",
-      ui: {
-        description: "Purchase cost per unit for this lot",
-      },
+      label: "Cost Per Unit (legacy display)",
+      ui: { description: "Legacy display value; costPerUnitCents is authoritative" },
+    }),
+    costPerUnitCents: integer({
+      defaultValue: 0,
+      validation: { isRequired: true, min: 0 },
+      access: { create: () => false, update: () => false },
+      label: "Cost Per Unit (minor units)",
     }),
     location: text({
       label: "Location",
@@ -76,6 +83,12 @@ export const InventoryLot = list({
       },
     }),
     // Relationships
+    store: relationship({
+      ref: 'Store.inventoryLots',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: () => false, update: () => false },
+    }),
     product: relationship({
       ref: "Product.inventoryLots",
       label: "Product",
@@ -83,6 +96,12 @@ export const InventoryLot = list({
     supplier: relationship({
       ref: "Supplier.inventoryLots",
       label: "Supplier",
+    }),
+    orderLineAllocations: relationship({
+      ref: 'OrderLineInventoryAllocation.inventoryLot',
+      many: true,
+      access: { update: () => false },
+      ui: { itemView: { fieldMode: 'read' } },
     }),
     ...trackingFields,
   },

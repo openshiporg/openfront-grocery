@@ -5,19 +5,12 @@ import {
   checkbox,
   relationship,
 } from "@keystone-6/core/fields";
-import { permissions } from "../access";
 import { trackingFields } from "./trackingFields";
 
 export const RecipeIngredient = list({
-  access: {
-    operation: {
-      query: () => true, // Public can view ingredients for public recipe content.
-      create: permissions.canManageProducts,
-      update: permissions.canManageProducts,
-      delete: permissions.canManageProducts,
-    },
-  },
+  access: { operation: { query: () => false, create: () => false, update: () => false, delete: () => false } },
   ui: {
+    isHidden: true,
     labelField: "product",
     listView: {
       initialColumns: ["recipe", "product", "quantity", "unit", "isOptional"],
@@ -35,10 +28,15 @@ export const RecipeIngredient = list({
     // Product ID (text field as specified)
     product: text({
       validation: { isRequired: true },
-      label: "Product",
+      label: "Product Snapshot",
       ui: {
-        description: "Product ID of the ingredient",
+        description: "Legacy product identifier snapshot",
       },
+    }),
+    productRef: relationship({
+      ref: 'Product.recipeIngredients',
+      access: { update: () => false },
+      label: 'Product',
     }),
     // Quantity needed
     quantity: float({

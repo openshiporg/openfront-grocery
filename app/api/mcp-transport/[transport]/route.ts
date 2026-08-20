@@ -67,6 +67,14 @@ async function getGraphQLSchema(graphqlEndpoint: string, cookie: string): Promis
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ transport: string }> }) {
+  if (process.env.NODE_ENV === 'production' && process.env.MCP_ENABLED !== 'true') {
+    return new Response('Not found', { status: 404 });
+  }
+  if (process.env.NODE_ENV === 'production') {
+    const expected = process.env.MCP_SHARED_SECRET;
+    const provided = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+    if (!expected || !provided || provided !== expected) return new Response('Unauthorized', { status: 401 });
+  }
   // Track if any CRUD operations occurred during this request
   let dataHasChanged = false;
   

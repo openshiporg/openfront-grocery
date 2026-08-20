@@ -11,22 +11,12 @@ export async function updateDeliverySlotState(input: {
   deliveryFee?: number;
 }) {
   const response = await keystoneClient(gql`
-    mutation UpdateDeliverySlotState($id: ID!, $data: DeliverySlotUpdateInput!) {
-      updateDeliverySlot(where: { id: $id }, data: $data) {
-        id
-        isActive
-        capacity
-        currentBookings
-        deliveryFee
-      }
+    mutation ConfigureDeliverySlot($slotId: ID!, $isActive: Boolean, $capacity: Int, $deliveryFee: Int, $idempotencyKey: String!) {
+      configureDeliverySlot(slotId: $slotId, isActive: $isActive, capacity: $capacity, deliveryFee: $deliveryFee, idempotencyKey: $idempotencyKey) { slotId capacity currentBookings isAvailable fee reused }
     }
   `, {
-    id: input.slotId,
-    data: {
-      ...(typeof input.isActive === 'boolean' ? { isActive: input.isActive } : {}),
-      ...(typeof input.capacity === 'number' ? { capacity: input.capacity } : {}),
-      ...(typeof input.deliveryFee === 'number' ? { deliveryFee: input.deliveryFee } : {}),
-    },
+    ...input,
+    idempotencyKey: `delivery-slot:${input.slotId}:${input.capacity ?? 'same'}:${input.deliveryFee ?? 'same'}:${input.isActive ?? 'same'}`,
   });
 
   if (!response.success) {
@@ -41,14 +31,14 @@ export async function createDeliveryRouteFromReadyOrders(input: {
   deliveryDate: string;
   deliveryTimeWindow: string;
   orderIds: string[];
-  driverId?: string;
+  driverId: string;
 }) {
   const response = await keystoneClient<{ createDeliveryRouteFromOrders: { routeId: string; message: string } }>(gql`
     mutation CreateDeliveryRouteFromOrders(
       $deliveryDate: String!
       $deliveryTimeWindow: String!
       $orderIds: [ID!]!
-      $driverId: ID
+      $driverId: ID!
     ) {
       createDeliveryRouteFromOrders(
         deliveryDate: $deliveryDate

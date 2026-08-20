@@ -1,91 +1,101 @@
 import type { DeliveryWindow } from '../../types';
-import { storefrontGraphQL } from './graphql';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
+
+type PublicAvailability = {
+  deliveryWindows: Array<{
+    id: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    feeCents: number;
+    remainingCapacity: number;
+  }>;
+  pickupWindows: Array<{
+    id: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    remainingCapacity: number;
+  }>;
+};
 
 function toISODate(dateString: string) {
-  return new Date(dateString).toISOString().split('T')[0];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return dateString;
+  const date = new Date(dateString);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
-function mapDeliverySlot(slot: any): DeliveryWindow {
-  return {
+async function getAvailability() {
+  const { data, errors } = await storefrontGraphQL<{
+    publicGroceryAvailability: PublicAvailability;
+  }>(
+    `
+      query GetPublicGroceryAvailability {
+        publicGroceryAvailability(days: 7) {
+          deliveryWindows {
+            id
+            date
+            startTime
+            endTime
+            feeCents
+            remainingCapacity
+          }
+          pickupWindows {
+            id
+            date
+            startTime
+            endTime
+            remainingCapacity
+          }
+        }
+      }
+    `,
+    undefined,
+    { cache: 'no-store' }
+  );
+  throwGraphQLErrors(errors);
+  if (!data?.publicGroceryAvailability) {
+    throw new Error('Fulfillment availability did not return an authoritative response');
+  }
+  return data.publicGroceryAvailability;
+}
+
+export async function getCheckoutFulfillmentWindows() {
+  const availability = await getAvailability();
+  const deliveryWindows: DeliveryWindow[] = availability.deliveryWindows.map((slot) => ({
     id: slot.id,
     date: toISODate(slot.date),
     startTime: slot.startTime,
     endTime: slot.endTime,
-    available: (slot.capacity - slot.currentBookings) > 0,
-    fee: (slot.deliveryFee ?? 0) / 100,
+    available: slot.remainingCapacity > 0,
+    fee: slot.feeCents / 100,
     method: 'delivery',
-    remainingCapacity: Math.max(0, slot.capacity - slot.currentBookings),
-  };
-}
-
-function mapPickupSlot(slot: any): DeliveryWindow {
-  return {
+    remainingCapacity: slot.remainingCapacity,
+  }));
+  const pickupWindows: DeliveryWindow[] = availability.pickupWindows.map((slot) => ({
     id: slot.id,
     date: toISODate(slot.date),
     startTime: slot.startTime,
     endTime: slot.endTime,
-    available: slot.isAvailable && slot.availableCapacity > 0,
+    available: slot.remainingCapacity > 0,
     fee: 0,
     method: 'pickup',
-    remainingCapacity: slot.availableCapacity,
-  };
+    remainingCapacity: slot.remainingCapacity,
+  }));
+  return { deliveryWindows, pickupWindows };
 }
 
 export async function getDeliveryWindows(date?: string): Promise<{ windows: DeliveryWindow[] }> {
-  try {
-    const { data } = await storefrontGraphQL<{ deliverySlots: any[] }>(`
-      query GetDeliverySlots {
-        deliverySlots(
-          where: { isActive: { equals: true } }
-          orderBy: [{ date: asc }, { startTime: asc }]
-          take: 30
-        ) {
-          id
-          date
-          startTime
-          endTime
-          capacity
-          currentBookings
-          deliveryFee
-        }
-      }
-    `, undefined, { cache: 'no-store' });
-    const mapped = (data?.deliverySlots || []).map(mapDeliverySlot);
-
-    return {
-      windows: date ? mapped.filter((slot: DeliveryWindow) => slot.date === date) : mapped,
-    };
-  } catch (error) {
-    console.error('Error fetching delivery windows:', error);
-    return { windows: [] };
-  }
+  const { deliveryWindows } = await getCheckoutFulfillmentWindows();
+  return { windows: date ? deliveryWindows.filter((slot) => slot.date === date) : deliveryWindows };
 }
 
 export async function getPickupWindows(date?: string): Promise<{ windows: DeliveryWindow[] }> {
-  try {
-    const { data } = await storefrontGraphQL<{ availablePickupSlots: any[] }>(`
-      query GetPickupWindows {
-        availablePickupSlots(days: 7, minCapacity: 1) {
-          id
-          date
-          startTime
-          endTime
-          availableCapacity
-          maxOrders
-          currentOrders
-          isAvailable
-        }
-      }
-    `, undefined, { cache: 'no-store' });
-    const mapped = (data?.availablePickupSlots || []).map(mapPickupSlot);
-
-    return {
-      windows: date ? mapped.filter((slot: DeliveryWindow) => slot.date === date) : mapped,
-    };
-  } catch (error) {
-    console.error('Error fetching pickup windows:', error);
-    return { windows: [] };
-  }
+  const { pickupWindows } = await getCheckoutFulfillmentWindows();
+  return { windows: date ? pickupWindows.filter((slot) => slot.date === date) : pickupWindows };
 }
 
 export async function getFulfillmentWindows(method: 'delivery' | 'pickup', date?: string) {

@@ -1,16 +1,13 @@
 import { list } from '@keystone-6/core';
 import { checkbox, json, relationship, text } from '@keystone-6/core/fields';
-import { permissions } from '../access';
 import { trackingFields } from './trackingFields';
 
 export const PaymentProvider = list({
   access: {
-    operation: {
-      query: permissions.canManagePayments,
-      create: permissions.canManagePayments,
-      update: permissions.canManagePayments,
-      delete: permissions.canManagePayments,
-    },
+    // This is an immutable deployment-wide adapter registry populated only by
+    // onboarding/seed code. Tenant operators cannot alter another Store's
+    // checkout configuration through generic CRUD.
+    operation: { query: () => false, create: () => false, update: () => false, delete: () => false },
   },
   ui: {
     listView: {
@@ -34,18 +31,12 @@ export const PaymentProvider = list({
     isInstalled: checkbox({
       defaultValue: true,
     }),
-    credentials: json({
-      defaultValue: {},
-    }),
     metadata: json({
       defaultValue: {},
+      ui: {
+        description: 'Non-secret display metadata only. Adapter secrets are read from server environment variables.',
+      },
     }),
-    createPaymentFunction: text({ validation: { isRequired: true }, defaultValue: 'manual' }),
-    capturePaymentFunction: text({ validation: { isRequired: true }, defaultValue: 'manual' }),
-    refundPaymentFunction: text({ validation: { isRequired: true }, defaultValue: 'manual' }),
-    getPaymentStatusFunction: text({ validation: { isRequired: true }, defaultValue: 'manual' }),
-    generatePaymentLinkFunction: text({ validation: { isRequired: true }, defaultValue: 'manual' }),
-    handleWebhookFunction: text({ validation: { isRequired: true }, defaultValue: 'manual' }),
     payments: relationship({
       ref: 'Payment.paymentProvider',
       many: true,

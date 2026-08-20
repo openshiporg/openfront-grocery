@@ -1,3 +1,5 @@
-import { CartPage } from "@/features/storefront/screens/CartPage"
+import { CartPage, metadata } from "@/features/storefront/screens/CartPage"
+
+export { metadata }
 
 export default CartPage

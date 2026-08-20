@@ -1,16 +1,18 @@
-import { dirname } from "path";
-import { fileURLToPath } from "url";
-import { FlatCompat } from "@eslint/eslintrc";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
+import nextVitals from "eslint-config-next/core-web-vitals";
 
 const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  ...nextVitals,
+  // Keystone's vendored dashboard/document-editor UI is upstream code. Keep it
+  // out of the Grocery lint gate; Grocery platform/storefront code remains linted.
+  {
+    ignores: [
+      '.next*/**',
+      'test-results/**',
+      'features/dashboard/**',
+      'components/ui/sidebar.tsx',
+      'components/ui/theme-switcher.tsx',
+    ],
+  },
 ];
 
 export default eslintConfig;

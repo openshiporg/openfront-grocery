@@ -1,59 +1,55 @@
 /**
- * Get List Counts - dashboard server action to fetch item counts for visible lists.
- *
- * Counts are best-effort. Some vertical models have stricter query permissions
- * than the dashboard landing page itself, so one denied count field should not
- * make the whole dashboard look broken.
+ * Get List Counts - dashboard server action to fetch item counts for all lists
+ * Matches Dashboard1 implementation but uses dashboard's keystoneClient
  */
 
 'use server'
 
 import { keystoneClient } from '../lib/keystoneClient'
 
-type CountableList = {
-  key: string;
-  isSingleton?: boolean;
-  graphql?: {
-    names?: {
-      listQueryCountName?: string;
+export async function getListCounts(
+  lists: Array<{
+    key: string;
+    isSingleton?: boolean;
+    graphql?: {
+      names: {
+        listQueryCountName: string;
+      };
     };
-  };
-}
+  }>
+) {
+  try {
+    // Skip counting for singleton lists
+    const listsToCount = lists.filter((list) => !list.isSingleton)
 
-export async function getListCounts(lists: CountableList[]) {
-  const listsToCount = lists.filter(
-    (list) => !list.isSingleton && list.graphql?.names?.listQueryCountName
-  )
+    if (listsToCount.length === 0) return { success: true, data: {} }
 
-  if (listsToCount.length === 0) return { success: true, data: {} }
-
-  const countEntries = await Promise.all(
-    listsToCount.map(async (list) => {
+    // Build a query to get counts for all non-singleton lists at once
+    const countQueries = listsToCount.map((list) => {
       const countName = list.graphql?.names?.listQueryCountName
-      if (!countName) return [list.key, null] as const
-
-      const response = await keystoneClient<{ count: number }>(
-        `query Get${list.key}Count { count: ${countName} }`,
-        {},
-        {
-          next: {
-            revalidate: 60,
-            tags: ['list-counts', `list-counts:${list.key}`],
-          },
-        }
-      )
-
-      if (!response.success) {
-        console.warn(`Skipping inaccessible count for ${list.key}:`, response.error)
-        return [list.key, null] as const
-      }
-
-      return [list.key, response.data.count] as const
+      return `${list.key}: ${countName}`
     })
-  )
 
-  return {
-    success: true,
-    data: Object.fromEntries(countEntries),
+    const query = `query GetListCounts { ${countQueries.join('\n')} }`
+
+    const response = await keystoneClient(
+      query,
+      {},
+      {
+        next: {
+          revalidate: 60, // Cache for 1 minute since counts change frequently
+          tags: ['list-counts'],
+        },
+      }
+    )
+
+    return response
+  } catch (error: unknown) {
+    console.error('Error fetching list counts:', error)
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : 'Unknown error fetching list counts'
+    return { success: false, error: errorMessage }
   }
 }

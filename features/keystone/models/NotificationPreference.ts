@@ -5,7 +5,9 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { isSignedIn } from "../access";
+import { ownerScopedFilter } from '../lib/storeAccess';
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 
 export const NotificationPreference = list({
   access: {
@@ -16,27 +18,15 @@ export const NotificationPreference = list({
       delete: isSignedIn,
     },
     filter: {
-      query: ({ session }) => {
-        // Users can only see their own notification preferences
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      update: ({ session }) => {
-        // Users can only update their own notification preferences
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        // Users can only delete their own notification preferences
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
+      query: ownerScopedFilter('user'),
+      update: ownerScopedFilter('user'),
+      delete: ownerScopedFilter('user'),
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.itemId) throw new Error('An authenticated owner is required');
+      return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     },
   },
   ui: {
@@ -48,6 +38,9 @@ export const NotificationPreference = list({
   fields: {
     // User relationship
     user: relationship({
+      access: { create: () => false, update: () => false },
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       ref: "User",
       label: "User",
       ui: {

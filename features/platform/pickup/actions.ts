@@ -10,21 +10,10 @@ export async function updatePickupSlotState(input: {
   maxOrders?: number;
 }) {
   const response = await keystoneClient(gql`
-    mutation UpdatePickupSlotState($id: ID!, $data: PickupSlotUpdateInput!) {
-      updatePickupSlot(where: { id: $id }, data: $data) {
-        id
-        isAvailable
-        maxOrders
-        currentOrders
-      }
+    mutation ConfigurePickupSlot($slotId: ID!, $isAvailable: Boolean, $maxOrders: Int, $idempotencyKey: String!) {
+      configurePickupSlot(slotId: $slotId, isAvailable: $isAvailable, maxOrders: $maxOrders, idempotencyKey: $idempotencyKey) { slotId capacity currentBookings isAvailable reused }
     }
-  `, {
-    id: input.slotId,
-    data: {
-      ...(typeof input.isAvailable === 'boolean' ? { isAvailable: input.isAvailable } : {}),
-      ...(typeof input.maxOrders === 'number' ? { maxOrders: input.maxOrders } : {}),
-    },
-  });
+  `, { ...input, idempotencyKey: `pickup-slot:${input.slotId}:${input.maxOrders ?? 'same'}:${input.isAvailable ?? 'same'}` });
 
   if (!response.success) {
     throw new Error(response.error);
@@ -36,16 +25,10 @@ export async function updatePickupSlotState(input: {
 
 export async function updateParkingSpotState(input: { spotId: string; isAvailable: boolean }) {
   const response = await keystoneClient(gql`
-    mutation UpdateParkingSpotState($id: ID!, $data: ParkingSpotUpdateInput!) {
-      updateParkingSpot(where: { id: $id }, data: $data) {
-        id
-        isAvailable
-      }
+    mutation ConfigureParkingSpot($spotId: ID!, $isAvailable: Boolean!, $idempotencyKey: String!) {
+      configureParkingSpot(spotId: $spotId, isAvailable: $isAvailable, idempotencyKey: $idempotencyKey) { slotId isAvailable reused }
     }
-  `, {
-    id: input.spotId,
-    data: { isAvailable: input.isAvailable },
-  });
+  `, { ...input, idempotencyKey: `parking-spot:${input.spotId}:${input.isAvailable}` });
 
   if (!response.success) {
     throw new Error(response.error);

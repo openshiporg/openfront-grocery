@@ -4,17 +4,33 @@ import {
   float,
   checkbox,
   json,
+  relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { permissions } from "../access";
+import { publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
 
 export const LoyaltyProgram = list({
   access: {
     operation: {
-      query: () => true, // Public can view loyalty program details
+      query: () => true,
       create: permissions.canManageUsers,
       update: permissions.canManageUsers,
       delete: permissions.canManageUsers,
+    },
+    filter: {
+      query: ({ session }) => session?.itemId ? storeScopedFilter({ session }) : publicStoreScopedFilter(),
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== 'create') return resolvedData;
+      const storeId = context.session?.data.store?.id;
+      if (!storeId) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
   },
   ui: {
@@ -24,6 +40,13 @@ export const LoyaltyProgram = list({
     },
   },
   fields: {
+    store: relationship({
+      ref: 'Store.loyaltyPrograms',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      // Public loyalty projections do not expose the authenticated Store row.
+      graphql: { isNonNull: { create: true } },
+      access: { create: () => false, update: () => false },
+    }),
     // Program name
     name: text({
       validation: { isRequired: true },

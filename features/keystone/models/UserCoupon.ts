@@ -5,39 +5,22 @@ import {
   checkbox,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { ownerScopedFilter } from '../lib/storeAccess';
 
 export const UserCoupon = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
+      create: () => false,
+      update: () => false,
       delete: permissions.canManageUsers,
     },
     filter: {
-      query: ({ session }) => {
-        if (permissions.canManageUsers({ session })) {
-          return true;
-        }
-        // Users can only see their own clipped coupons
-        return {
-          user: {
-            id: { equals: session?.itemId },
-          },
-        };
-      },
-      update: ({ session }) => {
-        if (permissions.canManageUsers({ session })) {
-          return true;
-        }
-        // Users can only update their own clipped coupons
-        return {
-          user: {
-            id: { equals: session?.itemId },
-          },
-        };
-      },
+      query: ownerScopedFilter('user'),
+      update: ownerScopedFilter('user'),
+      delete: ownerScopedFilter('user'),
     },
   },
   ui: {
@@ -48,6 +31,9 @@ export const UserCoupon = list({
   },
   fields: {
     user: relationship({
+      access: { create: () => false, update: () => false },
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       ref: "User",
       label: "User",
       ui: {
@@ -55,6 +41,9 @@ export const UserCoupon = list({
       },
     }),
     coupon: relationship({
+      access: { create: () => false, update: () => false },
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
       ref: "Coupon.userCoupons",
       label: "Coupon",
       ui: {

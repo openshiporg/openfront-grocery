@@ -1,237 +1,8 @@
 import type { Context } from '.keystone/types';
 
-// Tax rate for calculations
-const TAX_RATE = 0.08;
-const DELIVERY_FEE = 5.99;
-
-// Helper to get or create a cart for the current session/user
-async function getOrCreateCart(
-  context: Context,
-  sessionId?: string
-): Promise<any> {
-  const sudoContext = context.sudo();
-
-  // If user is logged in, find their cart
-  if (context.session?.itemId) {
-    let cart = await sudoContext.query.Cart.findMany({
-      where: {
-        customer: { id: { equals: context.session.itemId } },
-      },
-      query: `
-        id
-        itemCount
-        subtotal
-        items {
-          id
-          quantity
-          subtotal
-          substitutionPreference
-          product {
-            id
-            title
-            handle
-            price
-            imageUrl
-            inStock
-            stockQuantity
-            pricingMethod
-            unitOfMeasure
-          }
-        }
-      `,
-    });
-
-    if (cart.length > 0) {
-      return cart[0];
-    }
-
-    // Create new cart for logged-in user
-    return await sudoContext.query.Cart.createOne({
-      data: {
-        customer: { connect: { id: context.session.itemId } },
-        itemCount: 0,
-        subtotal: 0,
-      },
-      query: `
-        id
-        itemCount
-        subtotal
-        items {
-          id
-          quantity
-          subtotal
-          substitutionPreference
-          product {
-            id
-            title
-            handle
-            price
-            imageUrl
-            inStock
-            stockQuantity
-            pricingMethod
-            unitOfMeasure
-          }
-        }
-      `,
-    });
-  }
-
-  // For guest users, use sessionId
-  if (sessionId) {
-    let cart = await sudoContext.query.Cart.findMany({
-      where: {
-        sessionId: { equals: sessionId },
-      },
-      query: `
-        id
-        itemCount
-        subtotal
-        items {
-          id
-          quantity
-          subtotal
-          substitutionPreference
-          product {
-            id
-            title
-            handle
-            price
-            imageUrl
-            inStock
-            stockQuantity
-            pricingMethod
-            unitOfMeasure
-          }
-        }
-      `,
-    });
-
-    if (cart.length > 0) {
-      return cart[0];
-    }
-
-    // Create new guest cart with 7 day expiration
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
-
-    return await sudoContext.query.Cart.createOne({
-      data: {
-        sessionId,
-        itemCount: 0,
-        subtotal: 0,
-        expiresAt: expiresAt.toISOString(),
-      },
-      query: `
-        id
-        itemCount
-        subtotal
-        items {
-          id
-          quantity
-          subtotal
-          substitutionPreference
-          product {
-            id
-            title
-            handle
-            price
-            imageUrl
-            inStock
-            stockQuantity
-            pricingMethod
-            unitOfMeasure
-          }
-        }
-      `,
-    });
-  }
-
-  throw new Error('No session ID provided for guest cart');
-}
-
-// Helper to recalculate cart totals
-async function recalculateCart(context: Context, cartId: string) {
-  const sudoContext = context.sudo();
-
-  const cart = await sudoContext.query.Cart.findOne({
-    where: { id: cartId },
-    query: `
-      id
-      items {
-        id
-        quantity
-        product {
-          id
-          price
-        }
-      }
-    `,
-  });
-
-  if (!cart) {
-    throw new Error('Cart not found');
-  }
-
-  let subtotal = 0;
-  let itemCount = 0;
-
-  for (const item of cart.items) {
-    const itemSubtotal = (item.product?.price || 0) * item.quantity;
-    subtotal += itemSubtotal;
-    itemCount += item.quantity;
-
-    // Update item subtotal
-    await sudoContext.query.CartItem.updateOne({
-      where: { id: item.id },
-      data: { subtotal: itemSubtotal },
-    });
-  }
-
-  // Update cart totals
-  await sudoContext.query.Cart.updateOne({
-    where: { id: cartId },
-    data: {
-      subtotal,
-      itemCount,
-    },
-  });
-
-  return { subtotal, itemCount };
-}
-
-// Format cart response
-function formatCartResponse(cart: any) {
-  const subtotal = cart.subtotal || 0;
-  const tax = subtotal * TAX_RATE;
-  const total = subtotal + tax + DELIVERY_FEE;
-
-  return {
-    id: cart.id,
-    items: cart.items.map((item: any) => ({
-      id: item.id,
-      quantity: item.quantity,
-      subtotal: item.subtotal,
-      substitutionPreference: item.substitutionPreference,
-      product: {
-        id: item.product?.id,
-        name: item.product?.title,
-        handle: item.product?.handle,
-        price: item.product?.price,
-        unitPrice: item.product?.price,
-        unit: item.product?.unitOfMeasure,
-        imageUrl: item.product?.imageUrl,
-        inStock: item.product?.inStock,
-        stockQuantity: item.product?.stockQuantity,
-      },
-    })),
-    subtotal,
-    tax: Math.round(tax * 100) / 100,
-    deliveryFee: DELIVERY_FEE,
-    total: Math.round(total * 100) / 100,
-    itemCount: cart.itemCount || 0,
-  };
-}
+import { publicStore, requireSessionStore } from '../lib/storeScope';
+import { requireStoreProduct } from '../lib/catalogAccess';
+import { addToCart as addProductToCart, getCart as getCanonicalCart } from './cartOperations';
 
 // Scale recipe ingredients based on servings
 export async function scaleRecipe(
@@ -246,6 +17,7 @@ export async function scaleRecipe(
   context: Context
 ) {
   const sudoContext = context.sudo();
+  const store = context.session?.itemId ? await requireSessionStore(context) : await publicStore(context);
 
   // Get the recipe
   const recipe = await sudoContext.query.Recipe.findOne({
@@ -274,12 +46,9 @@ export async function scaleRecipe(
   // Scale each ingredient
   const scaledIngredients = await Promise.all(
     ingredients.map(async (ingredient: any) => {
-      // Get product details
+      // Resolve each ingredient through the selected public/active Store.
       const product = ingredient.product
-        ? await sudoContext.query.Product.findOne({
-            where: { id: ingredient.product },
-            query: 'id title price imageUrl inStock stockQuantity',
-          })
+        ? await requireStoreProduct(context, ingredient.product, store.id, { publishedOnly: true })
         : null;
 
       return {
@@ -331,6 +100,7 @@ export async function addRecipeToCart(
   context: Context
 ) {
   const sudoContext = context.sudo();
+  const store = context.session?.itemId ? await requireSessionStore(context) : await publicStore(context);
 
   // Get the recipe
   const recipe = await sudoContext.query.Recipe.findOne({
@@ -341,9 +111,6 @@ export async function addRecipeToCart(
   if (!recipe) {
     throw new Error('Recipe not found');
   }
-
-  // Get or create cart
-  const cart = await getOrCreateCart(context, sessionId);
 
   // Get recipe ingredients
   const ingredients = await sudoContext.db.RecipeIngredient.findMany({
@@ -383,11 +150,8 @@ export async function addRecipeToCart(
       continue;
     }
 
-    // Get product details
-    const product = await sudoContext.query.Product.findOne({
-      where: { id: ingredient.product },
-      query: 'id title price inStock stockQuantity',
-    });
+    // Resolve each ingredient through the cart Store before writing.
+    const product = await requireStoreProduct(context, ingredient.product, store.id, { publishedOnly: true });
 
     if (!product) {
       unavailableItems.push({
@@ -420,65 +184,34 @@ export async function addRecipeToCart(
       continue;
     }
 
-    // Check if item already exists in cart
-    const existingItem = cart.items.find(
-      (item: any) => item.product?.id === ingredient.product
-    );
-
-    if (existingItem) {
-      // Update quantity
-      const newQuantity = existingItem.quantity + scaledQuantity;
-
-      // Check stock for combined quantity
-      if (product.stockQuantity !== null && product.stockQuantity < newQuantity) {
-        unavailableItems.push({
-          productId: ingredient.product,
-          productName: product.title,
-          reason: `Insufficient stock for combined quantity`,
-          requestedQuantity: scaledQuantity,
-          existingQuantity: existingItem.quantity,
-        });
-        continue;
-      }
-
-      await sudoContext.query.CartItem.updateOne({
-        where: { id: existingItem.id },
-        data: { quantity: newQuantity },
-      });
-
-      addedItems.push({
+    try {
+      // Delegate all identity, row-lock, Store, lot-expiry, combined-quantity,
+      // and exact-money checks to the canonical cart mutation.
+      await addProductToCart(null, {
         productId: ingredient.product,
-        productName: product.title,
         quantity: scaledQuantity,
-        action: 'updated',
-        newTotal: newQuantity,
-      });
-    } else {
-      // Create new cart item
-      await sudoContext.query.CartItem.createOne({
-        data: {
-          cart: { connect: { id: cart.id } },
-          product: { connect: { id: ingredient.product } },
-          quantity: scaledQuantity,
-          subtotal: (product.price || 0) * scaledQuantity,
-        },
-      });
-
+        sessionId,
+      }, context);
       addedItems.push({
         productId: ingredient.product,
         productName: product.title,
         quantity: scaledQuantity,
         action: 'added',
       });
+    } catch (error) {
+      unavailableItems.push({
+        productId: ingredient.product,
+        productName: product.title,
+        reason: error instanceof Error ? error.message : 'Product is unavailable',
+        requestedQuantity: scaledQuantity,
+        availableQuantity: product.stockQuantity,
+      });
     }
   }
 
-  // Recalculate cart totals
-  await recalculateCart(context, cart.id);
-
-  // Return updated cart with summary
-  const updatedCart = await getOrCreateCart(context, sessionId);
-  const formattedCart = formatCartResponse(updatedCart);
+  // Return the same authoritative lot-derived cart projection used by every
+  // other storefront cart path.
+  const formattedCart = await getCanonicalCart(null, { sessionId }, context);
 
   return {
     cart: formattedCart,

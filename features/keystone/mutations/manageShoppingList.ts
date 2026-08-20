@@ -1,5 +1,8 @@
 import type { Context } from '.keystone/types';
 
+import { requireSessionStore } from '../lib/storeScope';
+import { addToCart } from './cartOperations';
+
 // Helper to get shopping list with authorization check
 async function getShoppingListForUser(
   context: Context,
@@ -82,6 +85,16 @@ export async function addToList(
 ) {
   const sudoContext = context.sudo();
 
+  const store = await requireSessionStore(context);
+  // Resolve the display snapshot to a published product identity inside the owner's Store.
+  const matchingProducts = await sudoContext.query.Product.findMany({
+    where: { AND: [{ store: { id: { equals: store.id } } }, { status: { equals: 'published' } }, { OR: [{ id: { equals: product } }, { handle: { equals: product } }, { title: { equals: product } }] }] },
+    query: 'id title handle store { id }',
+    take: 2,
+  });
+  const productRecord = matchingProducts[0];
+  if (!productRecord) throw new Error('Shopping-list items must reference a catalog product');
+
   // Get and verify list ownership
   const list = await getShoppingListForUser(context, listId);
 
@@ -91,14 +104,14 @@ export async function addToList(
   );
 
   if (existingItem) {
-    // Update quantity of existing item
-    const newQuantity = existingItem.quantity + (quantity || 1);
+    const requestedQuantity = quantity || 1;
     await sudoContext.query.ShoppingListItem.updateOne({
       where: { id: existingItem.id },
       data: {
-        quantity: newQuantity,
+        quantity: requestedQuantity,
         ...(unit && { unit }),
-        ...(notes && { notes: existingItem.notes ? `${existingItem.notes}; ${notes}` : notes }),
+        ...(notes && notes !== existingItem.notes ? { notes } : {}),
+        productRef: { connect: { id: productRecord.id } },
       },
     });
   } else {
@@ -106,7 +119,8 @@ export async function addToList(
     await sudoContext.query.ShoppingListItem.createOne({
       data: {
         list: { connect: { id: listId } },
-        product,
+        product: productRecord.title,
+        productRef: { connect: { id: productRecord.id } },
         quantity: quantity || 1,
         unit: unit || 'each',
         notes: notes || '',
@@ -139,7 +153,8 @@ export async function removeFromList(
   });
 
   if (!item) {
-    throw new Error('Item not found');
+    const updatedList = await getShoppingListForUser(context, listId);
+    return formatShoppingListResponse(updatedList);
   }
 
   if (item.list?.id !== listId) {
@@ -246,6 +261,7 @@ export async function addListToCart(
   context: Context
 ) {
   const sudoContext = context.sudo();
+  const store = await requireSessionStore(context);
 
   // Verify list ownership
   const list = await getShoppingListForUser(context, listId);
@@ -263,56 +279,6 @@ export async function addListToCart(
     };
   }
 
-  // Get or create cart
-  let cart;
-  if (context.session?.itemId) {
-    const carts = await sudoContext.query.Cart.findMany({
-      where: {
-        customer: { id: { equals: context.session.itemId } },
-      },
-      query: 'id items { id product { id title } quantity }',
-    });
-
-    if (carts.length > 0) {
-      cart = carts[0];
-    } else {
-      cart = await sudoContext.query.Cart.createOne({
-        data: {
-          customer: { connect: { id: context.session.itemId } },
-          itemCount: 0,
-          subtotal: 0,
-        },
-        query: 'id items { id product { id title } quantity }',
-      });
-    }
-  } else if (sessionId) {
-    const carts = await sudoContext.query.Cart.findMany({
-      where: {
-        sessionId: { equals: sessionId },
-      },
-      query: 'id items { id product { id title } quantity }',
-    });
-
-    if (carts.length > 0) {
-      cart = carts[0];
-    } else {
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
-
-      cart = await sudoContext.query.Cart.createOne({
-        data: {
-          sessionId,
-          itemCount: 0,
-          subtotal: 0,
-          expiresAt: expiresAt.toISOString(),
-        },
-        query: 'id items { id product { id title } quantity }',
-      });
-    }
-  } else {
-    throw new Error('No session ID provided for guest cart');
-  }
-
   let addedCount = 0;
   const skippedItems: string[] = [];
 
@@ -320,12 +286,16 @@ export async function addListToCart(
     // Try to find product by title match
     const products = await sudoContext.query.Product.findMany({
       where: {
-        OR: [
-          { title: { contains: item.product, mode: 'insensitive' } },
-          { title: { equals: item.product, mode: 'insensitive' } },
+        AND: [
+          { store: { id: { equals: store.id } } },
+          { status: { equals: 'published' } },
+          { OR: [
+            { title: { contains: item.product, mode: 'insensitive' } },
+            { title: { equals: item.product, mode: 'insensitive' } },
+          ] },
         ],
       },
-      query: 'id title price inStock stockQuantity',
+      query: 'id title store { id }',
       take: 1,
     });
 
@@ -335,70 +305,17 @@ export async function addListToCart(
     }
 
     const product = products[0];
-
-    if (!product.inStock) {
-      skippedItems.push(`${item.product} (out of stock)`);
-      continue;
+    try {
+      // Delegate every write to the replica-safe canonical Cart contract. The
+      // list action intentionally reports per-item skips rather than bypassing
+      // identity, row-lock, Store, quantity, and exact-total invariants.
+      await addToCart(null, { productId: product.id, quantity: item.quantity, sessionId }, context);
+      addedCount++;
+    } catch (error) {
+      skippedItems.push(`${item.product} (${error instanceof Error ? error.message : 'unavailable'})`);
     }
-
-    // Check if product already in cart
-    const existingCartItem = cart.items.find(
-      (cartItem: any) => cartItem.product?.id === product.id
-    );
-
-    if (existingCartItem) {
-      // Update quantity
-      const newQuantity = existingCartItem.quantity + item.quantity;
-      await sudoContext.query.CartItem.updateOne({
-        where: { id: existingCartItem.id },
-        data: { quantity: newQuantity },
-      });
-    } else {
-      // Add new cart item
-      await sudoContext.query.CartItem.createOne({
-        data: {
-          cart: { connect: { id: cart.id } },
-          product: { connect: { id: product.id } },
-          quantity: item.quantity,
-          subtotal: (product.price || 0) * item.quantity,
-        },
-      });
-    }
-
-    addedCount++;
   }
 
-  // Recalculate cart totals
-  const updatedCart = await sudoContext.query.Cart.findOne({
-    where: { id: cart.id },
-    query: `
-      id
-      items {
-        id
-        quantity
-        product { id price }
-      }
-    `,
-  });
-
-  let subtotal = 0;
-  let itemCount = 0;
-
-  for (const cartItem of updatedCart.items) {
-    const itemSubtotal = (cartItem.product?.price || 0) * cartItem.quantity;
-    subtotal += itemSubtotal;
-    itemCount += cartItem.quantity;
-
-    await sudoContext.query.CartItem.updateOne({
-      where: { id: cartItem.id },
-      data: { subtotal: itemSubtotal },
-    });
-  }
-
-  await sudoContext.query.Cart.updateOne({
-    where: { id: cart.id },
-    data: { subtotal, itemCount },
-  });
 
   return {
     success: true,

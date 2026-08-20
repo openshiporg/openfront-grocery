@@ -166,8 +166,9 @@ input UserRelateToOneForCreateInput {
 
 type BackInStockAlert {
   id: ID!
-  user: User
+  user: User!
   product: String
+  productRef: Product
   notifiedAt: DateTime
   isActive: Boolean
   createdAt: DateTime
@@ -185,6 +186,7 @@ input BackInStockAlertWhereInput {
   id: IDFilter
   user: UserWhereInput
   product: StringFilter
+  productRef: ProductWhereInput
   notifiedAt: DateTimeNullableFilter
   isActive: BooleanFilter
   createdAt: DateTimeFilter
@@ -219,10 +221,17 @@ input BackInStockAlertOrderByInput {
 input BackInStockAlertUpdateInput {
   user: UserRelateToOneForUpdateInput
   product: String
+  productRef: ProductRelateToOneForUpdateInput
   notifiedAt: DateTime
   isActive: Boolean
   createdAt: DateTime
   updatedAt: DateTime
+}
+
+input ProductRelateToOneForUpdateInput {
+  create: ProductCreateInput
+  connect: ProductWhereUniqueInput
+  disconnect: Boolean
 }
 
 input BackInStockAlertUpdateArgs {
@@ -231,24 +240,34 @@ input BackInStockAlertUpdateArgs {
 }
 
 input BackInStockAlertCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   product: String
+  productRef: ProductRelateToOneForCreateInput
   notifiedAt: DateTime
   isActive: Boolean
   createdAt: DateTime
   updatedAt: DateTime
 }
 
+input ProductRelateToOneForCreateInput {
+  create: ProductCreateInput
+  connect: ProductWhereUniqueInput
+}
+
 type Cart {
   id: ID!
+  store: Store!
   customer: User
   sessionId: String
   items(where: CartItemWhereInput! = {}, orderBy: [CartItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CartItemWhereUniqueInput): [CartItem!]
   itemsCount(where: CartItemWhereInput! = {}): Int
   paymentSessions(where: PaymentSessionWhereInput! = {}, orderBy: [PaymentSessionOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentSessionWhereUniqueInput): [PaymentSession!]
   paymentSessionsCount(where: PaymentSessionWhereInput! = {}): Int
+  checkoutAttempts(where: CheckoutAttemptWhereInput! = {}, orderBy: [CheckoutAttemptOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CheckoutAttemptWhereUniqueInput): [CheckoutAttempt!]
+  checkoutAttemptsCount(where: CheckoutAttemptWhereInput! = {}): Int
   itemCount: Int
   subtotal: Float
+  subtotalCents: Int
   expiresAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
@@ -256,6 +275,7 @@ type Cart {
 
 input CartWhereUniqueInput {
   id: ID
+  sessionId: String
 }
 
 input CartWhereInput {
@@ -263,12 +283,15 @@ input CartWhereInput {
   OR: [CartWhereInput!]
   NOT: [CartWhereInput!]
   id: IDFilter
+  store: StoreWhereInput
   customer: UserWhereInput
   sessionId: StringFilter
   items: CartItemManyRelationFilter
   paymentSessions: PaymentSessionManyRelationFilter
+  checkoutAttempts: CheckoutAttemptManyRelationFilter
   itemCount: IntNullableFilter
   subtotal: FloatNullableFilter
+  subtotalCents: IntFilter
   expiresAt: DateTimeNullableFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -284,6 +307,12 @@ input PaymentSessionManyRelationFilter {
   every: PaymentSessionWhereInput
   some: PaymentSessionWhereInput
   none: PaymentSessionWhereInput
+}
+
+input CheckoutAttemptManyRelationFilter {
+  every: CheckoutAttemptWhereInput
+  some: CheckoutAttemptWhereInput
+  none: CheckoutAttemptWhereInput
 }
 
 input IntNullableFilter {
@@ -308,26 +337,47 @@ input FloatNullableFilter {
   not: FloatNullableFilter
 }
 
+input IntFilter {
+  equals: Int
+  in: [Int!]
+  notIn: [Int!]
+  lt: Int
+  lte: Int
+  gt: Int
+  gte: Int
+  not: IntFilter
+}
+
 input CartOrderByInput {
   id: OrderDirection
   sessionId: OrderDirection
   itemCount: OrderDirection
   subtotal: OrderDirection
+  subtotalCents: OrderDirection
   expiresAt: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
 }
 
 input CartUpdateInput {
+  store: StoreRelateToOneForUpdateInput
   customer: UserRelateToOneForUpdateInput
   sessionId: String
   items: CartItemRelateToManyForUpdateInput
   paymentSessions: PaymentSessionRelateToManyForUpdateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForUpdateInput
   itemCount: Int
   subtotal: Float
+  subtotalCents: Int
   expiresAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
+}
+
+input StoreRelateToOneForUpdateInput {
+  create: StoreCreateInput
+  connect: StoreWhereUniqueInput
+  disconnect: Boolean
 }
 
 input CartItemRelateToManyForUpdateInput {
@@ -344,21 +394,36 @@ input PaymentSessionRelateToManyForUpdateInput {
   connect: [PaymentSessionWhereUniqueInput!]
 }
 
+input CheckoutAttemptRelateToManyForUpdateInput {
+  disconnect: [CheckoutAttemptWhereUniqueInput!]
+  set: [CheckoutAttemptWhereUniqueInput!]
+  create: [CheckoutAttemptCreateInput!]
+  connect: [CheckoutAttemptWhereUniqueInput!]
+}
+
 input CartUpdateArgs {
   where: CartWhereUniqueInput!
   data: CartUpdateInput!
 }
 
 input CartCreateInput {
+  store: StoreRelateToOneForCreateInput!
   customer: UserRelateToOneForCreateInput
   sessionId: String
   items: CartItemRelateToManyForCreateInput
   paymentSessions: PaymentSessionRelateToManyForCreateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForCreateInput
   itemCount: Int
   subtotal: Float
+  subtotalCents: Int
   expiresAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
+}
+
+input StoreRelateToOneForCreateInput {
+  create: StoreCreateInput
+  connect: StoreWhereUniqueInput
 }
 
 input CartItemRelateToManyForCreateInput {
@@ -371,12 +436,214 @@ input PaymentSessionRelateToManyForCreateInput {
   connect: [PaymentSessionWhereUniqueInput!]
 }
 
+input CheckoutAttemptRelateToManyForCreateInput {
+  create: [CheckoutAttemptCreateInput!]
+  connect: [CheckoutAttemptWhereUniqueInput!]
+}
+
+type CheckoutAttempt {
+  id: ID!
+  idempotencyKey: String
+  providerCode: String
+  providerPaymentId: String
+  amountCents: Int
+  currencyCode: String
+  status: CheckoutAttemptStatusType
+  attempts: Int
+  fencingToken: Int
+  leaseToken: String
+  leaseExpiresAt: DateTime
+  lastError: String
+  requestData: JSON
+  settledAt: DateTime
+  finalizedAt: DateTime
+  compensationAt: DateTime
+  store: Store!
+  cart: Cart!
+  paymentSession: PaymentSession!
+  order: Order
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+enum CheckoutAttemptStatusType {
+  pending
+  settled_pending_finalize
+  finalizing
+  finalized
+  compensation_required
+  compensation_processing
+  compensated
+  failed
+}
+
+input CheckoutAttemptWhereUniqueInput {
+  id: ID
+  idempotencyKey: String
+}
+
+input CheckoutAttemptWhereInput {
+  AND: [CheckoutAttemptWhereInput!]
+  OR: [CheckoutAttemptWhereInput!]
+  NOT: [CheckoutAttemptWhereInput!]
+  id: IDFilter
+  idempotencyKey: StringFilter
+  providerCode: StringFilter
+  providerPaymentId: StringFilter
+  amountCents: IntFilter
+  currencyCode: StringFilter
+  status: CheckoutAttemptStatusTypeNullableFilter
+  attempts: IntFilter
+  fencingToken: IntFilter
+  leaseToken: StringNullableFilter
+  leaseExpiresAt: DateTimeNullableFilter
+  lastError: StringFilter
+  settledAt: DateTimeNullableFilter
+  finalizedAt: DateTimeNullableFilter
+  compensationAt: DateTimeNullableFilter
+  store: StoreWhereInput
+  cart: CartWhereInput
+  paymentSession: PaymentSessionWhereInput
+  order: OrderWhereInput
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input CheckoutAttemptStatusTypeNullableFilter {
+  equals: CheckoutAttemptStatusType
+  in: [CheckoutAttemptStatusType!]
+  notIn: [CheckoutAttemptStatusType!]
+  not: CheckoutAttemptStatusTypeNullableFilter
+}
+
+input StringNullableFilter {
+  equals: String
+  in: [String!]
+  notIn: [String!]
+  lt: String
+  lte: String
+  gt: String
+  gte: String
+  contains: String
+  startsWith: String
+  endsWith: String
+  mode: QueryMode
+  not: StringNullableFilter
+}
+
+input CheckoutAttemptOrderByInput {
+  id: OrderDirection
+  idempotencyKey: OrderDirection
+  providerCode: OrderDirection
+  providerPaymentId: OrderDirection
+  amountCents: OrderDirection
+  currencyCode: OrderDirection
+  status: OrderDirection
+  attempts: OrderDirection
+  fencingToken: OrderDirection
+  leaseToken: OrderDirection
+  leaseExpiresAt: OrderDirection
+  lastError: OrderDirection
+  settledAt: OrderDirection
+  finalizedAt: OrderDirection
+  compensationAt: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input CheckoutAttemptUpdateInput {
+  idempotencyKey: String
+  providerCode: String
+  providerPaymentId: String
+  amountCents: Int
+  currencyCode: String
+  status: CheckoutAttemptStatusType
+  attempts: Int
+  fencingToken: Int
+  leaseToken: String
+  leaseExpiresAt: DateTime
+  lastError: String
+  requestData: JSON
+  settledAt: DateTime
+  finalizedAt: DateTime
+  compensationAt: DateTime
+  store: StoreRelateToOneForUpdateInput
+  cart: CartRelateToOneForUpdateInput
+  paymentSession: PaymentSessionRelateToOneForUpdateInput
+  order: OrderRelateToOneForUpdateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input CartRelateToOneForUpdateInput {
+  create: CartCreateInput
+  connect: CartWhereUniqueInput
+  disconnect: Boolean
+}
+
+input PaymentSessionRelateToOneForUpdateInput {
+  create: PaymentSessionCreateInput
+  connect: PaymentSessionWhereUniqueInput
+  disconnect: Boolean
+}
+
+input OrderRelateToOneForUpdateInput {
+  create: OrderCreateInput
+  connect: OrderWhereUniqueInput
+  disconnect: Boolean
+}
+
+input CheckoutAttemptUpdateArgs {
+  where: CheckoutAttemptWhereUniqueInput!
+  data: CheckoutAttemptUpdateInput!
+}
+
+input CheckoutAttemptCreateInput {
+  idempotencyKey: String
+  providerCode: String
+  providerPaymentId: String
+  amountCents: Int
+  currencyCode: String
+  status: CheckoutAttemptStatusType
+  attempts: Int
+  fencingToken: Int
+  leaseToken: String
+  leaseExpiresAt: DateTime
+  lastError: String
+  requestData: JSON
+  settledAt: DateTime
+  finalizedAt: DateTime
+  compensationAt: DateTime
+  store: StoreRelateToOneForCreateInput!
+  cart: CartRelateToOneForCreateInput!
+  paymentSession: PaymentSessionRelateToOneForCreateInput!
+  order: OrderRelateToOneForCreateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input CartRelateToOneForCreateInput {
+  create: CartCreateInput
+  connect: CartWhereUniqueInput
+}
+
+input PaymentSessionRelateToOneForCreateInput {
+  create: PaymentSessionCreateInput
+  connect: PaymentSessionWhereUniqueInput
+}
+
+input OrderRelateToOneForCreateInput {
+  create: OrderCreateInput
+  connect: OrderWhereUniqueInput
+}
+
 type CartItem {
   id: ID!
-  cart: Cart
-  product: Product
+  cart: Cart!
+  product: Product!
   quantity: Int
   subtotal: Float
+  subtotalCents: Int
   substitutionPreference: CartItemSubstitutionPreferenceType
   addedAt: DateTime
   createdAt: DateTime
@@ -402,21 +669,11 @@ input CartItemWhereInput {
   product: ProductWhereInput
   quantity: IntFilter
   subtotal: FloatNullableFilter
+  subtotalCents: IntFilter
   substitutionPreference: CartItemSubstitutionPreferenceTypeNullableFilter
   addedAt: DateTimeFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
-}
-
-input IntFilter {
-  equals: Int
-  in: [Int!]
-  notIn: [Int!]
-  lt: Int
-  lte: Int
-  gt: Int
-  gte: Int
-  not: IntFilter
 }
 
 input CartItemSubstitutionPreferenceTypeNullableFilter {
@@ -430,6 +687,7 @@ input CartItemOrderByInput {
   id: OrderDirection
   quantity: OrderDirection
   subtotal: OrderDirection
+  subtotalCents: OrderDirection
   substitutionPreference: OrderDirection
   addedAt: OrderDirection
   createdAt: OrderDirection
@@ -441,22 +699,11 @@ input CartItemUpdateInput {
   product: ProductRelateToOneForUpdateInput
   quantity: Int
   subtotal: Float
+  subtotalCents: Int
   substitutionPreference: CartItemSubstitutionPreferenceType
   addedAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
-}
-
-input CartRelateToOneForUpdateInput {
-  create: CartCreateInput
-  connect: CartWhereUniqueInput
-  disconnect: Boolean
-}
-
-input ProductRelateToOneForUpdateInput {
-  create: ProductCreateInput
-  connect: ProductWhereUniqueInput
-  disconnect: Boolean
 }
 
 input CartItemUpdateArgs {
@@ -465,24 +712,15 @@ input CartItemUpdateArgs {
 }
 
 input CartItemCreateInput {
-  cart: CartRelateToOneForCreateInput
-  product: ProductRelateToOneForCreateInput
+  cart: CartRelateToOneForCreateInput!
+  product: ProductRelateToOneForCreateInput!
   quantity: Int
   subtotal: Float
+  subtotalCents: Int
   substitutionPreference: CartItemSubstitutionPreferenceType
   addedAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
-}
-
-input CartRelateToOneForCreateInput {
-  create: CartCreateInput
-  connect: CartWhereUniqueInput
-}
-
-input ProductRelateToOneForCreateInput {
-  create: ProductCreateInput
-  connect: ProductWhereUniqueInput
 }
 
 type Coupon {
@@ -490,7 +728,9 @@ type Coupon {
   code: String
   discountType: CouponDiscountTypeType
   discountValue: Float
+  discountValueCents: Int
   minPurchase: Float
+  minPurchaseCents: Int
   maxUses: Int
   currentUses: Int
   validFrom: DateTime
@@ -498,6 +738,7 @@ type Coupon {
   productCategories: JSON
   excludedProducts: JSON
   isActive: Boolean
+  store: Store!
   userCoupons(where: UserCouponWhereInput! = {}, orderBy: [UserCouponOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: UserCouponWhereUniqueInput): [UserCoupon!]
   userCouponsCount(where: UserCouponWhereInput! = {}): Int
   createdAt: DateTime
@@ -523,12 +764,15 @@ input CouponWhereInput {
   code: StringFilter
   discountType: CouponDiscountTypeTypeNullableFilter
   discountValue: FloatNullableFilter
+  discountValueCents: IntFilter
   minPurchase: FloatNullableFilter
+  minPurchaseCents: IntFilter
   maxUses: IntNullableFilter
   currentUses: IntNullableFilter
   validFrom: DateTimeNullableFilter
   validTo: DateTimeNullableFilter
   isActive: BooleanFilter
+  store: StoreWhereInput
   userCoupons: UserCouponManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -552,7 +796,9 @@ input CouponOrderByInput {
   code: OrderDirection
   discountType: OrderDirection
   discountValue: OrderDirection
+  discountValueCents: OrderDirection
   minPurchase: OrderDirection
+  minPurchaseCents: OrderDirection
   maxUses: OrderDirection
   currentUses: OrderDirection
   validFrom: OrderDirection
@@ -566,7 +812,9 @@ input CouponUpdateInput {
   code: String
   discountType: CouponDiscountTypeType
   discountValue: Float
+  discountValueCents: Int
   minPurchase: Float
+  minPurchaseCents: Int
   maxUses: Int
   currentUses: Int
   validFrom: DateTime
@@ -574,6 +822,7 @@ input CouponUpdateInput {
   productCategories: JSON
   excludedProducts: JSON
   isActive: Boolean
+  store: StoreRelateToOneForUpdateInput
   userCoupons: UserCouponRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -595,7 +844,9 @@ input CouponCreateInput {
   code: String
   discountType: CouponDiscountTypeType
   discountValue: Float
+  discountValueCents: Int
   minPurchase: Float
+  minPurchaseCents: Int
   maxUses: Int
   currentUses: Int
   validFrom: DateTime
@@ -603,6 +854,7 @@ input CouponCreateInput {
   productCategories: JSON
   excludedProducts: JSON
   isActive: Boolean
+  store: StoreRelateToOneForCreateInput!
   userCoupons: UserCouponRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -623,6 +875,7 @@ type Department {
   isActive: Boolean
   temperatureZone: DepartmentTemperatureZoneType
   requiredLicenses: [DepartmentRequiredLicenseType!]
+  store: Store!
   manager: User
   products(where: ProductWhereInput! = {}, orderBy: [ProductOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ProductWhereUniqueInput): [Product!]
   productsCount(where: ProductWhereInput! = {}): Int
@@ -659,6 +912,7 @@ input DepartmentWhereInput {
   sortOrder: IntNullableFilter
   isActive: BooleanFilter
   temperatureZone: DepartmentTemperatureZoneTypeNullableFilter
+  store: StoreWhereInput
   manager: UserWhereInput
   products: ProductManyRelationFilter
   createdAt: DateTimeFilter
@@ -700,6 +954,7 @@ input DepartmentUpdateInput {
   isActive: Boolean
   temperatureZone: DepartmentTemperatureZoneType
   requiredLicenses: [DepartmentRequiredLicenseType!]
+  store: StoreRelateToOneForUpdateInput
   manager: UserRelateToOneForUpdateInput
   products: ProductRelateToManyForUpdateInput
   createdAt: DateTime
@@ -727,6 +982,7 @@ input DepartmentCreateInput {
   isActive: Boolean
   temperatureZone: DepartmentTemperatureZoneType
   requiredLicenses: [DepartmentRequiredLicenseType!]
+  store: StoreRelateToOneForCreateInput!
   manager: UserRelateToOneForCreateInput
   products: ProductRelateToManyForCreateInput
   createdAt: DateTime
@@ -746,6 +1002,7 @@ type DeliveryRoute {
   status: DeliveryRouteStatusType
   startedAt: DateTime
   completedAt: DateTime
+  store: Store!
   driver: User
   orders(where: OrderWhereInput! = {}, orderBy: [OrderOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderWhereUniqueInput): [Order!]
   ordersCount(where: OrderWhereInput! = {}): Int
@@ -782,6 +1039,7 @@ input DeliveryRouteWhereInput {
   status: DeliveryRouteStatusTypeNullableFilter
   startedAt: DateTimeNullableFilter
   completedAt: DateTimeNullableFilter
+  store: StoreWhereInput
   driver: UserWhereInput
   orders: OrderManyRelationFilter
   createdAt: DateTimeFilter
@@ -826,6 +1084,7 @@ input DeliveryRouteUpdateInput {
   status: DeliveryRouteStatusType
   startedAt: DateTime
   completedAt: DateTime
+  store: StoreRelateToOneForUpdateInput
   driver: UserRelateToOneForUpdateInput
   orders: OrderRelateToManyForUpdateInput
   createdAt: DateTime
@@ -851,6 +1110,7 @@ input DeliveryRouteCreateInput {
   status: DeliveryRouteStatusType
   startedAt: DateTime
   completedAt: DateTime
+  store: StoreRelateToOneForCreateInput!
   driver: UserRelateToOneForCreateInput
   orders: OrderRelateToManyForCreateInput
   createdAt: DateTime
@@ -864,6 +1124,9 @@ input OrderRelateToManyForCreateInput {
 
 type DeliverySlot {
   id: ID!
+  store: Store!
+  orders(where: OrderWhereInput! = {}, orderBy: [OrderOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderWhereUniqueInput): [Order!]
+  ordersCount(where: OrderWhereInput! = {}): Int
   date: DateTime
   startTime: String
   endTime: String
@@ -884,6 +1147,8 @@ input DeliverySlotWhereInput {
   OR: [DeliverySlotWhereInput!]
   NOT: [DeliverySlotWhereInput!]
   id: IDFilter
+  store: StoreWhereInput
+  orders: OrderManyRelationFilter
   date: DateTimeFilter
   startTime: StringFilter
   endTime: StringFilter
@@ -909,6 +1174,8 @@ input DeliverySlotOrderByInput {
 }
 
 input DeliverySlotUpdateInput {
+  store: StoreRelateToOneForUpdateInput
+  orders: OrderRelateToManyForUpdateInput
   date: DateTime
   startTime: String
   endTime: String
@@ -926,6 +1193,8 @@ input DeliverySlotUpdateArgs {
 }
 
 input DeliverySlotCreateInput {
+  store: StoreRelateToOneForCreateInput!
+  orders: OrderRelateToManyForCreateInput
   date: DateTime
   startTime: String
   endTime: String
@@ -939,8 +1208,9 @@ input DeliverySlotCreateInput {
 
 type FavoriteProduct {
   id: ID!
-  user: User
+  user: User!
   product: String
+  productRef: Product
   favoritedAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
@@ -957,6 +1227,7 @@ input FavoriteProductWhereInput {
   id: IDFilter
   user: UserWhereInput
   product: StringFilter
+  productRef: ProductWhereInput
   favoritedAt: DateTimeFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -973,6 +1244,7 @@ input FavoriteProductOrderByInput {
 input FavoriteProductUpdateInput {
   user: UserRelateToOneForUpdateInput
   product: String
+  productRef: ProductRelateToOneForUpdateInput
   favoritedAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
@@ -984,9 +1256,123 @@ input FavoriteProductUpdateArgs {
 }
 
 input FavoriteProductCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   product: String
+  productRef: ProductRelateToOneForCreateInput
   favoritedAt: DateTime
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+type GroceryOutboxEvent {
+  id: ID!
+  store: Store!
+  eventKey: String
+  eventType: String
+  aggregateType: String
+  aggregateId: String
+  schemaVersion: Int
+  payload: JSON
+  payloadHash: String
+  occurredAt: DateTime
+  status: String
+  attempts: Int
+  claimToken: String
+  claimedAt: DateTime
+  deliveredAt: DateTime
+  lastError: String
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input GroceryOutboxEventWhereUniqueInput {
+  id: ID
+  eventKey: String
+}
+
+input GroceryOutboxEventWhereInput {
+  AND: [GroceryOutboxEventWhereInput!]
+  OR: [GroceryOutboxEventWhereInput!]
+  NOT: [GroceryOutboxEventWhereInput!]
+  id: IDFilter
+  store: StoreWhereInput
+  eventKey: StringFilter
+  eventType: StringFilter
+  aggregateType: StringFilter
+  aggregateId: StringFilter
+  schemaVersion: IntFilter
+  payloadHash: StringFilter
+  occurredAt: DateTimeFilter
+  status: StringFilter
+  attempts: IntNullableFilter
+  claimToken: StringFilter
+  claimedAt: DateTimeNullableFilter
+  deliveredAt: DateTimeNullableFilter
+  lastError: StringFilter
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input GroceryOutboxEventOrderByInput {
+  id: OrderDirection
+  eventKey: OrderDirection
+  eventType: OrderDirection
+  aggregateType: OrderDirection
+  aggregateId: OrderDirection
+  schemaVersion: OrderDirection
+  payloadHash: OrderDirection
+  occurredAt: OrderDirection
+  status: OrderDirection
+  attempts: OrderDirection
+  claimToken: OrderDirection
+  claimedAt: OrderDirection
+  deliveredAt: OrderDirection
+  lastError: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input GroceryOutboxEventUpdateInput {
+  store: StoreRelateToOneForUpdateInput
+  eventKey: String
+  eventType: String
+  aggregateType: String
+  aggregateId: String
+  schemaVersion: Int
+  payload: JSON
+  payloadHash: String
+  occurredAt: DateTime
+  status: String
+  attempts: Int
+  claimToken: String
+  claimedAt: DateTime
+  deliveredAt: DateTime
+  lastError: String
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input GroceryOutboxEventUpdateArgs {
+  where: GroceryOutboxEventWhereUniqueInput!
+  data: GroceryOutboxEventUpdateInput!
+}
+
+input GroceryOutboxEventCreateInput {
+  store: StoreRelateToOneForCreateInput!
+  eventKey: String
+  eventType: String
+  aggregateType: String
+  aggregateId: String
+  schemaVersion: Int
+  payload: JSON
+  payloadHash: String
+  occurredAt: DateTime
+  status: String
+  attempts: Int
+  claimToken: String
+  claimedAt: DateTime
+  deliveredAt: DateTime
+  lastError: String
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -999,9 +1385,13 @@ type InventoryLot {
   quantity: Int
   quantityRemaining: Int
   costPerUnit: Float
+  costPerUnitCents: Int
   location: String
+  store: Store!
   product: Product
   supplier: Supplier
+  orderLineAllocations(where: OrderLineInventoryAllocationWhereInput! = {}, orderBy: [OrderLineInventoryAllocationOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderLineInventoryAllocationWhereUniqueInput): [OrderLineInventoryAllocation!]
+  orderLineAllocationsCount(where: OrderLineInventoryAllocationWhereInput! = {}): Int
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -1022,9 +1412,12 @@ input InventoryLotWhereInput {
   quantity: IntFilter
   quantityRemaining: IntFilter
   costPerUnit: FloatFilter
+  costPerUnitCents: IntFilter
   location: StringFilter
+  store: StoreWhereInput
   product: ProductWhereInput
   supplier: SupplierWhereInput
+  orderLineAllocations: OrderLineInventoryAllocationManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
 }
@@ -1040,6 +1433,12 @@ input FloatFilter {
   not: FloatFilter
 }
 
+input OrderLineInventoryAllocationManyRelationFilter {
+  every: OrderLineInventoryAllocationWhereInput
+  some: OrderLineInventoryAllocationWhereInput
+  none: OrderLineInventoryAllocationWhereInput
+}
+
 input InventoryLotOrderByInput {
   id: OrderDirection
   lotNumber: OrderDirection
@@ -1048,6 +1447,7 @@ input InventoryLotOrderByInput {
   quantity: OrderDirection
   quantityRemaining: OrderDirection
   costPerUnit: OrderDirection
+  costPerUnitCents: OrderDirection
   location: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
@@ -1060,9 +1460,12 @@ input InventoryLotUpdateInput {
   quantity: Int
   quantityRemaining: Int
   costPerUnit: Float
+  costPerUnitCents: Int
   location: String
+  store: StoreRelateToOneForUpdateInput
   product: ProductRelateToOneForUpdateInput
   supplier: SupplierRelateToOneForUpdateInput
+  orderLineAllocations: OrderLineInventoryAllocationRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -1071,6 +1474,13 @@ input SupplierRelateToOneForUpdateInput {
   create: SupplierCreateInput
   connect: SupplierWhereUniqueInput
   disconnect: Boolean
+}
+
+input OrderLineInventoryAllocationRelateToManyForUpdateInput {
+  disconnect: [OrderLineInventoryAllocationWhereUniqueInput!]
+  set: [OrderLineInventoryAllocationWhereUniqueInput!]
+  create: [OrderLineInventoryAllocationCreateInput!]
+  connect: [OrderLineInventoryAllocationWhereUniqueInput!]
 }
 
 input InventoryLotUpdateArgs {
@@ -1085,9 +1495,12 @@ input InventoryLotCreateInput {
   quantity: Int
   quantityRemaining: Int
   costPerUnit: Float
+  costPerUnitCents: Int
   location: String
+  store: StoreRelateToOneForCreateInput!
   product: ProductRelateToOneForCreateInput
   supplier: SupplierRelateToOneForCreateInput
+  orderLineAllocations: OrderLineInventoryAllocationRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -1097,8 +1510,136 @@ input SupplierRelateToOneForCreateInput {
   connect: SupplierWhereUniqueInput
 }
 
+input OrderLineInventoryAllocationRelateToManyForCreateInput {
+  create: [OrderLineInventoryAllocationCreateInput!]
+  connect: [OrderLineInventoryAllocationWhereUniqueInput!]
+}
+
+type InventoryAdjustment {
+  id: ID!
+  idempotencyKey: String
+  reason: InventoryAdjustmentReasonType
+  quantityBefore: Int
+  quantityAfter: Int
+  quantityDelta: Int
+  productStockBefore: Int
+  productStockAfter: Int
+  note: String
+  store: Store!
+  product: Product
+  inventoryLot: InventoryLot
+  adjustedBy: User
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+enum InventoryAdjustmentReasonType {
+  cycle_count
+  damage
+  spoilage
+  correction
+}
+
+input InventoryAdjustmentWhereUniqueInput {
+  id: ID
+  idempotencyKey: String
+}
+
+input InventoryAdjustmentWhereInput {
+  AND: [InventoryAdjustmentWhereInput!]
+  OR: [InventoryAdjustmentWhereInput!]
+  NOT: [InventoryAdjustmentWhereInput!]
+  id: IDFilter
+  idempotencyKey: StringFilter
+  reason: InventoryAdjustmentReasonTypeNullableFilter
+  quantityBefore: IntFilter
+  quantityAfter: IntFilter
+  quantityDelta: IntFilter
+  productStockBefore: IntFilter
+  productStockAfter: IntFilter
+  note: StringFilter
+  store: StoreWhereInput
+  product: ProductWhereInput
+  inventoryLot: InventoryLotWhereInput
+  adjustedBy: UserWhereInput
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input InventoryAdjustmentReasonTypeNullableFilter {
+  equals: InventoryAdjustmentReasonType
+  in: [InventoryAdjustmentReasonType!]
+  notIn: [InventoryAdjustmentReasonType!]
+  not: InventoryAdjustmentReasonTypeNullableFilter
+}
+
+input InventoryAdjustmentOrderByInput {
+  id: OrderDirection
+  idempotencyKey: OrderDirection
+  reason: OrderDirection
+  quantityBefore: OrderDirection
+  quantityAfter: OrderDirection
+  quantityDelta: OrderDirection
+  productStockBefore: OrderDirection
+  productStockAfter: OrderDirection
+  note: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input InventoryAdjustmentUpdateInput {
+  idempotencyKey: String
+  reason: InventoryAdjustmentReasonType
+  quantityBefore: Int
+  quantityAfter: Int
+  quantityDelta: Int
+  productStockBefore: Int
+  productStockAfter: Int
+  note: String
+  store: StoreRelateToOneForUpdateInput
+  product: ProductRelateToOneForUpdateInput
+  inventoryLot: InventoryLotRelateToOneForUpdateInput
+  adjustedBy: UserRelateToOneForUpdateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input InventoryLotRelateToOneForUpdateInput {
+  create: InventoryLotCreateInput
+  connect: InventoryLotWhereUniqueInput
+  disconnect: Boolean
+}
+
+input InventoryAdjustmentUpdateArgs {
+  where: InventoryAdjustmentWhereUniqueInput!
+  data: InventoryAdjustmentUpdateInput!
+}
+
+input InventoryAdjustmentCreateInput {
+  idempotencyKey: String
+  reason: InventoryAdjustmentReasonType
+  quantityBefore: Int
+  quantityAfter: Int
+  quantityDelta: Int
+  productStockBefore: Int
+  productStockAfter: Int
+  note: String
+  store: StoreRelateToOneForCreateInput!
+  product: ProductRelateToOneForCreateInput
+  inventoryLot: InventoryLotRelateToOneForCreateInput
+  adjustedBy: UserRelateToOneForCreateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input InventoryLotRelateToOneForCreateInput {
+  create: InventoryLotCreateInput
+  connect: InventoryLotWhereUniqueInput
+}
+
 type LoyaltyProgram {
   id: ID!
+  store: Store
   name: String
   pointsPerDollar: Float
   tierConfiguration: JSON
@@ -1119,6 +1660,7 @@ input LoyaltyProgramWhereInput {
   OR: [LoyaltyProgramWhereInput!]
   NOT: [LoyaltyProgramWhereInput!]
   id: IDFilter
+  store: StoreWhereInput
   name: StringFilter
   pointsPerDollar: FloatFilter
   isActive: BooleanFilter
@@ -1136,6 +1678,7 @@ input LoyaltyProgramOrderByInput {
 }
 
 input LoyaltyProgramUpdateInput {
+  store: StoreRelateToOneForUpdateInput
   name: String
   pointsPerDollar: Float
   tierConfiguration: JSON
@@ -1153,6 +1696,7 @@ input LoyaltyProgramUpdateArgs {
 }
 
 input LoyaltyProgramCreateInput {
+  store: StoreRelateToOneForCreateInput!
   name: String
   pointsPerDollar: Float
   tierConfiguration: JSON
@@ -1243,12 +1787,6 @@ input LoyaltyTransactionUpdateInput {
   updatedAt: DateTime
 }
 
-input OrderRelateToOneForUpdateInput {
-  create: OrderCreateInput
-  connect: OrderWhereUniqueInput
-  disconnect: Boolean
-}
-
 input LoyaltyTransactionUpdateArgs {
   where: LoyaltyTransactionWhereUniqueInput!
   data: LoyaltyTransactionUpdateInput!
@@ -1267,14 +1805,9 @@ input LoyaltyTransactionCreateInput {
   updatedAt: DateTime
 }
 
-input OrderRelateToOneForCreateInput {
-  create: OrderCreateInput
-  connect: OrderWhereUniqueInput
-}
-
 type NotificationPreference {
   id: ID!
-  user: User
+  user: User!
   orderUpdates: Boolean
   deliveryAlerts: Boolean
   priceDrops: Boolean
@@ -1333,7 +1866,7 @@ input NotificationPreferenceUpdateArgs {
 }
 
 input NotificationPreferenceCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   orderUpdates: Boolean
   deliveryAlerts: Boolean
   priceDrops: Boolean
@@ -1350,6 +1883,12 @@ type Order {
   email: String
   status: OrderStatusType
   taxRate: Float
+  currencyCode: String
+  subtotalCents: Int
+  taxCents: Int
+  deliveryFeeCents: Int
+  discountCents: Int
+  totalCents: Int
   canceledAt: DateTime
   metadata: JSON
   noNotification: Boolean
@@ -1357,11 +1896,18 @@ type Order {
   deliveryTimeWindow: OrderDeliveryTimeWindowType
   deliveryInstructions: String
   substitutionPreference: OrderSubstitutionPreferenceType
+  store: Store!
   user: User
   shippingAddress: Address
   billingAddress: Address
+  checkoutAttempts(where: CheckoutAttemptWhereInput! = {}, orderBy: [CheckoutAttemptOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CheckoutAttemptWhereUniqueInput): [CheckoutAttempt!]
+  checkoutAttemptsCount(where: CheckoutAttemptWhereInput! = {}): Int
+  payments(where: PaymentWhereInput! = {}, orderBy: [PaymentOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWhereUniqueInput): [Payment!]
+  paymentsCount(where: PaymentWhereInput! = {}): Int
   lineItems(where: OrderLineItemWhereInput! = {}, orderBy: [OrderLineItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderLineItemWhereUniqueInput): [OrderLineItem!]
   lineItemsCount(where: OrderLineItemWhereInput! = {}): Int
+  deliverySlot: DeliverySlot
+  pickupSlot: PickupSlot
   deliveryRoute: DeliveryRoute
   createdAt: DateTime
   updatedAt: DateTime
@@ -1393,6 +1939,7 @@ enum OrderSubstitutionPreferenceType {
 
 input OrderWhereUniqueInput {
   id: ID
+  displayId: Int
 }
 
 input OrderWhereInput {
@@ -1404,16 +1951,27 @@ input OrderWhereInput {
   email: StringFilter
   status: OrderStatusTypeNullableFilter
   taxRate: FloatNullableFilter
+  currencyCode: StringFilter
+  subtotalCents: IntFilter
+  taxCents: IntFilter
+  deliveryFeeCents: IntFilter
+  discountCents: IntFilter
+  totalCents: IntFilter
   canceledAt: DateTimeNullableFilter
   noNotification: BooleanFilter
   deliveryDate: DateTimeFilter
   deliveryTimeWindow: OrderDeliveryTimeWindowTypeNullableFilter
   deliveryInstructions: StringFilter
   substitutionPreference: OrderSubstitutionPreferenceTypeNullableFilter
+  store: StoreWhereInput
   user: UserWhereInput
   shippingAddress: AddressWhereInput
   billingAddress: AddressWhereInput
+  checkoutAttempts: CheckoutAttemptManyRelationFilter
+  payments: PaymentManyRelationFilter
   lineItems: OrderLineItemManyRelationFilter
+  deliverySlot: DeliverySlotWhereInput
+  pickupSlot: PickupSlotWhereInput
   deliveryRoute: DeliveryRouteWhereInput
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -1440,6 +1998,12 @@ input OrderSubstitutionPreferenceTypeNullableFilter {
   not: OrderSubstitutionPreferenceTypeNullableFilter
 }
 
+input PaymentManyRelationFilter {
+  every: PaymentWhereInput
+  some: PaymentWhereInput
+  none: PaymentWhereInput
+}
+
 input OrderLineItemManyRelationFilter {
   every: OrderLineItemWhereInput
   some: OrderLineItemWhereInput
@@ -1452,6 +2016,12 @@ input OrderOrderByInput {
   email: OrderDirection
   status: OrderDirection
   taxRate: OrderDirection
+  currencyCode: OrderDirection
+  subtotalCents: OrderDirection
+  taxCents: OrderDirection
+  deliveryFeeCents: OrderDirection
+  discountCents: OrderDirection
+  totalCents: OrderDirection
   canceledAt: OrderDirection
   noNotification: OrderDirection
   deliveryDate: OrderDirection
@@ -1467,6 +2037,12 @@ input OrderUpdateInput {
   email: String
   status: OrderStatusType
   taxRate: Float
+  currencyCode: String
+  subtotalCents: Int
+  taxCents: Int
+  deliveryFeeCents: Int
+  discountCents: Int
+  totalCents: Int
   canceledAt: DateTime
   metadata: JSON
   noNotification: Boolean
@@ -1474,10 +2050,15 @@ input OrderUpdateInput {
   deliveryTimeWindow: OrderDeliveryTimeWindowType
   deliveryInstructions: String
   substitutionPreference: OrderSubstitutionPreferenceType
+  store: StoreRelateToOneForUpdateInput
   user: UserRelateToOneForUpdateInput
   shippingAddress: AddressRelateToOneForUpdateInput
   billingAddress: AddressRelateToOneForUpdateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForUpdateInput
+  payments: PaymentRelateToManyForUpdateInput
   lineItems: OrderLineItemRelateToManyForUpdateInput
+  deliverySlot: DeliverySlotRelateToOneForUpdateInput
+  pickupSlot: PickupSlotRelateToOneForUpdateInput
   deliveryRoute: DeliveryRouteRelateToOneForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -1489,11 +2070,30 @@ input AddressRelateToOneForUpdateInput {
   disconnect: Boolean
 }
 
+input PaymentRelateToManyForUpdateInput {
+  disconnect: [PaymentWhereUniqueInput!]
+  set: [PaymentWhereUniqueInput!]
+  create: [PaymentCreateInput!]
+  connect: [PaymentWhereUniqueInput!]
+}
+
 input OrderLineItemRelateToManyForUpdateInput {
   disconnect: [OrderLineItemWhereUniqueInput!]
   set: [OrderLineItemWhereUniqueInput!]
   create: [OrderLineItemCreateInput!]
   connect: [OrderLineItemWhereUniqueInput!]
+}
+
+input DeliverySlotRelateToOneForUpdateInput {
+  create: DeliverySlotCreateInput
+  connect: DeliverySlotWhereUniqueInput
+  disconnect: Boolean
+}
+
+input PickupSlotRelateToOneForUpdateInput {
+  create: PickupSlotCreateInput
+  connect: PickupSlotWhereUniqueInput
+  disconnect: Boolean
 }
 
 input DeliveryRouteRelateToOneForUpdateInput {
@@ -1512,6 +2112,12 @@ input OrderCreateInput {
   email: String
   status: OrderStatusType
   taxRate: Float
+  currencyCode: String
+  subtotalCents: Int
+  taxCents: Int
+  deliveryFeeCents: Int
+  discountCents: Int
+  totalCents: Int
   canceledAt: DateTime
   metadata: JSON
   noNotification: Boolean
@@ -1519,10 +2125,15 @@ input OrderCreateInput {
   deliveryTimeWindow: OrderDeliveryTimeWindowType
   deliveryInstructions: String
   substitutionPreference: OrderSubstitutionPreferenceType
+  store: StoreRelateToOneForCreateInput!
   user: UserRelateToOneForCreateInput
   shippingAddress: AddressRelateToOneForCreateInput
   billingAddress: AddressRelateToOneForCreateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForCreateInput
+  payments: PaymentRelateToManyForCreateInput
   lineItems: OrderLineItemRelateToManyForCreateInput
+  deliverySlot: DeliverySlotRelateToOneForCreateInput
+  pickupSlot: PickupSlotRelateToOneForCreateInput
   deliveryRoute: DeliveryRouteRelateToOneForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -1533,9 +2144,24 @@ input AddressRelateToOneForCreateInput {
   connect: AddressWhereUniqueInput
 }
 
+input PaymentRelateToManyForCreateInput {
+  create: [PaymentCreateInput!]
+  connect: [PaymentWhereUniqueInput!]
+}
+
 input OrderLineItemRelateToManyForCreateInput {
   create: [OrderLineItemCreateInput!]
   connect: [OrderLineItemWhereUniqueInput!]
+}
+
+input DeliverySlotRelateToOneForCreateInput {
+  create: DeliverySlotCreateInput
+  connect: DeliverySlotWhereUniqueInput
+}
+
+input PickupSlotRelateToOneForCreateInput {
+  create: PickupSlotCreateInput
+  connect: PickupSlotWhereUniqueInput
 }
 
 input DeliveryRouteRelateToOneForCreateInput {
@@ -1545,7 +2171,10 @@ input DeliveryRouteRelateToOneForCreateInput {
 
 type OrderItemSubstitution {
   id: ID!
+  idempotencyKey: String
   orderItem: String
+  lineItem: OrderLineItem
+  recordedBy: User
   originalProduct: String
   substitutedProduct: String
   reason: String
@@ -1557,6 +2186,7 @@ type OrderItemSubstitution {
 
 input OrderItemSubstitutionWhereUniqueInput {
   id: ID
+  idempotencyKey: String
 }
 
 input OrderItemSubstitutionWhereInput {
@@ -1564,7 +2194,10 @@ input OrderItemSubstitutionWhereInput {
   OR: [OrderItemSubstitutionWhereInput!]
   NOT: [OrderItemSubstitutionWhereInput!]
   id: IDFilter
+  idempotencyKey: StringFilter
   orderItem: StringFilter
+  lineItem: OrderLineItemWhereInput
+  recordedBy: UserWhereInput
   originalProduct: StringFilter
   substitutedProduct: StringFilter
   reason: StringFilter
@@ -1576,6 +2209,7 @@ input OrderItemSubstitutionWhereInput {
 
 input OrderItemSubstitutionOrderByInput {
   id: OrderDirection
+  idempotencyKey: OrderDirection
   orderItem: OrderDirection
   originalProduct: OrderDirection
   substitutedProduct: OrderDirection
@@ -1587,7 +2221,10 @@ input OrderItemSubstitutionOrderByInput {
 }
 
 input OrderItemSubstitutionUpdateInput {
+  idempotencyKey: String
   orderItem: String
+  lineItem: OrderLineItemRelateToOneForUpdateInput
+  recordedBy: UserRelateToOneForUpdateInput
   originalProduct: String
   substitutedProduct: String
   reason: String
@@ -1595,6 +2232,12 @@ input OrderItemSubstitutionUpdateInput {
   approvedAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
+}
+
+input OrderLineItemRelateToOneForUpdateInput {
+  create: OrderLineItemCreateInput
+  connect: OrderLineItemWhereUniqueInput
+  disconnect: Boolean
 }
 
 input OrderItemSubstitutionUpdateArgs {
@@ -1603,7 +2246,10 @@ input OrderItemSubstitutionUpdateArgs {
 }
 
 input OrderItemSubstitutionCreateInput {
+  idempotencyKey: String
   orderItem: String
+  lineItem: OrderLineItemRelateToOneForCreateInput
+  recordedBy: UserRelateToOneForCreateInput
   originalProduct: String
   substitutedProduct: String
   reason: String
@@ -1613,17 +2259,27 @@ input OrderItemSubstitutionCreateInput {
   updatedAt: DateTime
 }
 
+input OrderLineItemRelateToOneForCreateInput {
+  create: OrderLineItemCreateInput
+  connect: OrderLineItemWhereUniqueInput
+}
+
 type OrderLineItem {
   id: ID!
   title: String
   sku: String
   quantity: Int
   unitPrice: Float
+  unitPriceCents: Int
   thumbnail: String
   metadata: JSON
-  order: Order
+  order: Order!
   product: Product
   inventoryLot: InventoryLot
+  inventoryAllocations(where: OrderLineInventoryAllocationWhereInput! = {}, orderBy: [OrderLineInventoryAllocationOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderLineInventoryAllocationWhereUniqueInput): [OrderLineInventoryAllocation!]
+  inventoryAllocationsCount(where: OrderLineInventoryAllocationWhereInput! = {}): Int
+  substitutions(where: OrderItemSubstitutionWhereInput! = {}, orderBy: [OrderItemSubstitutionOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderItemSubstitutionWhereUniqueInput): [OrderItemSubstitution!]
+  substitutionsCount(where: OrderItemSubstitutionWhereInput! = {}): Int
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -1641,12 +2297,21 @@ input OrderLineItemWhereInput {
   sku: StringFilter
   quantity: IntFilter
   unitPrice: FloatFilter
+  unitPriceCents: IntFilter
   thumbnail: StringFilter
   order: OrderWhereInput
   product: ProductWhereInput
   inventoryLot: InventoryLotWhereInput
+  inventoryAllocations: OrderLineInventoryAllocationManyRelationFilter
+  substitutions: OrderItemSubstitutionManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
+}
+
+input OrderItemSubstitutionManyRelationFilter {
+  every: OrderItemSubstitutionWhereInput
+  some: OrderItemSubstitutionWhereInput
+  none: OrderItemSubstitutionWhereInput
 }
 
 input OrderLineItemOrderByInput {
@@ -1655,6 +2320,7 @@ input OrderLineItemOrderByInput {
   sku: OrderDirection
   quantity: OrderDirection
   unitPrice: OrderDirection
+  unitPriceCents: OrderDirection
   thumbnail: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
@@ -1665,19 +2331,23 @@ input OrderLineItemUpdateInput {
   sku: String
   quantity: Int
   unitPrice: Float
+  unitPriceCents: Int
   thumbnail: String
   metadata: JSON
   order: OrderRelateToOneForUpdateInput
   product: ProductRelateToOneForUpdateInput
   inventoryLot: InventoryLotRelateToOneForUpdateInput
+  inventoryAllocations: OrderLineInventoryAllocationRelateToManyForUpdateInput
+  substitutions: OrderItemSubstitutionRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
 
-input InventoryLotRelateToOneForUpdateInput {
-  create: InventoryLotCreateInput
-  connect: InventoryLotWhereUniqueInput
-  disconnect: Boolean
+input OrderItemSubstitutionRelateToManyForUpdateInput {
+  disconnect: [OrderItemSubstitutionWhereUniqueInput!]
+  set: [OrderItemSubstitutionWhereUniqueInput!]
+  create: [OrderItemSubstitutionCreateInput!]
+  connect: [OrderItemSubstitutionWhereUniqueInput!]
 }
 
 input OrderLineItemUpdateArgs {
@@ -1690,22 +2360,86 @@ input OrderLineItemCreateInput {
   sku: String
   quantity: Int
   unitPrice: Float
+  unitPriceCents: Int
   thumbnail: String
   metadata: JSON
-  order: OrderRelateToOneForCreateInput
+  order: OrderRelateToOneForCreateInput!
   product: ProductRelateToOneForCreateInput
   inventoryLot: InventoryLotRelateToOneForCreateInput
+  inventoryAllocations: OrderLineInventoryAllocationRelateToManyForCreateInput
+  substitutions: OrderItemSubstitutionRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
 
-input InventoryLotRelateToOneForCreateInput {
-  create: InventoryLotCreateInput
-  connect: InventoryLotWhereUniqueInput
+input OrderItemSubstitutionRelateToManyForCreateInput {
+  create: [OrderItemSubstitutionCreateInput!]
+  connect: [OrderItemSubstitutionWhereUniqueInput!]
+}
+
+type OrderLineInventoryAllocation {
+  id: ID!
+  lineItem: OrderLineItem!
+  inventoryLot: InventoryLot!
+  store: Store!
+  quantity: Int
+  provenance: JSON
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input OrderLineInventoryAllocationWhereUniqueInput {
+  id: ID
+}
+
+input OrderLineInventoryAllocationWhereInput {
+  AND: [OrderLineInventoryAllocationWhereInput!]
+  OR: [OrderLineInventoryAllocationWhereInput!]
+  NOT: [OrderLineInventoryAllocationWhereInput!]
+  id: IDFilter
+  lineItem: OrderLineItemWhereInput
+  inventoryLot: InventoryLotWhereInput
+  store: StoreWhereInput
+  quantity: IntFilter
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input OrderLineInventoryAllocationOrderByInput {
+  id: OrderDirection
+  quantity: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input OrderLineInventoryAllocationUpdateInput {
+  lineItem: OrderLineItemRelateToOneForUpdateInput
+  inventoryLot: InventoryLotRelateToOneForUpdateInput
+  store: StoreRelateToOneForUpdateInput
+  quantity: Int
+  provenance: JSON
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input OrderLineInventoryAllocationUpdateArgs {
+  where: OrderLineInventoryAllocationWhereUniqueInput!
+  data: OrderLineInventoryAllocationUpdateInput!
+}
+
+input OrderLineInventoryAllocationCreateInput {
+  lineItem: OrderLineItemRelateToOneForCreateInput!
+  inventoryLot: InventoryLotRelateToOneForCreateInput!
+  store: StoreRelateToOneForCreateInput!
+  quantity: Int
+  provenance: JSON
+  createdAt: DateTime
+  updatedAt: DateTime
 }
 
 type ParkingSpot {
   id: ID!
+  store: Store!
   spotNumber: String
   description: String
   isAccessible: Boolean
@@ -1724,6 +2458,7 @@ input ParkingSpotWhereInput {
   OR: [ParkingSpotWhereInput!]
   NOT: [ParkingSpotWhereInput!]
   id: IDFilter
+  store: StoreWhereInput
   spotNumber: StringFilter
   description: StringFilter
   isAccessible: BooleanFilter
@@ -1743,6 +2478,7 @@ input ParkingSpotOrderByInput {
 }
 
 input ParkingSpotUpdateInput {
+  store: StoreRelateToOneForUpdateInput
   spotNumber: String
   description: String
   isAccessible: Boolean
@@ -1757,6 +2493,7 @@ input ParkingSpotUpdateArgs {
 }
 
 input ParkingSpotCreateInput {
+  store: StoreRelateToOneForCreateInput!
   spotNumber: String
   description: String
   isAccessible: Boolean
@@ -1768,6 +2505,7 @@ input ParkingSpotCreateInput {
 type Payment {
   id: ID!
   amount: Decimal
+  amountCents: Int
   status: String
   paymentMethod: String
   providerPaymentId: String
@@ -1777,11 +2515,17 @@ type Payment {
   cardLast4: String
   cardBrand: String
   deliveryTipAmount: Decimal
+  deliveryTipCents: Int
   processedAt: DateTime
   errorMessage: String
   notes: String
-  order: Order
+  store: Store!
+  order: Order!
   paymentProvider: PaymentProvider
+  refunds(where: PaymentRefundWhereInput! = {}, orderBy: [PaymentRefundOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentRefundWhereUniqueInput): [PaymentRefund!]
+  refundsCount(where: PaymentRefundWhereInput! = {}): Int
+  webhookEvents(where: PaymentWebhookEventWhereInput! = {}, orderBy: [PaymentWebhookEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWebhookEventWhereUniqueInput): [PaymentWebhookEvent!]
+  webhookEventsCount(where: PaymentWebhookEventWhereInput! = {}): Int
   processedBy: User
   createdAt: DateTime
   updatedAt: DateTime
@@ -1800,6 +2544,7 @@ input PaymentWhereInput {
   NOT: [PaymentWhereInput!]
   id: IDFilter
   amount: DecimalFilter
+  amountCents: IntFilter
   status: StringFilter
   paymentMethod: StringNullableFilter
   providerPaymentId: StringFilter
@@ -1808,11 +2553,15 @@ input PaymentWhereInput {
   cardLast4: StringFilter
   cardBrand: StringFilter
   deliveryTipAmount: DecimalNullableFilter
+  deliveryTipCents: IntFilter
   processedAt: DateTimeNullableFilter
   errorMessage: StringFilter
   notes: StringFilter
+  store: StoreWhereInput
   order: OrderWhereInput
   paymentProvider: PaymentProviderWhereInput
+  refunds: PaymentRefundManyRelationFilter
+  webhookEvents: PaymentWebhookEventManyRelationFilter
   processedBy: UserWhereInput
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -1829,21 +2578,6 @@ input DecimalFilter {
   not: DecimalFilter
 }
 
-input StringNullableFilter {
-  equals: String
-  in: [String!]
-  notIn: [String!]
-  lt: String
-  lte: String
-  gt: String
-  gte: String
-  contains: String
-  startsWith: String
-  endsWith: String
-  mode: QueryMode
-  not: StringNullableFilter
-}
-
 input DecimalNullableFilter {
   equals: Decimal
   in: [Decimal!]
@@ -1855,9 +2589,22 @@ input DecimalNullableFilter {
   not: DecimalNullableFilter
 }
 
+input PaymentRefundManyRelationFilter {
+  every: PaymentRefundWhereInput
+  some: PaymentRefundWhereInput
+  none: PaymentRefundWhereInput
+}
+
+input PaymentWebhookEventManyRelationFilter {
+  every: PaymentWebhookEventWhereInput
+  some: PaymentWebhookEventWhereInput
+  none: PaymentWebhookEventWhereInput
+}
+
 input PaymentOrderByInput {
   id: OrderDirection
   amount: OrderDirection
+  amountCents: OrderDirection
   status: OrderDirection
   paymentMethod: OrderDirection
   providerPaymentId: OrderDirection
@@ -1866,6 +2613,7 @@ input PaymentOrderByInput {
   cardLast4: OrderDirection
   cardBrand: OrderDirection
   deliveryTipAmount: OrderDirection
+  deliveryTipCents: OrderDirection
   processedAt: OrderDirection
   errorMessage: OrderDirection
   notes: OrderDirection
@@ -1875,6 +2623,7 @@ input PaymentOrderByInput {
 
 input PaymentUpdateInput {
   amount: Decimal
+  amountCents: Int
   status: String
   paymentMethod: String
   providerPaymentId: String
@@ -1884,11 +2633,15 @@ input PaymentUpdateInput {
   cardLast4: String
   cardBrand: String
   deliveryTipAmount: Decimal
+  deliveryTipCents: Int
   processedAt: DateTime
   errorMessage: String
   notes: String
+  store: StoreRelateToOneForUpdateInput
   order: OrderRelateToOneForUpdateInput
   paymentProvider: PaymentProviderRelateToOneForUpdateInput
+  refunds: PaymentRefundRelateToManyForUpdateInput
+  webhookEvents: PaymentWebhookEventRelateToManyForUpdateInput
   processedBy: UserRelateToOneForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -1900,6 +2653,20 @@ input PaymentProviderRelateToOneForUpdateInput {
   disconnect: Boolean
 }
 
+input PaymentRefundRelateToManyForUpdateInput {
+  disconnect: [PaymentRefundWhereUniqueInput!]
+  set: [PaymentRefundWhereUniqueInput!]
+  create: [PaymentRefundCreateInput!]
+  connect: [PaymentRefundWhereUniqueInput!]
+}
+
+input PaymentWebhookEventRelateToManyForUpdateInput {
+  disconnect: [PaymentWebhookEventWhereUniqueInput!]
+  set: [PaymentWebhookEventWhereUniqueInput!]
+  create: [PaymentWebhookEventCreateInput!]
+  connect: [PaymentWebhookEventWhereUniqueInput!]
+}
+
 input PaymentUpdateArgs {
   where: PaymentWhereUniqueInput!
   data: PaymentUpdateInput!
@@ -1907,6 +2674,7 @@ input PaymentUpdateArgs {
 
 input PaymentCreateInput {
   amount: Decimal
+  amountCents: Int
   status: String
   paymentMethod: String
   providerPaymentId: String
@@ -1916,11 +2684,15 @@ input PaymentCreateInput {
   cardLast4: String
   cardBrand: String
   deliveryTipAmount: Decimal
+  deliveryTipCents: Int
   processedAt: DateTime
   errorMessage: String
   notes: String
-  order: OrderRelateToOneForCreateInput
+  store: StoreRelateToOneForCreateInput!
+  order: OrderRelateToOneForCreateInput!
   paymentProvider: PaymentProviderRelateToOneForCreateInput
+  refunds: PaymentRefundRelateToManyForCreateInput
+  webhookEvents: PaymentWebhookEventRelateToManyForCreateInput
   processedBy: UserRelateToOneForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -1931,19 +2703,22 @@ input PaymentProviderRelateToOneForCreateInput {
   connect: PaymentProviderWhereUniqueInput
 }
 
+input PaymentRefundRelateToManyForCreateInput {
+  create: [PaymentRefundCreateInput!]
+  connect: [PaymentRefundWhereUniqueInput!]
+}
+
+input PaymentWebhookEventRelateToManyForCreateInput {
+  create: [PaymentWebhookEventCreateInput!]
+  connect: [PaymentWebhookEventWhereUniqueInput!]
+}
+
 type PaymentProvider {
   id: ID!
   name: String
   code: String
   isInstalled: Boolean
-  credentials: JSON
   metadata: JSON
-  createPaymentFunction: String
-  capturePaymentFunction: String
-  refundPaymentFunction: String
-  getPaymentStatusFunction: String
-  generatePaymentLinkFunction: String
-  handleWebhookFunction: String
   payments(where: PaymentWhereInput! = {}, orderBy: [PaymentOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWhereUniqueInput): [Payment!]
   paymentsCount(where: PaymentWhereInput! = {}): Int
   sessions(where: PaymentSessionWhereInput! = {}, orderBy: [PaymentSessionOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentSessionWhereUniqueInput): [PaymentSession!]
@@ -1965,22 +2740,10 @@ input PaymentProviderWhereInput {
   name: StringFilter
   code: StringFilter
   isInstalled: BooleanFilter
-  createPaymentFunction: StringFilter
-  capturePaymentFunction: StringFilter
-  refundPaymentFunction: StringFilter
-  getPaymentStatusFunction: StringFilter
-  generatePaymentLinkFunction: StringFilter
-  handleWebhookFunction: StringFilter
   payments: PaymentManyRelationFilter
   sessions: PaymentSessionManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
-}
-
-input PaymentManyRelationFilter {
-  every: PaymentWhereInput
-  some: PaymentWhereInput
-  none: PaymentWhereInput
 }
 
 input PaymentProviderOrderByInput {
@@ -1988,12 +2751,6 @@ input PaymentProviderOrderByInput {
   name: OrderDirection
   code: OrderDirection
   isInstalled: OrderDirection
-  createPaymentFunction: OrderDirection
-  capturePaymentFunction: OrderDirection
-  refundPaymentFunction: OrderDirection
-  getPaymentStatusFunction: OrderDirection
-  generatePaymentLinkFunction: OrderDirection
-  handleWebhookFunction: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
 }
@@ -2002,25 +2759,11 @@ input PaymentProviderUpdateInput {
   name: String
   code: String
   isInstalled: Boolean
-  credentials: JSON
   metadata: JSON
-  createPaymentFunction: String
-  capturePaymentFunction: String
-  refundPaymentFunction: String
-  getPaymentStatusFunction: String
-  generatePaymentLinkFunction: String
-  handleWebhookFunction: String
   payments: PaymentRelateToManyForUpdateInput
   sessions: PaymentSessionRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
-}
-
-input PaymentRelateToManyForUpdateInput {
-  disconnect: [PaymentWhereUniqueInput!]
-  set: [PaymentWhereUniqueInput!]
-  create: [PaymentCreateInput!]
-  connect: [PaymentWhereUniqueInput!]
 }
 
 input PaymentProviderUpdateArgs {
@@ -2032,23 +2775,193 @@ input PaymentProviderCreateInput {
   name: String
   code: String
   isInstalled: Boolean
-  credentials: JSON
   metadata: JSON
-  createPaymentFunction: String
-  capturePaymentFunction: String
-  refundPaymentFunction: String
-  getPaymentStatusFunction: String
-  generatePaymentLinkFunction: String
-  handleWebhookFunction: String
   payments: PaymentRelateToManyForCreateInput
   sessions: PaymentSessionRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
 
-input PaymentRelateToManyForCreateInput {
-  create: [PaymentCreateInput!]
-  connect: [PaymentWhereUniqueInput!]
+type PaymentRefund {
+  id: ID!
+  idempotencyKey: String
+  amount: Decimal
+  amountCents: Int
+  status: PaymentRefundStatusType
+  providerCode: String
+  providerPaymentId: String
+  providerRefundId: String
+  providerStatus: String
+  providerData: JSON
+  providerEventId: String
+  providerEventCreatedAt: DateTime
+  providerEventVersion: Int
+  failureMessage: String
+  reconciliationAttempts: Int
+  reconciliationOwner: String
+  reconciliationToken: String
+  reconciliationLeaseExpiresAt: DateTime
+  reconciliationNextAttemptAt: DateTime
+  reconciliationDeadLetterAt: DateTime
+  reconciliationLastError: String
+  requestedAt: DateTime
+  processedAt: DateTime
+  payment: Payment!
+  requestedBy: User!
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+enum PaymentRefundStatusType {
+  processing
+  succeeded
+  failed
+  canceled
+}
+
+input PaymentRefundWhereUniqueInput {
+  id: ID
+  idempotencyKey: String
+}
+
+input PaymentRefundWhereInput {
+  AND: [PaymentRefundWhereInput!]
+  OR: [PaymentRefundWhereInput!]
+  NOT: [PaymentRefundWhereInput!]
+  id: IDFilter
+  idempotencyKey: StringFilter
+  amount: DecimalFilter
+  amountCents: IntFilter
+  status: PaymentRefundStatusTypeNullableFilter
+  providerCode: StringFilter
+  providerPaymentId: StringFilter
+  providerRefundId: StringFilter
+  providerStatus: StringFilter
+  providerEventId: StringNullableFilter
+  providerEventCreatedAt: DateTimeNullableFilter
+  providerEventVersion: IntFilter
+  failureMessage: StringFilter
+  reconciliationAttempts: IntFilter
+  reconciliationOwner: StringNullableFilter
+  reconciliationToken: StringNullableFilter
+  reconciliationLeaseExpiresAt: DateTimeNullableFilter
+  reconciliationNextAttemptAt: DateTimeNullableFilter
+  reconciliationDeadLetterAt: DateTimeNullableFilter
+  reconciliationLastError: StringNullableFilter
+  requestedAt: DateTimeFilter
+  processedAt: DateTimeNullableFilter
+  payment: PaymentWhereInput
+  requestedBy: UserWhereInput
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input PaymentRefundStatusTypeNullableFilter {
+  equals: PaymentRefundStatusType
+  in: [PaymentRefundStatusType!]
+  notIn: [PaymentRefundStatusType!]
+  not: PaymentRefundStatusTypeNullableFilter
+}
+
+input PaymentRefundOrderByInput {
+  id: OrderDirection
+  idempotencyKey: OrderDirection
+  amount: OrderDirection
+  amountCents: OrderDirection
+  status: OrderDirection
+  providerCode: OrderDirection
+  providerPaymentId: OrderDirection
+  providerRefundId: OrderDirection
+  providerStatus: OrderDirection
+  providerEventId: OrderDirection
+  providerEventCreatedAt: OrderDirection
+  providerEventVersion: OrderDirection
+  failureMessage: OrderDirection
+  reconciliationAttempts: OrderDirection
+  reconciliationOwner: OrderDirection
+  reconciliationToken: OrderDirection
+  reconciliationLeaseExpiresAt: OrderDirection
+  reconciliationNextAttemptAt: OrderDirection
+  reconciliationDeadLetterAt: OrderDirection
+  reconciliationLastError: OrderDirection
+  requestedAt: OrderDirection
+  processedAt: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input PaymentRefundUpdateInput {
+  idempotencyKey: String
+  amount: Decimal
+  amountCents: Int
+  status: PaymentRefundStatusType
+  providerCode: String
+  providerPaymentId: String
+  providerRefundId: String
+  providerStatus: String
+  providerData: JSON
+  providerEventId: String
+  providerEventCreatedAt: DateTime
+  providerEventVersion: Int
+  failureMessage: String
+  reconciliationAttempts: Int
+  reconciliationOwner: String
+  reconciliationToken: String
+  reconciliationLeaseExpiresAt: DateTime
+  reconciliationNextAttemptAt: DateTime
+  reconciliationDeadLetterAt: DateTime
+  reconciliationLastError: String
+  requestedAt: DateTime
+  processedAt: DateTime
+  payment: PaymentRelateToOneForUpdateInput
+  requestedBy: UserRelateToOneForUpdateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input PaymentRelateToOneForUpdateInput {
+  create: PaymentCreateInput
+  connect: PaymentWhereUniqueInput
+  disconnect: Boolean
+}
+
+input PaymentRefundUpdateArgs {
+  where: PaymentRefundWhereUniqueInput!
+  data: PaymentRefundUpdateInput!
+}
+
+input PaymentRefundCreateInput {
+  idempotencyKey: String
+  amount: Decimal
+  amountCents: Int
+  status: PaymentRefundStatusType
+  providerCode: String
+  providerPaymentId: String
+  providerRefundId: String
+  providerStatus: String
+  providerData: JSON
+  providerEventId: String
+  providerEventCreatedAt: DateTime
+  providerEventVersion: Int
+  failureMessage: String
+  reconciliationAttempts: Int
+  reconciliationOwner: String
+  reconciliationToken: String
+  reconciliationLeaseExpiresAt: DateTime
+  reconciliationNextAttemptAt: DateTime
+  reconciliationDeadLetterAt: DateTime
+  reconciliationLastError: String
+  requestedAt: DateTime
+  processedAt: DateTime
+  payment: PaymentRelateToOneForCreateInput!
+  requestedBy: UserRelateToOneForCreateInput!
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input PaymentRelateToOneForCreateInput {
+  create: PaymentCreateInput
+  connect: PaymentWhereUniqueInput
 }
 
 type PaymentSession {
@@ -2056,9 +2969,13 @@ type PaymentSession {
   isSelected: Boolean
   isInitiated: Boolean
   amount: Decimal
+  amountCents: Int
+  reservedOrderDisplayId: Int
   data: JSON
   idempotencyKey: String
   cart: Cart
+  checkoutAttempts(where: CheckoutAttemptWhereInput! = {}, orderBy: [CheckoutAttemptOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CheckoutAttemptWhereUniqueInput): [CheckoutAttempt!]
+  checkoutAttemptsCount(where: CheckoutAttemptWhereInput! = {}): Int
   paymentProvider: PaymentProvider
   createdAt: DateTime
   updatedAt: DateTime
@@ -2066,6 +2983,8 @@ type PaymentSession {
 
 input PaymentSessionWhereUniqueInput {
   id: ID
+  reservedOrderDisplayId: Int
+  idempotencyKey: String
 }
 
 input PaymentSessionWhereInput {
@@ -2076,8 +2995,11 @@ input PaymentSessionWhereInput {
   isSelected: BooleanFilter
   isInitiated: BooleanFilter
   amount: DecimalFilter
+  amountCents: IntFilter
+  reservedOrderDisplayId: IntNullableFilter
   idempotencyKey: StringFilter
   cart: CartWhereInput
+  checkoutAttempts: CheckoutAttemptManyRelationFilter
   paymentProvider: PaymentProviderWhereInput
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -2088,6 +3010,8 @@ input PaymentSessionOrderByInput {
   isSelected: OrderDirection
   isInitiated: OrderDirection
   amount: OrderDirection
+  amountCents: OrderDirection
+  reservedOrderDisplayId: OrderDirection
   idempotencyKey: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
@@ -2097,9 +3021,12 @@ input PaymentSessionUpdateInput {
   isSelected: Boolean
   isInitiated: Boolean
   amount: Decimal
+  amountCents: Int
+  reservedOrderDisplayId: Int
   data: JSON
   idempotencyKey: String
   cart: CartRelateToOneForUpdateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForUpdateInput
   paymentProvider: PaymentProviderRelateToOneForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -2114,21 +3041,146 @@ input PaymentSessionCreateInput {
   isSelected: Boolean
   isInitiated: Boolean
   amount: Decimal
+  amountCents: Int
+  reservedOrderDisplayId: Int
   data: JSON
   idempotencyKey: String
   cart: CartRelateToOneForCreateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForCreateInput
   paymentProvider: PaymentProviderRelateToOneForCreateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+type PaymentWebhookEvent {
+  id: ID!
+  replayKey: String
+  providerCode: String
+  providerEventId: String
+  providerCreatedAt: DateTime
+  providerVersion: Int
+  eventType: String
+  payloadHash: String
+  claimToken: String
+  status: PaymentWebhookEventStatusType
+  paymentRecordId: String
+  store: Store!
+  payment: Payment
+  processedAt: DateTime
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+enum PaymentWebhookEventStatusType {
+  processing
+  processed
+  ignored
+  unmatched
+}
+
+input PaymentWebhookEventWhereUniqueInput {
+  id: ID
+  replayKey: String
+}
+
+input PaymentWebhookEventWhereInput {
+  AND: [PaymentWebhookEventWhereInput!]
+  OR: [PaymentWebhookEventWhereInput!]
+  NOT: [PaymentWebhookEventWhereInput!]
+  id: IDFilter
+  replayKey: StringFilter
+  providerCode: StringFilter
+  providerEventId: StringFilter
+  providerCreatedAt: DateTimeNullableFilter
+  providerVersion: IntFilter
+  eventType: StringFilter
+  payloadHash: StringFilter
+  claimToken: StringFilter
+  status: PaymentWebhookEventStatusTypeNullableFilter
+  paymentRecordId: StringFilter
+  store: StoreWhereInput
+  payment: PaymentWhereInput
+  processedAt: DateTimeNullableFilter
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input PaymentWebhookEventStatusTypeNullableFilter {
+  equals: PaymentWebhookEventStatusType
+  in: [PaymentWebhookEventStatusType!]
+  notIn: [PaymentWebhookEventStatusType!]
+  not: PaymentWebhookEventStatusTypeNullableFilter
+}
+
+input PaymentWebhookEventOrderByInput {
+  id: OrderDirection
+  replayKey: OrderDirection
+  providerCode: OrderDirection
+  providerEventId: OrderDirection
+  providerCreatedAt: OrderDirection
+  providerVersion: OrderDirection
+  eventType: OrderDirection
+  payloadHash: OrderDirection
+  claimToken: OrderDirection
+  status: OrderDirection
+  paymentRecordId: OrderDirection
+  processedAt: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input PaymentWebhookEventUpdateInput {
+  replayKey: String
+  providerCode: String
+  providerEventId: String
+  providerCreatedAt: DateTime
+  providerVersion: Int
+  eventType: String
+  payloadHash: String
+  claimToken: String
+  status: PaymentWebhookEventStatusType
+  paymentRecordId: String
+  store: StoreRelateToOneForUpdateInput
+  payment: PaymentRelateToOneForUpdateInput
+  processedAt: DateTime
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input PaymentWebhookEventUpdateArgs {
+  where: PaymentWebhookEventWhereUniqueInput!
+  data: PaymentWebhookEventUpdateInput!
+}
+
+input PaymentWebhookEventCreateInput {
+  replayKey: String
+  providerCode: String
+  providerEventId: String
+  providerCreatedAt: DateTime
+  providerVersion: Int
+  eventType: String
+  payloadHash: String
+  claimToken: String
+  status: PaymentWebhookEventStatusType
+  paymentRecordId: String
+  store: StoreRelateToOneForCreateInput!
+  payment: PaymentRelateToOneForCreateInput
+  processedAt: DateTime
   createdAt: DateTime
   updatedAt: DateTime
 }
 
 type PickupSlot {
   id: ID!
+  store: Store!
+  orders(where: OrderWhereInput! = {}, orderBy: [OrderOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderWhereUniqueInput): [Order!]
+  ordersCount(where: OrderWhereInput! = {}): Int
   date: DateTime
   startTime: String
   endTime: String
   maxOrders: Int
   currentOrders: Int
+  isActive: Boolean
   isAvailable: Boolean
   createdAt: DateTime
   updatedAt: DateTime
@@ -2143,11 +3195,14 @@ input PickupSlotWhereInput {
   OR: [PickupSlotWhereInput!]
   NOT: [PickupSlotWhereInput!]
   id: IDFilter
+  store: StoreWhereInput
+  orders: OrderManyRelationFilter
   date: DateTimeFilter
   startTime: StringFilter
   endTime: StringFilter
   maxOrders: IntFilter
   currentOrders: IntNullableFilter
+  isActive: BooleanFilter
   isAvailable: BooleanFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -2160,17 +3215,21 @@ input PickupSlotOrderByInput {
   endTime: OrderDirection
   maxOrders: OrderDirection
   currentOrders: OrderDirection
+  isActive: OrderDirection
   isAvailable: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
 }
 
 input PickupSlotUpdateInput {
+  store: StoreRelateToOneForUpdateInput
+  orders: OrderRelateToManyForUpdateInput
   date: DateTime
   startTime: String
   endTime: String
   maxOrders: Int
   currentOrders: Int
+  isActive: Boolean
   isAvailable: Boolean
   createdAt: DateTime
   updatedAt: DateTime
@@ -2182,11 +3241,14 @@ input PickupSlotUpdateArgs {
 }
 
 input PickupSlotCreateInput {
+  store: StoreRelateToOneForCreateInput!
+  orders: OrderRelateToManyForCreateInput
   date: DateTime
   startTime: String
   endTime: String
   maxOrders: Int
   currentOrders: Int
+  isActive: Boolean
   isAvailable: Boolean
   createdAt: DateTime
   updatedAt: DateTime
@@ -2194,8 +3256,11 @@ input PickupSlotCreateInput {
 
 type POItem {
   id: ID!
+  productTitle: String
+  productSku: String
   quantity: Int
   unitCost: Float
+  unitCostCents: Int
   quantityReceived: Int
   purchaseOrder: PurchaseOrder
   product: Product
@@ -2212,8 +3277,11 @@ input POItemWhereInput {
   OR: [POItemWhereInput!]
   NOT: [POItemWhereInput!]
   id: IDFilter
+  productTitle: StringFilter
+  productSku: StringFilter
   quantity: IntFilter
   unitCost: FloatFilter
+  unitCostCents: IntFilter
   quantityReceived: IntNullableFilter
   purchaseOrder: PurchaseOrderWhereInput
   product: ProductWhereInput
@@ -2223,16 +3291,22 @@ input POItemWhereInput {
 
 input POItemOrderByInput {
   id: OrderDirection
+  productTitle: OrderDirection
+  productSku: OrderDirection
   quantity: OrderDirection
   unitCost: OrderDirection
+  unitCostCents: OrderDirection
   quantityReceived: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
 }
 
 input POItemUpdateInput {
+  productTitle: String
+  productSku: String
   quantity: Int
   unitCost: Float
+  unitCostCents: Int
   quantityReceived: Int
   purchaseOrder: PurchaseOrderRelateToOneForUpdateInput
   product: ProductRelateToOneForUpdateInput
@@ -2252,8 +3326,11 @@ input POItemUpdateArgs {
 }
 
 input POItemCreateInput {
+  productTitle: String
+  productSku: String
   quantity: Int
   unitCost: Float
+  unitCostCents: Int
   quantityReceived: Int
   purchaseOrder: PurchaseOrderRelateToOneForCreateInput
   product: ProductRelateToOneForCreateInput
@@ -2268,8 +3345,9 @@ input PurchaseOrderRelateToOneForCreateInput {
 
 type PriceAlert {
   id: ID!
-  user: User
+  user: User!
   product: String
+  productRef: Product
   targetPrice: Decimal
   currentPrice: Decimal
   isTriggered: Boolean
@@ -2289,6 +3367,7 @@ input PriceAlertWhereInput {
   id: IDFilter
   user: UserWhereInput
   product: StringFilter
+  productRef: ProductWhereInput
   targetPrice: DecimalFilter
   currentPrice: DecimalNullableFilter
   isTriggered: BooleanFilter
@@ -2311,6 +3390,7 @@ input PriceAlertOrderByInput {
 input PriceAlertUpdateInput {
   user: UserRelateToOneForUpdateInput
   product: String
+  productRef: ProductRelateToOneForUpdateInput
   targetPrice: Decimal
   currentPrice: Decimal
   isTriggered: Boolean
@@ -2325,8 +3405,9 @@ input PriceAlertUpdateArgs {
 }
 
 input PriceAlertCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   product: String
+  productRef: ProductRelateToOneForCreateInput
   targetPrice: Decimal
   currentPrice: Decimal
   isTriggered: Boolean
@@ -2344,8 +3425,10 @@ type Product {
   status: ProductStatusType
   metadata: JSON
   price: Float
+  priceCents: Int
   compareAtPrice: Float
   costPrice: Float
+  costPriceCents: Int
   inStock: Boolean
   stockQuantity: Int
   lowStockThreshold: Int
@@ -2358,10 +3441,23 @@ type Product {
   unitOfMeasure: ProductUnitOfMeasureType
   organicCertified: Boolean
   allergens: [ProductAllergenType!]
+  store: Store!
   supplier: Supplier
   departmentRef: Department
   inventoryLots(where: InventoryLotWhereInput! = {}, orderBy: [InventoryLotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryLotWhereUniqueInput): [InventoryLot!]
   inventoryLotsCount(where: InventoryLotWhereInput! = {}): Int
+  favoriteProducts(where: FavoriteProductWhereInput! = {}, orderBy: [FavoriteProductOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: FavoriteProductWhereUniqueInput): [FavoriteProduct!]
+  favoriteProductsCount(where: FavoriteProductWhereInput! = {}): Int
+  backInStockAlerts(where: BackInStockAlertWhereInput! = {}, orderBy: [BackInStockAlertOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: BackInStockAlertWhereUniqueInput): [BackInStockAlert!]
+  backInStockAlertsCount(where: BackInStockAlertWhereInput! = {}): Int
+  priceAlerts(where: PriceAlertWhereInput! = {}, orderBy: [PriceAlertOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PriceAlertWhereUniqueInput): [PriceAlert!]
+  priceAlertsCount(where: PriceAlertWhereInput! = {}): Int
+  shoppingListItems(where: ShoppingListItemWhereInput! = {}, orderBy: [ShoppingListItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ShoppingListItemWhereUniqueInput): [ShoppingListItem!]
+  shoppingListItemsCount(where: ShoppingListItemWhereInput! = {}): Int
+  subscriptions(where: SubscriptionWhereInput! = {}, orderBy: [SubscriptionOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: SubscriptionWhereUniqueInput): [Subscription!]
+  subscriptionsCount(where: SubscriptionWhereInput! = {}): Int
+  recipeIngredients(where: RecipeIngredientWhereInput! = {}, orderBy: [RecipeIngredientOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: RecipeIngredientWhereUniqueInput): [RecipeIngredient!]
+  recipeIngredientsCount(where: RecipeIngredientWhereInput! = {}): Int
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -2437,8 +3533,10 @@ input ProductWhereInput {
   sku: StringFilter
   status: ProductStatusTypeNullableFilter
   price: FloatNullableFilter
+  priceCents: IntFilter
   compareAtPrice: FloatNullableFilter
   costPrice: FloatNullableFilter
+  costPriceCents: IntFilter
   inStock: BooleanFilter
   stockQuantity: IntNullableFilter
   lowStockThreshold: IntNullableFilter
@@ -2450,9 +3548,16 @@ input ProductWhereInput {
   pricingMethod: ProductPricingMethodTypeNullableFilter
   unitOfMeasure: ProductUnitOfMeasureTypeNullableFilter
   organicCertified: BooleanFilter
+  store: StoreWhereInput
   supplier: SupplierWhereInput
   departmentRef: DepartmentWhereInput
   inventoryLots: InventoryLotManyRelationFilter
+  favoriteProducts: FavoriteProductManyRelationFilter
+  backInStockAlerts: BackInStockAlertManyRelationFilter
+  priceAlerts: PriceAlertManyRelationFilter
+  shoppingListItems: ShoppingListItemManyRelationFilter
+  subscriptions: SubscriptionManyRelationFilter
+  recipeIngredients: RecipeIngredientManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
 }
@@ -2491,6 +3596,42 @@ input InventoryLotManyRelationFilter {
   none: InventoryLotWhereInput
 }
 
+input FavoriteProductManyRelationFilter {
+  every: FavoriteProductWhereInput
+  some: FavoriteProductWhereInput
+  none: FavoriteProductWhereInput
+}
+
+input BackInStockAlertManyRelationFilter {
+  every: BackInStockAlertWhereInput
+  some: BackInStockAlertWhereInput
+  none: BackInStockAlertWhereInput
+}
+
+input PriceAlertManyRelationFilter {
+  every: PriceAlertWhereInput
+  some: PriceAlertWhereInput
+  none: PriceAlertWhereInput
+}
+
+input ShoppingListItemManyRelationFilter {
+  every: ShoppingListItemWhereInput
+  some: ShoppingListItemWhereInput
+  none: ShoppingListItemWhereInput
+}
+
+input SubscriptionManyRelationFilter {
+  every: SubscriptionWhereInput
+  some: SubscriptionWhereInput
+  none: SubscriptionWhereInput
+}
+
+input RecipeIngredientManyRelationFilter {
+  every: RecipeIngredientWhereInput
+  some: RecipeIngredientWhereInput
+  none: RecipeIngredientWhereInput
+}
+
 input ProductOrderByInput {
   id: OrderDirection
   title: OrderDirection
@@ -2498,8 +3639,10 @@ input ProductOrderByInput {
   sku: OrderDirection
   status: OrderDirection
   price: OrderDirection
+  priceCents: OrderDirection
   compareAtPrice: OrderDirection
   costPrice: OrderDirection
+  costPriceCents: OrderDirection
   inStock: OrderDirection
   stockQuantity: OrderDirection
   lowStockThreshold: OrderDirection
@@ -2523,8 +3666,10 @@ input ProductUpdateInput {
   status: ProductStatusType
   metadata: JSON
   price: Float
+  priceCents: Int
   compareAtPrice: Float
   costPrice: Float
+  costPriceCents: Int
   inStock: Boolean
   stockQuantity: Int
   lowStockThreshold: Int
@@ -2537,9 +3682,16 @@ input ProductUpdateInput {
   unitOfMeasure: ProductUnitOfMeasureType
   organicCertified: Boolean
   allergens: [ProductAllergenType!]
+  store: StoreRelateToOneForUpdateInput
   supplier: SupplierRelateToOneForUpdateInput
   departmentRef: DepartmentRelateToOneForUpdateInput
   inventoryLots: InventoryLotRelateToManyForUpdateInput
+  favoriteProducts: FavoriteProductRelateToManyForUpdateInput
+  backInStockAlerts: BackInStockAlertRelateToManyForUpdateInput
+  priceAlerts: PriceAlertRelateToManyForUpdateInput
+  shoppingListItems: ShoppingListItemRelateToManyForUpdateInput
+  subscriptions: SubscriptionRelateToManyForUpdateInput
+  recipeIngredients: RecipeIngredientRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -2557,6 +3709,48 @@ input InventoryLotRelateToManyForUpdateInput {
   connect: [InventoryLotWhereUniqueInput!]
 }
 
+input FavoriteProductRelateToManyForUpdateInput {
+  disconnect: [FavoriteProductWhereUniqueInput!]
+  set: [FavoriteProductWhereUniqueInput!]
+  create: [FavoriteProductCreateInput!]
+  connect: [FavoriteProductWhereUniqueInput!]
+}
+
+input BackInStockAlertRelateToManyForUpdateInput {
+  disconnect: [BackInStockAlertWhereUniqueInput!]
+  set: [BackInStockAlertWhereUniqueInput!]
+  create: [BackInStockAlertCreateInput!]
+  connect: [BackInStockAlertWhereUniqueInput!]
+}
+
+input PriceAlertRelateToManyForUpdateInput {
+  disconnect: [PriceAlertWhereUniqueInput!]
+  set: [PriceAlertWhereUniqueInput!]
+  create: [PriceAlertCreateInput!]
+  connect: [PriceAlertWhereUniqueInput!]
+}
+
+input ShoppingListItemRelateToManyForUpdateInput {
+  disconnect: [ShoppingListItemWhereUniqueInput!]
+  set: [ShoppingListItemWhereUniqueInput!]
+  create: [ShoppingListItemCreateInput!]
+  connect: [ShoppingListItemWhereUniqueInput!]
+}
+
+input SubscriptionRelateToManyForUpdateInput {
+  disconnect: [SubscriptionWhereUniqueInput!]
+  set: [SubscriptionWhereUniqueInput!]
+  create: [SubscriptionCreateInput!]
+  connect: [SubscriptionWhereUniqueInput!]
+}
+
+input RecipeIngredientRelateToManyForUpdateInput {
+  disconnect: [RecipeIngredientWhereUniqueInput!]
+  set: [RecipeIngredientWhereUniqueInput!]
+  create: [RecipeIngredientCreateInput!]
+  connect: [RecipeIngredientWhereUniqueInput!]
+}
+
 input ProductUpdateArgs {
   where: ProductWhereUniqueInput!
   data: ProductUpdateInput!
@@ -2570,8 +3764,10 @@ input ProductCreateInput {
   status: ProductStatusType
   metadata: JSON
   price: Float
+  priceCents: Int
   compareAtPrice: Float
   costPrice: Float
+  costPriceCents: Int
   inStock: Boolean
   stockQuantity: Int
   lowStockThreshold: Int
@@ -2584,9 +3780,16 @@ input ProductCreateInput {
   unitOfMeasure: ProductUnitOfMeasureType
   organicCertified: Boolean
   allergens: [ProductAllergenType!]
+  store: StoreRelateToOneForCreateInput!
   supplier: SupplierRelateToOneForCreateInput
   departmentRef: DepartmentRelateToOneForCreateInput
   inventoryLots: InventoryLotRelateToManyForCreateInput
+  favoriteProducts: FavoriteProductRelateToManyForCreateInput
+  backInStockAlerts: BackInStockAlertRelateToManyForCreateInput
+  priceAlerts: PriceAlertRelateToManyForCreateInput
+  shoppingListItems: ShoppingListItemRelateToManyForCreateInput
+  subscriptions: SubscriptionRelateToManyForCreateInput
+  recipeIngredients: RecipeIngredientRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -2601,15 +3804,50 @@ input InventoryLotRelateToManyForCreateInput {
   connect: [InventoryLotWhereUniqueInput!]
 }
 
+input FavoriteProductRelateToManyForCreateInput {
+  create: [FavoriteProductCreateInput!]
+  connect: [FavoriteProductWhereUniqueInput!]
+}
+
+input BackInStockAlertRelateToManyForCreateInput {
+  create: [BackInStockAlertCreateInput!]
+  connect: [BackInStockAlertWhereUniqueInput!]
+}
+
+input PriceAlertRelateToManyForCreateInput {
+  create: [PriceAlertCreateInput!]
+  connect: [PriceAlertWhereUniqueInput!]
+}
+
+input ShoppingListItemRelateToManyForCreateInput {
+  create: [ShoppingListItemCreateInput!]
+  connect: [ShoppingListItemWhereUniqueInput!]
+}
+
+input SubscriptionRelateToManyForCreateInput {
+  create: [SubscriptionCreateInput!]
+  connect: [SubscriptionWhereUniqueInput!]
+}
+
+input RecipeIngredientRelateToManyForCreateInput {
+  create: [RecipeIngredientCreateInput!]
+  connect: [RecipeIngredientWhereUniqueInput!]
+}
+
 type PurchaseOrder {
   id: ID!
   poNumber: String
+  idempotencyKey: String
+  supplierName: String
+  supplierEmail: String
   orderDate: DateTime
   expectedDeliveryDate: DateTime
   status: PurchaseOrderStatusType
   totalAmount: Float
+  totalAmountCents: Int
   receivedAt: DateTime
   notes: String
+  store: Store!
   supplier: Supplier
   items(where: POItemWhereInput! = {}, orderBy: [POItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: POItemWhereUniqueInput): [POItem!]
   itemsCount(where: POItemWhereInput! = {}): Int
@@ -2628,6 +3866,7 @@ enum PurchaseOrderStatusType {
 input PurchaseOrderWhereUniqueInput {
   id: ID
   poNumber: String
+  idempotencyKey: String
 }
 
 input PurchaseOrderWhereInput {
@@ -2636,12 +3875,17 @@ input PurchaseOrderWhereInput {
   NOT: [PurchaseOrderWhereInput!]
   id: IDFilter
   poNumber: StringFilter
+  idempotencyKey: StringNullableFilter
+  supplierName: StringFilter
+  supplierEmail: StringFilter
   orderDate: DateTimeFilter
   expectedDeliveryDate: DateTimeNullableFilter
   status: PurchaseOrderStatusTypeNullableFilter
   totalAmount: FloatNullableFilter
+  totalAmountCents: IntFilter
   receivedAt: DateTimeNullableFilter
   notes: StringFilter
+  store: StoreWhereInput
   supplier: SupplierWhereInput
   items: POItemManyRelationFilter
   createdAt: DateTimeFilter
@@ -2664,10 +3908,14 @@ input POItemManyRelationFilter {
 input PurchaseOrderOrderByInput {
   id: OrderDirection
   poNumber: OrderDirection
+  idempotencyKey: OrderDirection
+  supplierName: OrderDirection
+  supplierEmail: OrderDirection
   orderDate: OrderDirection
   expectedDeliveryDate: OrderDirection
   status: OrderDirection
   totalAmount: OrderDirection
+  totalAmountCents: OrderDirection
   receivedAt: OrderDirection
   notes: OrderDirection
   createdAt: OrderDirection
@@ -2676,12 +3924,17 @@ input PurchaseOrderOrderByInput {
 
 input PurchaseOrderUpdateInput {
   poNumber: String
+  idempotencyKey: String
+  supplierName: String
+  supplierEmail: String
   orderDate: DateTime
   expectedDeliveryDate: DateTime
   status: PurchaseOrderStatusType
   totalAmount: Float
+  totalAmountCents: Int
   receivedAt: DateTime
   notes: String
+  store: StoreRelateToOneForUpdateInput
   supplier: SupplierRelateToOneForUpdateInput
   items: POItemRelateToManyForUpdateInput
   createdAt: DateTime
@@ -2702,12 +3955,17 @@ input PurchaseOrderUpdateArgs {
 
 input PurchaseOrderCreateInput {
   poNumber: String
+  idempotencyKey: String
+  supplierName: String
+  supplierEmail: String
   orderDate: DateTime
   expectedDeliveryDate: DateTime
   status: PurchaseOrderStatusType
   totalAmount: Float
+  totalAmountCents: Int
   receivedAt: DateTime
   notes: String
+  store: StoreRelateToOneForCreateInput!
   supplier: SupplierRelateToOneForCreateInput
   items: POItemRelateToManyForCreateInput
   createdAt: DateTime
@@ -2771,12 +4029,6 @@ input RecipeDifficultyTypeNullableFilter {
   not: RecipeDifficultyTypeNullableFilter
 }
 
-input RecipeIngredientManyRelationFilter {
-  every: RecipeIngredientWhereInput
-  some: RecipeIngredientWhereInput
-  none: RecipeIngredientWhereInput
-}
-
 input RecipeOrderByInput {
   id: OrderDirection
   name: OrderDirection
@@ -2806,13 +4058,6 @@ input RecipeUpdateInput {
   updatedAt: DateTime
 }
 
-input RecipeIngredientRelateToManyForUpdateInput {
-  disconnect: [RecipeIngredientWhereUniqueInput!]
-  set: [RecipeIngredientWhereUniqueInput!]
-  create: [RecipeIngredientCreateInput!]
-  connect: [RecipeIngredientWhereUniqueInput!]
-}
-
 input RecipeUpdateArgs {
   where: RecipeWhereUniqueInput!
   data: RecipeUpdateInput!
@@ -2833,15 +4078,11 @@ input RecipeCreateInput {
   updatedAt: DateTime
 }
 
-input RecipeIngredientRelateToManyForCreateInput {
-  create: [RecipeIngredientCreateInput!]
-  connect: [RecipeIngredientWhereUniqueInput!]
-}
-
 type RecipeIngredient {
   id: ID!
   recipe: Recipe
   product: String
+  productRef: Product
   quantity: Float
   unit: String
   notes: String
@@ -2861,6 +4102,7 @@ input RecipeIngredientWhereInput {
   id: IDFilter
   recipe: RecipeWhereInput
   product: StringFilter
+  productRef: ProductWhereInput
   quantity: FloatFilter
   unit: StringFilter
   notes: StringFilter
@@ -2883,6 +4125,7 @@ input RecipeIngredientOrderByInput {
 input RecipeIngredientUpdateInput {
   recipe: RecipeRelateToOneForUpdateInput
   product: String
+  productRef: ProductRelateToOneForUpdateInput
   quantity: Float
   unit: String
   notes: String
@@ -2905,6 +4148,7 @@ input RecipeIngredientUpdateArgs {
 input RecipeIngredientCreateInput {
   recipe: RecipeRelateToOneForCreateInput
   product: String
+  productRef: ProductRelateToOneForCreateInput
   quantity: Float
   unit: String
   notes: String
@@ -2916,6 +4160,62 @@ input RecipeIngredientCreateInput {
 input RecipeRelateToOneForCreateInput {
   create: RecipeCreateInput
   connect: RecipeWhereUniqueInput
+}
+
+type RateLimitBucket {
+  id: ID!
+  key: String
+  windowStartedAt: DateTime
+  requestCount: Int
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input RateLimitBucketWhereUniqueInput {
+  id: ID
+  key: String
+}
+
+input RateLimitBucketWhereInput {
+  AND: [RateLimitBucketWhereInput!]
+  OR: [RateLimitBucketWhereInput!]
+  NOT: [RateLimitBucketWhereInput!]
+  id: IDFilter
+  key: StringFilter
+  windowStartedAt: DateTimeFilter
+  requestCount: IntFilter
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input RateLimitBucketOrderByInput {
+  id: OrderDirection
+  key: OrderDirection
+  windowStartedAt: OrderDirection
+  requestCount: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input RateLimitBucketUpdateInput {
+  key: String
+  windowStartedAt: DateTime
+  requestCount: Int
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input RateLimitBucketUpdateArgs {
+  where: RateLimitBucketWhereUniqueInput!
+  data: RateLimitBucketUpdateInput!
+}
+
+input RateLimitBucketCreateInput {
+  key: String
+  windowStartedAt: DateTime
+  requestCount: Int
+  createdAt: DateTime
+  updatedAt: DateTime
 }
 
 type Role {
@@ -2930,6 +4230,7 @@ type Role {
   canManageUsers: Boolean
   canManageOnboarding: Boolean
   canAccessDashboard: Boolean
+  store: Store!
   assignedTo(where: UserWhereInput! = {}, orderBy: [UserOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: UserWhereUniqueInput): [User!]
   assignedToCount(where: UserWhereInput! = {}): Int
   createdAt: DateTime
@@ -2955,6 +4256,7 @@ input RoleWhereInput {
   canManageUsers: BooleanFilter
   canManageOnboarding: BooleanFilter
   canAccessDashboard: BooleanFilter
+  store: StoreWhereInput
   assignedTo: UserManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -2993,6 +4295,7 @@ input RoleUpdateInput {
   canManageUsers: Boolean
   canManageOnboarding: Boolean
   canAccessDashboard: Boolean
+  store: StoreRelateToOneForUpdateInput
   assignedTo: UserRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -3021,6 +4324,7 @@ input RoleCreateInput {
   canManageUsers: Boolean
   canManageOnboarding: Boolean
   canAccessDashboard: Boolean
+  store: StoreRelateToOneForCreateInput!
   assignedTo: UserRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
@@ -3033,7 +4337,7 @@ input UserRelateToManyForCreateInput {
 
 type ShoppingList {
   id: ID!
-  user: User
+  user: User!
   name: String
   isDefault: Boolean
   items(where: ShoppingListItemWhereInput! = {}, orderBy: [ShoppingListItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ShoppingListItemWhereUniqueInput): [ShoppingListItem!]
@@ -3059,12 +4363,6 @@ input ShoppingListWhereInput {
   updatedAt: DateTimeFilter
 }
 
-input ShoppingListItemManyRelationFilter {
-  every: ShoppingListItemWhereInput
-  some: ShoppingListItemWhereInput
-  none: ShoppingListItemWhereInput
-}
-
 input ShoppingListOrderByInput {
   id: OrderDirection
   name: OrderDirection
@@ -3082,20 +4380,13 @@ input ShoppingListUpdateInput {
   updatedAt: DateTime
 }
 
-input ShoppingListItemRelateToManyForUpdateInput {
-  disconnect: [ShoppingListItemWhereUniqueInput!]
-  set: [ShoppingListItemWhereUniqueInput!]
-  create: [ShoppingListItemCreateInput!]
-  connect: [ShoppingListItemWhereUniqueInput!]
-}
-
 input ShoppingListUpdateArgs {
   where: ShoppingListWhereUniqueInput!
   data: ShoppingListUpdateInput!
 }
 
 input ShoppingListCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   name: String
   isDefault: Boolean
   items: ShoppingListItemRelateToManyForCreateInput
@@ -3103,15 +4394,11 @@ input ShoppingListCreateInput {
   updatedAt: DateTime
 }
 
-input ShoppingListItemRelateToManyForCreateInput {
-  create: [ShoppingListItemCreateInput!]
-  connect: [ShoppingListItemWhereUniqueInput!]
-}
-
 type ShoppingListItem {
   id: ID!
-  list: ShoppingList
+  list: ShoppingList!
   product: String
+  productRef: Product!
   quantity: Int
   unit: String
   checked: Boolean
@@ -3132,6 +4419,7 @@ input ShoppingListItemWhereInput {
   id: IDFilter
   list: ShoppingListWhereInput
   product: StringFilter
+  productRef: ProductWhereInput
   quantity: IntFilter
   unit: StringFilter
   checked: BooleanFilter
@@ -3156,6 +4444,7 @@ input ShoppingListItemOrderByInput {
 input ShoppingListItemUpdateInput {
   list: ShoppingListRelateToOneForUpdateInput
   product: String
+  productRef: ProductRelateToOneForUpdateInput
   quantity: Int
   unit: String
   checked: Boolean
@@ -3177,8 +4466,9 @@ input ShoppingListItemUpdateArgs {
 }
 
 input ShoppingListItemCreateInput {
-  list: ShoppingListRelateToOneForCreateInput
+  list: ShoppingListRelateToOneForCreateInput!
   product: String
+  productRef: ProductRelateToOneForCreateInput!
   quantity: Int
   unit: String
   checked: Boolean
@@ -3195,12 +4485,14 @@ input ShoppingListRelateToOneForCreateInput {
 
 type Subscription {
   id: ID!
-  user: User
+  user: User!
   product: String
+  productRef: Product!
   quantity: Int
   frequency: SubscriptionFrequencyType
   nextDeliveryDate: DateTime
   discount: Float
+  discountBps: Int
   isActive: Boolean
   pausedUntil: DateTime
   createdAt: DateTime
@@ -3224,10 +4516,12 @@ input SubscriptionWhereInput {
   id: IDFilter
   user: UserWhereInput
   product: StringFilter
+  productRef: ProductWhereInput
   quantity: IntFilter
   frequency: SubscriptionFrequencyTypeNullableFilter
   nextDeliveryDate: DateTimeNullableFilter
   discount: FloatNullableFilter
+  discountBps: IntFilter
   isActive: BooleanFilter
   pausedUntil: DateTimeNullableFilter
   createdAt: DateTimeFilter
@@ -3248,6 +4542,7 @@ input SubscriptionOrderByInput {
   frequency: OrderDirection
   nextDeliveryDate: OrderDirection
   discount: OrderDirection
+  discountBps: OrderDirection
   isActive: OrderDirection
   pausedUntil: OrderDirection
   createdAt: OrderDirection
@@ -3257,10 +4552,12 @@ input SubscriptionOrderByInput {
 input SubscriptionUpdateInput {
   user: UserRelateToOneForUpdateInput
   product: String
+  productRef: ProductRelateToOneForUpdateInput
   quantity: Int
   frequency: SubscriptionFrequencyType
   nextDeliveryDate: DateTime
   discount: Float
+  discountBps: Int
   isActive: Boolean
   pausedUntil: DateTime
   createdAt: DateTime
@@ -3273,12 +4570,14 @@ input SubscriptionUpdateArgs {
 }
 
 input SubscriptionCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   product: String
+  productRef: ProductRelateToOneForCreateInput!
   quantity: Int
   frequency: SubscriptionFrequencyType
   nextDeliveryDate: DateTime
   discount: Float
+  discountBps: Int
   isActive: Boolean
   pausedUntil: DateTime
   createdAt: DateTime
@@ -3287,7 +4586,7 @@ input SubscriptionCreateInput {
 
 type SubstitutionPreference {
   id: ID!
-  user: User
+  user: User!
   allowSubstitutions: Boolean
   preferSimilarBrand: Boolean
   preferSimilarSize: Boolean
@@ -3340,11 +4639,561 @@ input SubstitutionPreferenceUpdateArgs {
 }
 
 input SubstitutionPreferenceCreateInput {
-  user: UserRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
   allowSubstitutions: Boolean
   preferSimilarBrand: Boolean
   preferSimilarSize: Boolean
   contactBeforeSubstitute: Boolean
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+type Store {
+  id: ID!
+  code: String
+  name: String
+  timezone: String
+  currencyCode: String
+  isActive: Boolean
+  users(where: UserWhereInput! = {}, orderBy: [UserOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: UserWhereUniqueInput): [User!]
+  usersCount(where: UserWhereInput! = {}): Int
+  roles(where: RoleWhereInput! = {}, orderBy: [RoleOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: RoleWhereUniqueInput): [Role!]
+  rolesCount(where: RoleWhereInput! = {}): Int
+  settings(where: StoreSettingsWhereInput! = {}, orderBy: [StoreSettingsOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: StoreSettingsWhereUniqueInput): [StoreSettings!]
+  settingsCount(where: StoreSettingsWhereInput! = {}): Int
+  loyaltyPrograms(where: LoyaltyProgramWhereInput! = {}, orderBy: [LoyaltyProgramOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: LoyaltyProgramWhereUniqueInput): [LoyaltyProgram!]
+  loyaltyProgramsCount(where: LoyaltyProgramWhereInput! = {}): Int
+  carts(where: CartWhereInput! = {}, orderBy: [CartOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CartWhereUniqueInput): [Cart!]
+  cartsCount(where: CartWhereInput! = {}): Int
+  orders(where: OrderWhereInput! = {}, orderBy: [OrderOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderWhereUniqueInput): [Order!]
+  ordersCount(where: OrderWhereInput! = {}): Int
+  products(where: ProductWhereInput! = {}, orderBy: [ProductOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ProductWhereUniqueInput): [Product!]
+  productsCount(where: ProductWhereInput! = {}): Int
+  departments(where: DepartmentWhereInput! = {}, orderBy: [DepartmentOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: DepartmentWhereUniqueInput): [Department!]
+  departmentsCount(where: DepartmentWhereInput! = {}): Int
+  coupons(where: CouponWhereInput! = {}, orderBy: [CouponOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CouponWhereUniqueInput): [Coupon!]
+  couponsCount(where: CouponWhereInput! = {}): Int
+  suppliers(where: SupplierWhereInput! = {}, orderBy: [SupplierOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: SupplierWhereUniqueInput): [Supplier!]
+  suppliersCount(where: SupplierWhereInput! = {}): Int
+  inventoryLots(where: InventoryLotWhereInput! = {}, orderBy: [InventoryLotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryLotWhereUniqueInput): [InventoryLot!]
+  inventoryLotsCount(where: InventoryLotWhereInput! = {}): Int
+  inventoryAdjustments(where: InventoryAdjustmentWhereInput! = {}, orderBy: [InventoryAdjustmentOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryAdjustmentWhereUniqueInput): [InventoryAdjustment!]
+  inventoryAdjustmentsCount(where: InventoryAdjustmentWhereInput! = {}): Int
+  checkoutAttempts(where: CheckoutAttemptWhereInput! = {}, orderBy: [CheckoutAttemptOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CheckoutAttemptWhereUniqueInput): [CheckoutAttempt!]
+  checkoutAttemptsCount(where: CheckoutAttemptWhereInput! = {}): Int
+  deliverySlots(where: DeliverySlotWhereInput! = {}, orderBy: [DeliverySlotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: DeliverySlotWhereUniqueInput): [DeliverySlot!]
+  deliverySlotsCount(where: DeliverySlotWhereInput! = {}): Int
+  pickupSlots(where: PickupSlotWhereInput! = {}, orderBy: [PickupSlotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PickupSlotWhereUniqueInput): [PickupSlot!]
+  pickupSlotsCount(where: PickupSlotWhereInput! = {}): Int
+  parkingSpots(where: ParkingSpotWhereInput! = {}, orderBy: [ParkingSpotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ParkingSpotWhereUniqueInput): [ParkingSpot!]
+  parkingSpotsCount(where: ParkingSpotWhereInput! = {}): Int
+  deliveryRoutes(where: DeliveryRouteWhereInput! = {}, orderBy: [DeliveryRouteOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: DeliveryRouteWhereUniqueInput): [DeliveryRoute!]
+  deliveryRoutesCount(where: DeliveryRouteWhereInput! = {}): Int
+  purchaseOrders(where: PurchaseOrderWhereInput! = {}, orderBy: [PurchaseOrderOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PurchaseOrderWhereUniqueInput): [PurchaseOrder!]
+  purchaseOrdersCount(where: PurchaseOrderWhereInput! = {}): Int
+  payments(where: PaymentWhereInput! = {}, orderBy: [PaymentOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWhereUniqueInput): [Payment!]
+  paymentsCount(where: PaymentWhereInput! = {}): Int
+  orderLineInventoryAllocations(where: OrderLineInventoryAllocationWhereInput! = {}, orderBy: [OrderLineInventoryAllocationOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderLineInventoryAllocationWhereUniqueInput): [OrderLineInventoryAllocation!]
+  orderLineInventoryAllocationsCount(where: OrderLineInventoryAllocationWhereInput! = {}): Int
+  paymentWebhookEvents(where: PaymentWebhookEventWhereInput! = {}, orderBy: [PaymentWebhookEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWebhookEventWhereUniqueInput): [PaymentWebhookEvent!]
+  paymentWebhookEventsCount(where: PaymentWebhookEventWhereInput! = {}): Int
+  outboxEvents(where: GroceryOutboxEventWhereInput! = {}, orderBy: [GroceryOutboxEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: GroceryOutboxEventWhereUniqueInput): [GroceryOutboxEvent!]
+  outboxEventsCount(where: GroceryOutboxEventWhereInput! = {}): Int
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input StoreWhereUniqueInput {
+  id: ID
+  code: String
+}
+
+input StoreWhereInput {
+  AND: [StoreWhereInput!]
+  OR: [StoreWhereInput!]
+  NOT: [StoreWhereInput!]
+  id: IDFilter
+  code: StringFilter
+  name: StringFilter
+  timezone: StringFilter
+  currencyCode: StringFilter
+  isActive: BooleanFilter
+  users: UserManyRelationFilter
+  roles: RoleManyRelationFilter
+  settings: StoreSettingsManyRelationFilter
+  loyaltyPrograms: LoyaltyProgramManyRelationFilter
+  carts: CartManyRelationFilter
+  orders: OrderManyRelationFilter
+  products: ProductManyRelationFilter
+  departments: DepartmentManyRelationFilter
+  coupons: CouponManyRelationFilter
+  suppliers: SupplierManyRelationFilter
+  inventoryLots: InventoryLotManyRelationFilter
+  inventoryAdjustments: InventoryAdjustmentManyRelationFilter
+  checkoutAttempts: CheckoutAttemptManyRelationFilter
+  deliverySlots: DeliverySlotManyRelationFilter
+  pickupSlots: PickupSlotManyRelationFilter
+  parkingSpots: ParkingSpotManyRelationFilter
+  deliveryRoutes: DeliveryRouteManyRelationFilter
+  purchaseOrders: PurchaseOrderManyRelationFilter
+  payments: PaymentManyRelationFilter
+  orderLineInventoryAllocations: OrderLineInventoryAllocationManyRelationFilter
+  paymentWebhookEvents: PaymentWebhookEventManyRelationFilter
+  outboxEvents: GroceryOutboxEventManyRelationFilter
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input RoleManyRelationFilter {
+  every: RoleWhereInput
+  some: RoleWhereInput
+  none: RoleWhereInput
+}
+
+input StoreSettingsManyRelationFilter {
+  every: StoreSettingsWhereInput
+  some: StoreSettingsWhereInput
+  none: StoreSettingsWhereInput
+}
+
+input LoyaltyProgramManyRelationFilter {
+  every: LoyaltyProgramWhereInput
+  some: LoyaltyProgramWhereInput
+  none: LoyaltyProgramWhereInput
+}
+
+input CartManyRelationFilter {
+  every: CartWhereInput
+  some: CartWhereInput
+  none: CartWhereInput
+}
+
+input DepartmentManyRelationFilter {
+  every: DepartmentWhereInput
+  some: DepartmentWhereInput
+  none: DepartmentWhereInput
+}
+
+input CouponManyRelationFilter {
+  every: CouponWhereInput
+  some: CouponWhereInput
+  none: CouponWhereInput
+}
+
+input SupplierManyRelationFilter {
+  every: SupplierWhereInput
+  some: SupplierWhereInput
+  none: SupplierWhereInput
+}
+
+input InventoryAdjustmentManyRelationFilter {
+  every: InventoryAdjustmentWhereInput
+  some: InventoryAdjustmentWhereInput
+  none: InventoryAdjustmentWhereInput
+}
+
+input DeliverySlotManyRelationFilter {
+  every: DeliverySlotWhereInput
+  some: DeliverySlotWhereInput
+  none: DeliverySlotWhereInput
+}
+
+input PickupSlotManyRelationFilter {
+  every: PickupSlotWhereInput
+  some: PickupSlotWhereInput
+  none: PickupSlotWhereInput
+}
+
+input ParkingSpotManyRelationFilter {
+  every: ParkingSpotWhereInput
+  some: ParkingSpotWhereInput
+  none: ParkingSpotWhereInput
+}
+
+input DeliveryRouteManyRelationFilter {
+  every: DeliveryRouteWhereInput
+  some: DeliveryRouteWhereInput
+  none: DeliveryRouteWhereInput
+}
+
+input PurchaseOrderManyRelationFilter {
+  every: PurchaseOrderWhereInput
+  some: PurchaseOrderWhereInput
+  none: PurchaseOrderWhereInput
+}
+
+input GroceryOutboxEventManyRelationFilter {
+  every: GroceryOutboxEventWhereInput
+  some: GroceryOutboxEventWhereInput
+  none: GroceryOutboxEventWhereInput
+}
+
+input StoreOrderByInput {
+  id: OrderDirection
+  code: OrderDirection
+  name: OrderDirection
+  timezone: OrderDirection
+  currencyCode: OrderDirection
+  isActive: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input StoreUpdateInput {
+  code: String
+  name: String
+  timezone: String
+  currencyCode: String
+  isActive: Boolean
+  users: UserRelateToManyForUpdateInput
+  roles: RoleRelateToManyForUpdateInput
+  settings: StoreSettingsRelateToManyForUpdateInput
+  loyaltyPrograms: LoyaltyProgramRelateToManyForUpdateInput
+  carts: CartRelateToManyForUpdateInput
+  orders: OrderRelateToManyForUpdateInput
+  products: ProductRelateToManyForUpdateInput
+  departments: DepartmentRelateToManyForUpdateInput
+  coupons: CouponRelateToManyForUpdateInput
+  suppliers: SupplierRelateToManyForUpdateInput
+  inventoryLots: InventoryLotRelateToManyForUpdateInput
+  inventoryAdjustments: InventoryAdjustmentRelateToManyForUpdateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForUpdateInput
+  deliverySlots: DeliverySlotRelateToManyForUpdateInput
+  pickupSlots: PickupSlotRelateToManyForUpdateInput
+  parkingSpots: ParkingSpotRelateToManyForUpdateInput
+  deliveryRoutes: DeliveryRouteRelateToManyForUpdateInput
+  purchaseOrders: PurchaseOrderRelateToManyForUpdateInput
+  payments: PaymentRelateToManyForUpdateInput
+  orderLineInventoryAllocations: OrderLineInventoryAllocationRelateToManyForUpdateInput
+  paymentWebhookEvents: PaymentWebhookEventRelateToManyForUpdateInput
+  outboxEvents: GroceryOutboxEventRelateToManyForUpdateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input RoleRelateToManyForUpdateInput {
+  disconnect: [RoleWhereUniqueInput!]
+  set: [RoleWhereUniqueInput!]
+  create: [RoleCreateInput!]
+  connect: [RoleWhereUniqueInput!]
+}
+
+input StoreSettingsRelateToManyForUpdateInput {
+  disconnect: [StoreSettingsWhereUniqueInput!]
+  set: [StoreSettingsWhereUniqueInput!]
+  create: [StoreSettingsCreateInput!]
+  connect: [StoreSettingsWhereUniqueInput!]
+}
+
+input LoyaltyProgramRelateToManyForUpdateInput {
+  disconnect: [LoyaltyProgramWhereUniqueInput!]
+  set: [LoyaltyProgramWhereUniqueInput!]
+  create: [LoyaltyProgramCreateInput!]
+  connect: [LoyaltyProgramWhereUniqueInput!]
+}
+
+input CartRelateToManyForUpdateInput {
+  disconnect: [CartWhereUniqueInput!]
+  set: [CartWhereUniqueInput!]
+  create: [CartCreateInput!]
+  connect: [CartWhereUniqueInput!]
+}
+
+input DepartmentRelateToManyForUpdateInput {
+  disconnect: [DepartmentWhereUniqueInput!]
+  set: [DepartmentWhereUniqueInput!]
+  create: [DepartmentCreateInput!]
+  connect: [DepartmentWhereUniqueInput!]
+}
+
+input CouponRelateToManyForUpdateInput {
+  disconnect: [CouponWhereUniqueInput!]
+  set: [CouponWhereUniqueInput!]
+  create: [CouponCreateInput!]
+  connect: [CouponWhereUniqueInput!]
+}
+
+input SupplierRelateToManyForUpdateInput {
+  disconnect: [SupplierWhereUniqueInput!]
+  set: [SupplierWhereUniqueInput!]
+  create: [SupplierCreateInput!]
+  connect: [SupplierWhereUniqueInput!]
+}
+
+input InventoryAdjustmentRelateToManyForUpdateInput {
+  disconnect: [InventoryAdjustmentWhereUniqueInput!]
+  set: [InventoryAdjustmentWhereUniqueInput!]
+  create: [InventoryAdjustmentCreateInput!]
+  connect: [InventoryAdjustmentWhereUniqueInput!]
+}
+
+input DeliverySlotRelateToManyForUpdateInput {
+  disconnect: [DeliverySlotWhereUniqueInput!]
+  set: [DeliverySlotWhereUniqueInput!]
+  create: [DeliverySlotCreateInput!]
+  connect: [DeliverySlotWhereUniqueInput!]
+}
+
+input PickupSlotRelateToManyForUpdateInput {
+  disconnect: [PickupSlotWhereUniqueInput!]
+  set: [PickupSlotWhereUniqueInput!]
+  create: [PickupSlotCreateInput!]
+  connect: [PickupSlotWhereUniqueInput!]
+}
+
+input ParkingSpotRelateToManyForUpdateInput {
+  disconnect: [ParkingSpotWhereUniqueInput!]
+  set: [ParkingSpotWhereUniqueInput!]
+  create: [ParkingSpotCreateInput!]
+  connect: [ParkingSpotWhereUniqueInput!]
+}
+
+input DeliveryRouteRelateToManyForUpdateInput {
+  disconnect: [DeliveryRouteWhereUniqueInput!]
+  set: [DeliveryRouteWhereUniqueInput!]
+  create: [DeliveryRouteCreateInput!]
+  connect: [DeliveryRouteWhereUniqueInput!]
+}
+
+input PurchaseOrderRelateToManyForUpdateInput {
+  disconnect: [PurchaseOrderWhereUniqueInput!]
+  set: [PurchaseOrderWhereUniqueInput!]
+  create: [PurchaseOrderCreateInput!]
+  connect: [PurchaseOrderWhereUniqueInput!]
+}
+
+input GroceryOutboxEventRelateToManyForUpdateInput {
+  disconnect: [GroceryOutboxEventWhereUniqueInput!]
+  set: [GroceryOutboxEventWhereUniqueInput!]
+  create: [GroceryOutboxEventCreateInput!]
+  connect: [GroceryOutboxEventWhereUniqueInput!]
+}
+
+input StoreUpdateArgs {
+  where: StoreWhereUniqueInput!
+  data: StoreUpdateInput!
+}
+
+input StoreCreateInput {
+  code: String
+  name: String
+  timezone: String
+  currencyCode: String
+  isActive: Boolean
+  users: UserRelateToManyForCreateInput
+  roles: RoleRelateToManyForCreateInput
+  settings: StoreSettingsRelateToManyForCreateInput
+  loyaltyPrograms: LoyaltyProgramRelateToManyForCreateInput
+  carts: CartRelateToManyForCreateInput
+  orders: OrderRelateToManyForCreateInput
+  products: ProductRelateToManyForCreateInput
+  departments: DepartmentRelateToManyForCreateInput
+  coupons: CouponRelateToManyForCreateInput
+  suppliers: SupplierRelateToManyForCreateInput
+  inventoryLots: InventoryLotRelateToManyForCreateInput
+  inventoryAdjustments: InventoryAdjustmentRelateToManyForCreateInput
+  checkoutAttempts: CheckoutAttemptRelateToManyForCreateInput
+  deliverySlots: DeliverySlotRelateToManyForCreateInput
+  pickupSlots: PickupSlotRelateToManyForCreateInput
+  parkingSpots: ParkingSpotRelateToManyForCreateInput
+  deliveryRoutes: DeliveryRouteRelateToManyForCreateInput
+  purchaseOrders: PurchaseOrderRelateToManyForCreateInput
+  payments: PaymentRelateToManyForCreateInput
+  orderLineInventoryAllocations: OrderLineInventoryAllocationRelateToManyForCreateInput
+  paymentWebhookEvents: PaymentWebhookEventRelateToManyForCreateInput
+  outboxEvents: GroceryOutboxEventRelateToManyForCreateInput
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input RoleRelateToManyForCreateInput {
+  create: [RoleCreateInput!]
+  connect: [RoleWhereUniqueInput!]
+}
+
+input StoreSettingsRelateToManyForCreateInput {
+  create: [StoreSettingsCreateInput!]
+  connect: [StoreSettingsWhereUniqueInput!]
+}
+
+input LoyaltyProgramRelateToManyForCreateInput {
+  create: [LoyaltyProgramCreateInput!]
+  connect: [LoyaltyProgramWhereUniqueInput!]
+}
+
+input CartRelateToManyForCreateInput {
+  create: [CartCreateInput!]
+  connect: [CartWhereUniqueInput!]
+}
+
+input DepartmentRelateToManyForCreateInput {
+  create: [DepartmentCreateInput!]
+  connect: [DepartmentWhereUniqueInput!]
+}
+
+input CouponRelateToManyForCreateInput {
+  create: [CouponCreateInput!]
+  connect: [CouponWhereUniqueInput!]
+}
+
+input SupplierRelateToManyForCreateInput {
+  create: [SupplierCreateInput!]
+  connect: [SupplierWhereUniqueInput!]
+}
+
+input InventoryAdjustmentRelateToManyForCreateInput {
+  create: [InventoryAdjustmentCreateInput!]
+  connect: [InventoryAdjustmentWhereUniqueInput!]
+}
+
+input DeliverySlotRelateToManyForCreateInput {
+  create: [DeliverySlotCreateInput!]
+  connect: [DeliverySlotWhereUniqueInput!]
+}
+
+input PickupSlotRelateToManyForCreateInput {
+  create: [PickupSlotCreateInput!]
+  connect: [PickupSlotWhereUniqueInput!]
+}
+
+input ParkingSpotRelateToManyForCreateInput {
+  create: [ParkingSpotCreateInput!]
+  connect: [ParkingSpotWhereUniqueInput!]
+}
+
+input DeliveryRouteRelateToManyForCreateInput {
+  create: [DeliveryRouteCreateInput!]
+  connect: [DeliveryRouteWhereUniqueInput!]
+}
+
+input PurchaseOrderRelateToManyForCreateInput {
+  create: [PurchaseOrderCreateInput!]
+  connect: [PurchaseOrderWhereUniqueInput!]
+}
+
+input GroceryOutboxEventRelateToManyForCreateInput {
+  create: [GroceryOutboxEventCreateInput!]
+  connect: [GroceryOutboxEventWhereUniqueInput!]
+}
+
+type StoreSettings {
+  id: ID!
+  store: Store
+  name: String
+  tagline: String
+  homepageTitle: String
+  homepageDescription: String
+  contactEmail: String
+  contactPhone: String
+  address: String
+  logoUrl: String
+  brandHue: Int
+  currencyCode: String
+  taxRateBps: Int
+  locale: String
+  timezone: String
+  countryCode: String
+  hours: JSON
+  isActive: Boolean
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input StoreSettingsWhereUniqueInput {
+  id: ID
+}
+
+input StoreSettingsWhereInput {
+  AND: [StoreSettingsWhereInput!]
+  OR: [StoreSettingsWhereInput!]
+  NOT: [StoreSettingsWhereInput!]
+  id: IDFilter
+  store: StoreWhereInput
+  name: StringFilter
+  tagline: StringFilter
+  homepageTitle: StringFilter
+  homepageDescription: StringFilter
+  contactEmail: StringFilter
+  contactPhone: StringFilter
+  address: StringFilter
+  logoUrl: StringFilter
+  brandHue: IntNullableFilter
+  currencyCode: StringFilter
+  taxRateBps: IntFilter
+  locale: StringFilter
+  timezone: StringFilter
+  countryCode: StringFilter
+  isActive: BooleanFilter
+  createdAt: DateTimeFilter
+  updatedAt: DateTimeFilter
+}
+
+input StoreSettingsOrderByInput {
+  id: OrderDirection
+  name: OrderDirection
+  tagline: OrderDirection
+  homepageTitle: OrderDirection
+  homepageDescription: OrderDirection
+  contactEmail: OrderDirection
+  contactPhone: OrderDirection
+  address: OrderDirection
+  logoUrl: OrderDirection
+  brandHue: OrderDirection
+  currencyCode: OrderDirection
+  taxRateBps: OrderDirection
+  locale: OrderDirection
+  timezone: OrderDirection
+  countryCode: OrderDirection
+  isActive: OrderDirection
+  createdAt: OrderDirection
+  updatedAt: OrderDirection
+}
+
+input StoreSettingsUpdateInput {
+  store: StoreRelateToOneForUpdateInput
+  name: String
+  tagline: String
+  homepageTitle: String
+  homepageDescription: String
+  contactEmail: String
+  contactPhone: String
+  address: String
+  logoUrl: String
+  brandHue: Int
+  currencyCode: String
+  taxRateBps: Int
+  locale: String
+  timezone: String
+  countryCode: String
+  hours: JSON
+  isActive: Boolean
+  createdAt: DateTime
+  updatedAt: DateTime
+}
+
+input StoreSettingsUpdateArgs {
+  where: StoreSettingsWhereUniqueInput!
+  data: StoreSettingsUpdateInput!
+}
+
+input StoreSettingsCreateInput {
+  store: StoreRelateToOneForCreateInput!
+  name: String
+  tagline: String
+  homepageTitle: String
+  homepageDescription: String
+  contactEmail: String
+  contactPhone: String
+  address: String
+  logoUrl: String
+  brandHue: Int
+  currencyCode: String
+  taxRateBps: Int
+  locale: String
+  timezone: String
+  countryCode: String
+  hours: JSON
+  isActive: Boolean
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -3358,6 +5207,8 @@ type Supplier {
   paymentTerms: SupplierPaymentTermType
   deliveryDays: [SupplierDeliveryDayType!]
   minimumOrder: Float
+  minimumOrderCents: Int
+  store: Store!
   products(where: ProductWhereInput! = {}, orderBy: [ProductOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ProductWhereUniqueInput): [Product!]
   productsCount(where: ProductWhereInput! = {}): Int
   inventoryLots(where: InventoryLotWhereInput! = {}, orderBy: [InventoryLotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryLotWhereUniqueInput): [InventoryLot!]
@@ -3399,6 +5250,8 @@ input SupplierWhereInput {
   phone: StringFilter
   paymentTerms: SupplierPaymentTermTypeNullableFilter
   minimumOrder: FloatNullableFilter
+  minimumOrderCents: IntFilter
+  store: StoreWhereInput
   products: ProductManyRelationFilter
   inventoryLots: InventoryLotManyRelationFilter
   purchaseOrders: PurchaseOrderManyRelationFilter
@@ -3413,12 +5266,6 @@ input SupplierPaymentTermTypeNullableFilter {
   not: SupplierPaymentTermTypeNullableFilter
 }
 
-input PurchaseOrderManyRelationFilter {
-  every: PurchaseOrderWhereInput
-  some: PurchaseOrderWhereInput
-  none: PurchaseOrderWhereInput
-}
-
 input SupplierOrderByInput {
   id: OrderDirection
   name: OrderDirection
@@ -3427,6 +5274,7 @@ input SupplierOrderByInput {
   phone: OrderDirection
   paymentTerms: OrderDirection
   minimumOrder: OrderDirection
+  minimumOrderCents: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
 }
@@ -3439,18 +5287,13 @@ input SupplierUpdateInput {
   paymentTerms: SupplierPaymentTermType
   deliveryDays: [SupplierDeliveryDayType!]
   minimumOrder: Float
+  minimumOrderCents: Int
+  store: StoreRelateToOneForUpdateInput
   products: ProductRelateToManyForUpdateInput
   inventoryLots: InventoryLotRelateToManyForUpdateInput
   purchaseOrders: PurchaseOrderRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
-}
-
-input PurchaseOrderRelateToManyForUpdateInput {
-  disconnect: [PurchaseOrderWhereUniqueInput!]
-  set: [PurchaseOrderWhereUniqueInput!]
-  create: [PurchaseOrderCreateInput!]
-  connect: [PurchaseOrderWhereUniqueInput!]
 }
 
 input SupplierUpdateArgs {
@@ -3466,6 +5309,8 @@ input SupplierCreateInput {
   paymentTerms: SupplierPaymentTermType
   deliveryDays: [SupplierDeliveryDayType!]
   minimumOrder: Float
+  minimumOrderCents: Int
+  store: StoreRelateToOneForCreateInput!
   products: ProductRelateToManyForCreateInput
   inventoryLots: InventoryLotRelateToManyForCreateInput
   purchaseOrders: PurchaseOrderRelateToManyForCreateInput
@@ -3473,17 +5318,15 @@ input SupplierCreateInput {
   updatedAt: DateTime
 }
 
-input PurchaseOrderRelateToManyForCreateInput {
-  create: [PurchaseOrderCreateInput!]
-  connect: [PurchaseOrderWhereUniqueInput!]
-}
-
 type User {
   id: ID!
   name: String
   email: String
   password: PasswordState
+  store: Store!
   role: Role
+  paymentRefunds(where: PaymentRefundWhereInput! = {}, orderBy: [PaymentRefundOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentRefundWhereUniqueInput): [PaymentRefund!]
+  paymentRefundsCount(where: PaymentRefundWhereInput! = {}): Int
   onboardingStatus: UserOnboardingStatusType
   createdAt: DateTime
   updatedAt: DateTime
@@ -3515,7 +5358,9 @@ input UserWhereInput {
   id: IDFilter
   name: StringFilter
   email: StringFilter
+  store: StoreWhereInput
   role: RoleWhereInput
+  paymentRefunds: PaymentRefundManyRelationFilter
   onboardingStatus: UserOnboardingStatusTypeNullableFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
@@ -3550,7 +5395,9 @@ input UserUpdateInput {
   name: String
   email: String
   password: String
+  store: StoreRelateToOneForUpdateInput
   role: RoleRelateToOneForUpdateInput
+  paymentRefunds: PaymentRefundRelateToManyForUpdateInput
   onboardingStatus: UserOnboardingStatusType
   createdAt: DateTime
   updatedAt: DateTime
@@ -3574,7 +5421,9 @@ input UserCreateInput {
   name: String
   email: String
   password: String
+  store: StoreRelateToOneForCreateInput!
   role: RoleRelateToOneForCreateInput
+  paymentRefunds: PaymentRefundRelateToManyForCreateInput
   onboardingStatus: UserOnboardingStatusType
   createdAt: DateTime
   updatedAt: DateTime
@@ -3590,8 +5439,8 @@ input RoleRelateToOneForCreateInput {
 
 type UserCoupon {
   id: ID!
-  user: User
-  coupon: Coupon
+  user: User!
+  coupon: Coupon!
   clippedAt: DateTime
   usedAt: DateTime
   used: Boolean
@@ -3648,8 +5497,8 @@ input UserCouponUpdateArgs {
 }
 
 input UserCouponCreateInput {
-  user: UserRelateToOneForCreateInput
-  coupon: CouponRelateToOneForCreateInput
+  user: UserRelateToOneForCreateInput!
+  coupon: CouponRelateToOneForCreateInput!
   clippedAt: DateTime
   usedAt: DateTime
   used: Boolean
@@ -3662,9 +5511,7 @@ input CouponRelateToOneForCreateInput {
   connect: CouponWhereUniqueInput
 }
 
-"""
-The `JSON` scalar type represents JSON values as specified by [ECMA-404](http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf).
-"""
+"""Arbitrary JSON payload for provider webhook events."""
 scalar JSON @specifiedBy(url: "http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf")
 
 type Mutation {
@@ -3686,6 +5533,12 @@ type Mutation {
   updateCarts(data: [CartUpdateArgs!]!): [Cart]
   deleteCart(where: CartWhereUniqueInput!): Cart
   deleteCarts(where: [CartWhereUniqueInput!]!): [Cart]
+  createCheckoutAttempt(data: CheckoutAttemptCreateInput!): CheckoutAttempt
+  createCheckoutAttempts(data: [CheckoutAttemptCreateInput!]!): [CheckoutAttempt]
+  updateCheckoutAttempt(where: CheckoutAttemptWhereUniqueInput!, data: CheckoutAttemptUpdateInput!): CheckoutAttempt
+  updateCheckoutAttempts(data: [CheckoutAttemptUpdateArgs!]!): [CheckoutAttempt]
+  deleteCheckoutAttempt(where: CheckoutAttemptWhereUniqueInput!): CheckoutAttempt
+  deleteCheckoutAttempts(where: [CheckoutAttemptWhereUniqueInput!]!): [CheckoutAttempt]
   createCartItem(data: CartItemCreateInput!): CartItem
   createCartItems(data: [CartItemCreateInput!]!): [CartItem]
   updateCartItem(where: CartItemWhereUniqueInput!, data: CartItemUpdateInput!): CartItem
@@ -3722,12 +5575,24 @@ type Mutation {
   updateFavoriteProducts(data: [FavoriteProductUpdateArgs!]!): [FavoriteProduct]
   deleteFavoriteProduct(where: FavoriteProductWhereUniqueInput!): FavoriteProduct
   deleteFavoriteProducts(where: [FavoriteProductWhereUniqueInput!]!): [FavoriteProduct]
+  createGroceryOutboxEvent(data: GroceryOutboxEventCreateInput!): GroceryOutboxEvent
+  createGroceryOutboxEvents(data: [GroceryOutboxEventCreateInput!]!): [GroceryOutboxEvent]
+  updateGroceryOutboxEvent(where: GroceryOutboxEventWhereUniqueInput!, data: GroceryOutboxEventUpdateInput!): GroceryOutboxEvent
+  updateGroceryOutboxEvents(data: [GroceryOutboxEventUpdateArgs!]!): [GroceryOutboxEvent]
+  deleteGroceryOutboxEvent(where: GroceryOutboxEventWhereUniqueInput!): GroceryOutboxEvent
+  deleteGroceryOutboxEvents(where: [GroceryOutboxEventWhereUniqueInput!]!): [GroceryOutboxEvent]
   createInventoryLot(data: InventoryLotCreateInput!): InventoryLot
   createInventoryLots(data: [InventoryLotCreateInput!]!): [InventoryLot]
   updateInventoryLot(where: InventoryLotWhereUniqueInput!, data: InventoryLotUpdateInput!): InventoryLot
   updateInventoryLots(data: [InventoryLotUpdateArgs!]!): [InventoryLot]
   deleteInventoryLot(where: InventoryLotWhereUniqueInput!): InventoryLot
   deleteInventoryLots(where: [InventoryLotWhereUniqueInput!]!): [InventoryLot]
+  createInventoryAdjustment(data: InventoryAdjustmentCreateInput!): InventoryAdjustment
+  createInventoryAdjustments(data: [InventoryAdjustmentCreateInput!]!): [InventoryAdjustment]
+  updateInventoryAdjustment(where: InventoryAdjustmentWhereUniqueInput!, data: InventoryAdjustmentUpdateInput!): InventoryAdjustment
+  updateInventoryAdjustments(data: [InventoryAdjustmentUpdateArgs!]!): [InventoryAdjustment]
+  deleteInventoryAdjustment(where: InventoryAdjustmentWhereUniqueInput!): InventoryAdjustment
+  deleteInventoryAdjustments(where: [InventoryAdjustmentWhereUniqueInput!]!): [InventoryAdjustment]
   createLoyaltyProgram(data: LoyaltyProgramCreateInput!): LoyaltyProgram
   createLoyaltyPrograms(data: [LoyaltyProgramCreateInput!]!): [LoyaltyProgram]
   updateLoyaltyProgram(where: LoyaltyProgramWhereUniqueInput!, data: LoyaltyProgramUpdateInput!): LoyaltyProgram
@@ -3764,6 +5629,12 @@ type Mutation {
   updateOrderLineItems(data: [OrderLineItemUpdateArgs!]!): [OrderLineItem]
   deleteOrderLineItem(where: OrderLineItemWhereUniqueInput!): OrderLineItem
   deleteOrderLineItems(where: [OrderLineItemWhereUniqueInput!]!): [OrderLineItem]
+  createOrderLineInventoryAllocation(data: OrderLineInventoryAllocationCreateInput!): OrderLineInventoryAllocation
+  createOrderLineInventoryAllocations(data: [OrderLineInventoryAllocationCreateInput!]!): [OrderLineInventoryAllocation]
+  updateOrderLineInventoryAllocation(where: OrderLineInventoryAllocationWhereUniqueInput!, data: OrderLineInventoryAllocationUpdateInput!): OrderLineInventoryAllocation
+  updateOrderLineInventoryAllocations(data: [OrderLineInventoryAllocationUpdateArgs!]!): [OrderLineInventoryAllocation]
+  deleteOrderLineInventoryAllocation(where: OrderLineInventoryAllocationWhereUniqueInput!): OrderLineInventoryAllocation
+  deleteOrderLineInventoryAllocations(where: [OrderLineInventoryAllocationWhereUniqueInput!]!): [OrderLineInventoryAllocation]
   createParkingSpot(data: ParkingSpotCreateInput!): ParkingSpot
   createParkingSpots(data: [ParkingSpotCreateInput!]!): [ParkingSpot]
   updateParkingSpot(where: ParkingSpotWhereUniqueInput!, data: ParkingSpotUpdateInput!): ParkingSpot
@@ -3782,12 +5653,24 @@ type Mutation {
   updatePaymentProviders(data: [PaymentProviderUpdateArgs!]!): [PaymentProvider]
   deletePaymentProvider(where: PaymentProviderWhereUniqueInput!): PaymentProvider
   deletePaymentProviders(where: [PaymentProviderWhereUniqueInput!]!): [PaymentProvider]
+  createPaymentRefund(data: PaymentRefundCreateInput!): PaymentRefund
+  createPaymentRefunds(data: [PaymentRefundCreateInput!]!): [PaymentRefund]
+  updatePaymentRefund(where: PaymentRefundWhereUniqueInput!, data: PaymentRefundUpdateInput!): PaymentRefund
+  updatePaymentRefunds(data: [PaymentRefundUpdateArgs!]!): [PaymentRefund]
+  deletePaymentRefund(where: PaymentRefundWhereUniqueInput!): PaymentRefund
+  deletePaymentRefunds(where: [PaymentRefundWhereUniqueInput!]!): [PaymentRefund]
   createPaymentSession(data: PaymentSessionCreateInput!): PaymentSession
   createPaymentSessions(data: [PaymentSessionCreateInput!]!): [PaymentSession]
   updatePaymentSession(where: PaymentSessionWhereUniqueInput!, data: PaymentSessionUpdateInput!): PaymentSession
   updatePaymentSessions(data: [PaymentSessionUpdateArgs!]!): [PaymentSession]
   deletePaymentSession(where: PaymentSessionWhereUniqueInput!): PaymentSession
   deletePaymentSessions(where: [PaymentSessionWhereUniqueInput!]!): [PaymentSession]
+  createPaymentWebhookEvent(data: PaymentWebhookEventCreateInput!): PaymentWebhookEvent
+  createPaymentWebhookEvents(data: [PaymentWebhookEventCreateInput!]!): [PaymentWebhookEvent]
+  updatePaymentWebhookEvent(where: PaymentWebhookEventWhereUniqueInput!, data: PaymentWebhookEventUpdateInput!): PaymentWebhookEvent
+  updatePaymentWebhookEvents(data: [PaymentWebhookEventUpdateArgs!]!): [PaymentWebhookEvent]
+  deletePaymentWebhookEvent(where: PaymentWebhookEventWhereUniqueInput!): PaymentWebhookEvent
+  deletePaymentWebhookEvents(where: [PaymentWebhookEventWhereUniqueInput!]!): [PaymentWebhookEvent]
   createPickupSlot(data: PickupSlotCreateInput!): PickupSlot
   createPickupSlots(data: [PickupSlotCreateInput!]!): [PickupSlot]
   updatePickupSlot(where: PickupSlotWhereUniqueInput!, data: PickupSlotUpdateInput!): PickupSlot
@@ -3830,6 +5713,12 @@ type Mutation {
   updateRecipeIngredients(data: [RecipeIngredientUpdateArgs!]!): [RecipeIngredient]
   deleteRecipeIngredient(where: RecipeIngredientWhereUniqueInput!): RecipeIngredient
   deleteRecipeIngredients(where: [RecipeIngredientWhereUniqueInput!]!): [RecipeIngredient]
+  createRateLimitBucket(data: RateLimitBucketCreateInput!): RateLimitBucket
+  createRateLimitBuckets(data: [RateLimitBucketCreateInput!]!): [RateLimitBucket]
+  updateRateLimitBucket(where: RateLimitBucketWhereUniqueInput!, data: RateLimitBucketUpdateInput!): RateLimitBucket
+  updateRateLimitBuckets(data: [RateLimitBucketUpdateArgs!]!): [RateLimitBucket]
+  deleteRateLimitBucket(where: RateLimitBucketWhereUniqueInput!): RateLimitBucket
+  deleteRateLimitBuckets(where: [RateLimitBucketWhereUniqueInput!]!): [RateLimitBucket]
   createRole(data: RoleCreateInput!): Role
   createRoles(data: [RoleCreateInput!]!): [Role]
   updateRole(where: RoleWhereUniqueInput!, data: RoleUpdateInput!): Role
@@ -3860,6 +5749,18 @@ type Mutation {
   updateSubstitutionPreferences(data: [SubstitutionPreferenceUpdateArgs!]!): [SubstitutionPreference]
   deleteSubstitutionPreference(where: SubstitutionPreferenceWhereUniqueInput!): SubstitutionPreference
   deleteSubstitutionPreferences(where: [SubstitutionPreferenceWhereUniqueInput!]!): [SubstitutionPreference]
+  createStore(data: StoreCreateInput!): Store
+  createStores(data: [StoreCreateInput!]!): [Store]
+  updateStore(where: StoreWhereUniqueInput!, data: StoreUpdateInput!): Store
+  updateStores(data: [StoreUpdateArgs!]!): [Store]
+  deleteStore(where: StoreWhereUniqueInput!): Store
+  deleteStores(where: [StoreWhereUniqueInput!]!): [Store]
+  createStoreSettings(data: StoreSettingsCreateInput!): StoreSettings
+  createstoreSettingsItems(data: [StoreSettingsCreateInput!]!): [StoreSettings]
+  updateStoreSettings(where: StoreSettingsWhereUniqueInput!, data: StoreSettingsUpdateInput!): StoreSettings
+  updatestoreSettingsItems(data: [StoreSettingsUpdateArgs!]!): [StoreSettings]
+  deleteStoreSettings(where: StoreSettingsWhereUniqueInput!): StoreSettings
+  deletestoreSettingsItems(where: [StoreSettingsWhereUniqueInput!]!): [StoreSettings]
   createSupplier(data: SupplierCreateInput!): Supplier
   createSuppliers(data: [SupplierCreateInput!]!): [Supplier]
   updateSupplier(where: SupplierWhereUniqueInput!, data: SupplierUpdateInput!): Supplier
@@ -3884,37 +5785,50 @@ type Mutation {
   sendUserPasswordResetLink(email: String!): Boolean!
   redeemUserPasswordResetToken(email: String!, token: String!, password: String!): RedeemUserPasswordResetTokenResult
   updateActiveUser(data: UserUpdateProfileInput!): User
-  initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String): PaymentSession
+  provisionGroceryCustomer(name: String!, email: String!, temporaryPassword: String!): ProvisionGroceryCustomerResult!
+  initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String, couponCode: String, recovery: CheckoutRecoveryInput!): PaymentSession
   addItemToGroceryCart(productId: ID!, quantity: Int!, sessionId: String): GroceryCart
   updateGroceryCartItem(itemId: ID!, quantity: Int!, sessionId: String): GroceryCart
   removeItemFromGroceryCart(itemId: ID!, sessionId: String): GroceryCart
   clearGroceryCart(sessionId: String): GroceryCart
   mergeGuestGroceryCart(guestSessionId: String!): GroceryCart
   updateGrocerySubstitutionPreference(itemId: ID!, preference: String!, sessionId: String): GroceryCart
-  clipCoupon(couponId: ID, couponCode: String): ClipCouponResult!
-  unclipCoupon(userCouponId: ID!): UnclipCouponResult!
-  applyCoupons(userCouponIds: [ID!], sessionId: String): ApplyCouponsResult!
-  markCouponsAsUsed(userCouponIds: [ID!]!): MarkCouponsUsedResult!
-  previewCouponDiscount(couponCode: String!, sessionId: String): PreviewCouponResult!
-  createGrocerySubscription(productId: ID!, quantity: Int!, frequency: String!, deliveryDay: String): GrocerySubscription!
-  updateGrocerySubscription(subscriptionId: ID!, quantity: Int, frequency: String): GrocerySubscription!
-  pauseGrocerySubscription(subscriptionId: ID!, pauseUntil: String!): GrocerySubscription!
-  cancelGrocerySubscription(subscriptionId: ID!): GrocerySubscription!
-  skipNextGroceryDelivery(subscriptionId: ID!): GrocerySubscription!
-  addRecipeToCart(recipeId: ID!, servings: Int, sessionId: String, includeOptional: Boolean): AddRecipeToCartResult!
+  requestGroceryBackInStockAlert(productId: ID!): BackInStockRequestResult!
+  createCustomerShoppingList(name: String!): ShoppingList!
+  deleteCustomerShoppingList(listId: ID!): DeleteShoppingListResult!
   addToShoppingList(listId: ID!, product: String!, quantity: Int, unit: String, notes: String): ShoppingListResult!
   removeFromShoppingList(listId: ID!, itemId: ID!): ShoppingListResult!
   updateShoppingListItemQuantity(listId: ID!, itemId: ID!, quantity: Int!): ShoppingListResult!
   toggleShoppingListItemChecked(listId: ID!, itemId: ID!): ShoppingListResult!
   addShoppingListToCart(listId: ID!, sessionId: String): AddListToCartResult!
-  reservePickupSlot(slotId: ID!, orderId: ID!): ReservePickupSlotResult!
-  releasePickupSlot(slotId: ID!, orderId: ID): ReleasePickupSlotResult!
   customerCheckIn(orderId: ID!, parkingSpotId: ID, vehicleDescription: String): CustomerCheckInResult!
+  guestCustomerCheckIn(orderId: ID!, sessionId: String!, token: String!, parkingSpotId: ID, vehicleDescription: String): CustomerCheckInResult!
   releaseParkingSpot(parkingSpotId: ID!, orderId: ID!): ReleaseParkingSpotResult!
   completeOrderHandoff(orderId: ID!): CompleteOrderHandoffResult!
-  createDeliveryRouteFromOrders(deliveryDate: String!, deliveryTimeWindow: String!, orderIds: [ID!]!, driverId: ID): DeliveryRouteWorkflowResult!
+  createDeliveryRouteFromOrders(deliveryDate: String!, deliveryTimeWindow: String!, orderIds: [ID!]!, driverId: ID!): DeliveryRouteWorkflowResult!
   updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
   submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
+  cancelGroceryOrder(orderId: ID!, reason: String!, idempotencyKey: String!): OrderCancellationResult!
+  reconcileCheckoutAttempts(limit: Int): CheckoutReconciliationResult!
+  reconcilePaymentRefunds(limit: Int): RefundReconciliationResult!
+  updateSupplierMinimumOrder(supplierId: ID!, minimumOrderCents: Int!): SupplierMinimumOrderResult!
+  handlePaymentProviderWebhook(providerCode: String!, rawBody: String!, headers: JSON): PaymentWebhookResult!
+  refundPayment(paymentId: ID!, amountCents: Int!, reason: String!, idempotencyKey: String!): PaymentRefundResult!
+  runGroceryOnboarding(seed: JSON): GroceryOnboardingResult!
+  updateGroceryStorefrontBrandHue(brandHue: Int): StorefrontBrandHueResult!
+  advanceOrderFulfillment(orderId: ID!, target: String!): OrderFulfillmentWorkflowResult!
+  recordOrderItemSubstitution(orderItemId: ID!, substitutedProduct: String!, reason: String, customerApproved: Boolean, idempotencyKey: String!): OrderItemSubstitutionWorkflowResult!
+  claimGroceryOutboxEvents(workerId: String!, limit: Int): [GroceryOutboxEventResult!]!
+  completeGroceryOutboxEvent(eventId: ID!, claimToken: String!, succeeded: Boolean!, error: String): GroceryOutboxEventResult!
+  replayGroceryOutboxEvent(eventId: ID!): GroceryOutboxEventResult!
+  configureDeliverySlot(slotId: ID!, capacity: Int, deliveryFee: Int, isActive: Boolean, idempotencyKey: String!): StoreCapacityResult!
+  configurePickupSlot(slotId: ID!, maxOrders: Int, isAvailable: Boolean, idempotencyKey: String!): StoreCapacityResult!
+  configureParkingSpot(spotId: ID!, isAvailable: Boolean!, idempotencyKey: String!): StoreCapacityResult!
+  adjustInventoryLot(inventoryLotId: ID!, targetQuantityRemaining: Int!, reason: String!, idempotencyKey: String!, note: String): InventoryAdjustmentResult!
+  createPurchaseOrderDraft(idempotencyKey: String!, supplierId: ID!, expectedDeliveryDate: String, notes: String, items: [PurchaseOrderDraftItemInput!]!): PurchaseOrderDraftResult!
+  removePurchaseOrderDraftItem(purchaseOrderId: ID!, poItemId: ID!): PurchaseOrderDraftItemRemovalResult!
+  transitionPurchaseOrder(purchaseOrderId: ID!, status: String!): PurchaseOrderWorkflowResult!
+  receivePurchaseOrder(purchaseOrderId: ID!, receipts: [PurchaseOrderReceiptInput!]!): PurchaseOrderWorkflowResult!
 }
 
 union UserAuthenticationWithPasswordResult = UserAuthenticationWithPasswordSuccess | UserAuthenticationWithPasswordFailure
@@ -3955,6 +5869,9 @@ type Query {
   cart(where: CartWhereUniqueInput!): Cart
   carts(where: CartWhereInput! = {}, orderBy: [CartOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CartWhereUniqueInput): [Cart!]
   cartsCount(where: CartWhereInput! = {}): Int
+  checkoutAttempt(where: CheckoutAttemptWhereUniqueInput!): CheckoutAttempt
+  checkoutAttempts(where: CheckoutAttemptWhereInput! = {}, orderBy: [CheckoutAttemptOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CheckoutAttemptWhereUniqueInput): [CheckoutAttempt!]
+  checkoutAttemptsCount(where: CheckoutAttemptWhereInput! = {}): Int
   cartItem(where: CartItemWhereUniqueInput!): CartItem
   cartItems(where: CartItemWhereInput! = {}, orderBy: [CartItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CartItemWhereUniqueInput): [CartItem!]
   cartItemsCount(where: CartItemWhereInput! = {}): Int
@@ -3973,9 +5890,15 @@ type Query {
   favoriteProduct(where: FavoriteProductWhereUniqueInput!): FavoriteProduct
   favoriteProducts(where: FavoriteProductWhereInput! = {}, orderBy: [FavoriteProductOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: FavoriteProductWhereUniqueInput): [FavoriteProduct!]
   favoriteProductsCount(where: FavoriteProductWhereInput! = {}): Int
+  groceryOutboxEvent(where: GroceryOutboxEventWhereUniqueInput!): GroceryOutboxEvent
+  groceryOutboxEvents(where: GroceryOutboxEventWhereInput! = {}, orderBy: [GroceryOutboxEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: GroceryOutboxEventWhereUniqueInput): [GroceryOutboxEvent!]
+  groceryOutboxEventsCount(where: GroceryOutboxEventWhereInput! = {}): Int
   inventoryLot(where: InventoryLotWhereUniqueInput!): InventoryLot
   inventoryLots(where: InventoryLotWhereInput! = {}, orderBy: [InventoryLotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryLotWhereUniqueInput): [InventoryLot!]
   inventoryLotsCount(where: InventoryLotWhereInput! = {}): Int
+  inventoryAdjustment(where: InventoryAdjustmentWhereUniqueInput!): InventoryAdjustment
+  inventoryAdjustments(where: InventoryAdjustmentWhereInput! = {}, orderBy: [InventoryAdjustmentOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryAdjustmentWhereUniqueInput): [InventoryAdjustment!]
+  inventoryAdjustmentsCount(where: InventoryAdjustmentWhereInput! = {}): Int
   loyaltyProgram(where: LoyaltyProgramWhereUniqueInput!): LoyaltyProgram
   loyaltyPrograms(where: LoyaltyProgramWhereInput! = {}, orderBy: [LoyaltyProgramOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: LoyaltyProgramWhereUniqueInput): [LoyaltyProgram!]
   loyaltyProgramsCount(where: LoyaltyProgramWhereInput! = {}): Int
@@ -3994,6 +5917,9 @@ type Query {
   orderLineItem(where: OrderLineItemWhereUniqueInput!): OrderLineItem
   orderLineItems(where: OrderLineItemWhereInput! = {}, orderBy: [OrderLineItemOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderLineItemWhereUniqueInput): [OrderLineItem!]
   orderLineItemsCount(where: OrderLineItemWhereInput! = {}): Int
+  orderLineInventoryAllocation(where: OrderLineInventoryAllocationWhereUniqueInput!): OrderLineInventoryAllocation
+  orderLineInventoryAllocations(where: OrderLineInventoryAllocationWhereInput! = {}, orderBy: [OrderLineInventoryAllocationOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: OrderLineInventoryAllocationWhereUniqueInput): [OrderLineInventoryAllocation!]
+  orderLineInventoryAllocationsCount(where: OrderLineInventoryAllocationWhereInput! = {}): Int
   parkingSpot(where: ParkingSpotWhereUniqueInput!): ParkingSpot
   parkingSpots(where: ParkingSpotWhereInput! = {}, orderBy: [ParkingSpotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ParkingSpotWhereUniqueInput): [ParkingSpot!]
   parkingSpotsCount(where: ParkingSpotWhereInput! = {}): Int
@@ -4003,9 +5929,15 @@ type Query {
   paymentProvider(where: PaymentProviderWhereUniqueInput!): PaymentProvider
   paymentProviders(where: PaymentProviderWhereInput! = {}, orderBy: [PaymentProviderOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentProviderWhereUniqueInput): [PaymentProvider!]
   paymentProvidersCount(where: PaymentProviderWhereInput! = {}): Int
+  paymentRefund(where: PaymentRefundWhereUniqueInput!): PaymentRefund
+  paymentRefunds(where: PaymentRefundWhereInput! = {}, orderBy: [PaymentRefundOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentRefundWhereUniqueInput): [PaymentRefund!]
+  paymentRefundsCount(where: PaymentRefundWhereInput! = {}): Int
   paymentSession(where: PaymentSessionWhereUniqueInput!): PaymentSession
   paymentSessions(where: PaymentSessionWhereInput! = {}, orderBy: [PaymentSessionOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentSessionWhereUniqueInput): [PaymentSession!]
   paymentSessionsCount(where: PaymentSessionWhereInput! = {}): Int
+  paymentWebhookEvent(where: PaymentWebhookEventWhereUniqueInput!): PaymentWebhookEvent
+  paymentWebhookEvents(where: PaymentWebhookEventWhereInput! = {}, orderBy: [PaymentWebhookEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWebhookEventWhereUniqueInput): [PaymentWebhookEvent!]
+  paymentWebhookEventsCount(where: PaymentWebhookEventWhereInput! = {}): Int
   pickupSlot(where: PickupSlotWhereUniqueInput!): PickupSlot
   pickupSlots(where: PickupSlotWhereInput! = {}, orderBy: [PickupSlotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PickupSlotWhereUniqueInput): [PickupSlot!]
   pickupSlotsCount(where: PickupSlotWhereInput! = {}): Int
@@ -4027,6 +5959,9 @@ type Query {
   recipeIngredient(where: RecipeIngredientWhereUniqueInput!): RecipeIngredient
   recipeIngredients(where: RecipeIngredientWhereInput! = {}, orderBy: [RecipeIngredientOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: RecipeIngredientWhereUniqueInput): [RecipeIngredient!]
   recipeIngredientsCount(where: RecipeIngredientWhereInput! = {}): Int
+  rateLimitBucket(where: RateLimitBucketWhereUniqueInput!): RateLimitBucket
+  rateLimitBuckets(where: RateLimitBucketWhereInput! = {}, orderBy: [RateLimitBucketOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: RateLimitBucketWhereUniqueInput): [RateLimitBucket!]
+  rateLimitBucketsCount(where: RateLimitBucketWhereInput! = {}): Int
   role(where: RoleWhereUniqueInput!): Role
   roles(where: RoleWhereInput! = {}, orderBy: [RoleOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: RoleWhereUniqueInput): [Role!]
   rolesCount(where: RoleWhereInput! = {}): Int
@@ -4042,6 +5977,12 @@ type Query {
   substitutionPreference(where: SubstitutionPreferenceWhereUniqueInput!): SubstitutionPreference
   substitutionPreferences(where: SubstitutionPreferenceWhereInput! = {}, orderBy: [SubstitutionPreferenceOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: SubstitutionPreferenceWhereUniqueInput): [SubstitutionPreference!]
   substitutionPreferencesCount(where: SubstitutionPreferenceWhereInput! = {}): Int
+  store(where: StoreWhereUniqueInput!): Store
+  stores(where: StoreWhereInput! = {}, orderBy: [StoreOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: StoreWhereUniqueInput): [Store!]
+  storesCount(where: StoreWhereInput! = {}): Int
+  storeSettings(where: StoreSettingsWhereUniqueInput!): StoreSettings
+  storeSettingsItems(where: StoreSettingsWhereInput! = {}, orderBy: [StoreSettingsOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: StoreSettingsWhereUniqueInput): [StoreSettings!]
+  storeSettingsItemsCount(where: StoreSettingsWhereInput! = {}): Int
   supplier(where: SupplierWhereUniqueInput!): Supplier
   suppliers(where: SupplierWhereInput! = {}, orderBy: [SupplierOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: SupplierWhereUniqueInput): [Supplier!]
   suppliersCount(where: SupplierWhereInput! = {}): Int
@@ -4054,11 +5995,28 @@ type Query {
   keystone: KeystoneMeta!
   authenticatedItem: AuthenticatedItem
   validateUserPasswordResetToken(email: String!, token: String!): ValidateUserPasswordResetTokenResult
+  groceryPlatformOrders(page: Int, pageSize: Int): GroceryPlatformOrdersProjection!
+  groceryPlatformFulfillment: GroceryPlatformFulfillmentProjection!
+  groceryPlatformDelivery: GroceryPlatformDeliveryProjection!
+  groceryPlatformPickup: GroceryPlatformPickupProjection!
+  groceryPlatformInventory: GroceryPlatformInventoryProjection!
+  groceryPlatformSuppliers: GroceryPlatformSuppliersProjection!
+  groceryPlatformPurchasing: GroceryPlatformPurchasingProjection!
+  groceryPlatformMerchandising: GroceryPlatformMerchandisingProjection!
+  groceryPlatformCustomers: GroceryPlatformCustomersProjection!
+  groceryPlatformPayments: GroceryPlatformPaymentsProjection!
+  groceryPlatformSettings: GroceryPlatformSettingsProjection!
   redirectToInit: Boolean
   groceryCart(sessionId: String): GroceryCart
   clippedCoupons: [ClippedCoupon!]!
-  scaleRecipe(recipeId: ID!, targetServings: Int!): ScaledRecipe!
   activeCartPaymentProviders: [PaymentProvider!]!
+  guestGroceryOrder(orderId: ID!, sessionId: String!, token: String!): Order
+  publicGroceryCoupons: [PublicGroceryCoupon!]!
+  publicGroceryStorefrontSettings: PublicGroceryStorefrontSettings!
+  publicGroceryProducts(department: String, search: String, availability: String, organic: Boolean, sort: String, take: Int, skip: Int, ids: [ID!]): PublicGroceryProductConnection!
+  publicGroceryProduct(handle: String!): PublicGroceryProduct
+  publicGroceryAvailability(days: Int): PublicGroceryAvailability!
+  groceryOutboxStatus: GroceryOutboxStatusResult!
   availablePickupSlots(days: Int, minCapacity: Int): [PickupSlotResult!]!
   pickupSlotsByDate(days: Int, minCapacity: Int): [PickupSlotsByDateResult!]!
   availableParkingSpots(accessibleOnly: Boolean): [ParkingSpotResult!]!
@@ -4300,19 +6258,6 @@ type PreviewCouponResult {
   couponDetails: PreviewCouponDetails
 }
 
-type GrocerySubscription {
-  id: ID!
-  productId: String!
-  quantity: Int!
-  frequency: String!
-  nextDeliveryDate: String
-  discount: Float
-  isActive: Boolean!
-  isPaused: Boolean!
-  pausedUntil: String
-  skippedDate: String
-}
-
 type ScaledIngredientProduct {
   id: ID!
   name: String
@@ -4400,12 +6345,121 @@ type ShoppingListResult {
   checkedCount: Int!
 }
 
+type DeleteShoppingListResult {
+  success: Boolean!
+  listId: ID!
+}
+
 type AddListToCartResult {
   success: Boolean!
   message: String!
   addedCount: Int!
   skippedCount: Int!
   skippedItems: [String!]!
+}
+
+type PublicGroceryStorefrontSettings {
+  id: ID!
+  name: String!
+  tagline: String
+  homepageTitle: String
+  homepageDescription: String
+  contactEmail: String
+  contactPhone: String
+  address: String
+  logoUrl: String
+  brandHue: Int
+  effectiveBrandHue: Int!
+  currencyCode: String
+  locale: String
+  timezone: String
+  countryCode: String
+}
+
+type StorefrontBrandHueResult {
+  brandHue: Int
+  effectiveBrandHue: Int!
+}
+
+type PublicGroceryDepartment {
+  id: ID!
+  name: String!
+  handle: String!
+  isActive: Boolean!
+}
+
+type PublicGroceryProduct {
+  id: ID!
+  title: String!
+  handle: String!
+  description: JSON
+  sku: String!
+  price: Float
+  compareAtPrice: Float
+  unitOfMeasure: String
+  pricingMethod: String
+  imageUrl: String
+  thumbnailUrl: String
+  isPerishable: Boolean!
+  shelfLife: Int
+  organicCertified: Boolean!
+  allergens: [String!]!
+  department: PublicGroceryDepartment
+  inStock: Boolean!
+  stockQuantity: Int!
+  backInStockRequested: Boolean!
+}
+
+type PublicGroceryProductConnection {
+  products: [PublicGroceryProduct!]!
+  totalCount: Int!
+}
+
+type BackInStockRequestResult {
+  requested: Boolean!
+  reused: Boolean!
+  productId: ID!
+  message: String!
+}
+
+type PublicGroceryCoupon {
+  id: ID!
+  code: String!
+  discountType: String!
+  discountValue: Float!
+  minPurchase: Float!
+  validTo: String
+  productCategories: [String!]!
+}
+
+type PublicDeliveryWindow {
+  id: ID!
+  date: String!
+  startTime: String!
+  endTime: String!
+  feeCents: Int!
+  remainingCapacity: Int!
+}
+
+type PublicPickupWindow {
+  id: ID!
+  date: String!
+  startTime: String!
+  endTime: String!
+  remainingCapacity: Int!
+}
+
+type PublicParkingSpot {
+  id: ID!
+  spotNumber: String!
+  description: String
+  isAccessible: Boolean!
+}
+
+type PublicGroceryAvailability {
+  deliveryWindows: [PublicDeliveryWindow!]!
+  pickupWindows: [PublicPickupWindow!]!
+  parkingSpots: [PublicParkingSpot!]!
 }
 
 type PickupSlotResult {
@@ -4424,22 +6478,6 @@ type PickupSlotsByDateResult {
   slots: [PickupSlotResult!]!
   totalSlots: Int!
   totalAvailableCapacity: Int!
-}
-
-type ReservePickupSlotResult {
-  success: Boolean!
-  slotId: ID!
-  orderId: ID!
-  pickupDate: String!
-  pickupStartTime: String!
-  pickupEndTime: String!
-  remainingCapacity: Int!
-}
-
-type ReleasePickupSlotResult {
-  success: Boolean!
-  slotId: ID!
-  remainingCapacity: Int!
 }
 
 type ParkingSpotResult {
@@ -4491,6 +6529,574 @@ type DeliveryRouteWorkflowResult {
   message: String!
 }
 
+type OrderCancellationResult {
+  success: Boolean!
+  orderId: ID!
+  status: String!
+  reused: Boolean!
+}
+
+type ProvisionGroceryCustomerResult {
+  success: Boolean!
+  customerId: ID!
+  name: String!
+  email: String!
+}
+
+type CheckoutReconciliationResult {
+  processed: Int!
+  results: JSON!
+}
+
+type RefundReconciliationResult {
+  scanned: Int!
+  results: JSON!
+}
+
+type SupplierMinimumOrderResult {
+  success: Boolean!
+  id: ID!
+  minimumOrder: Float!
+  minimumOrderCents: Int!
+}
+
+type OrderFulfillmentWorkflowResult {
+  success: Boolean!
+  orderId: ID!
+  status: String!
+  stage: String!
+  reused: Boolean!
+  message: String!
+}
+
+type OrderItemSubstitutionWorkflowResult {
+  success: Boolean!
+  substitutionId: ID!
+  orderItemId: ID!
+  customerApproved: Boolean!
+  approvedAt: String
+  reused: Boolean!
+}
+
+type GroceryOutboxEventResult {
+  eventId: ID!
+  eventKey: String!
+  eventType: String!
+  aggregateType: String!
+  aggregateId: String!
+  schemaVersion: Int!
+  payload: JSON!
+  payloadHash: String!
+  occurredAt: String!
+  status: String!
+  attempts: Int!
+  claimToken: String
+}
+
+type GroceryOutboxStatusResult {
+  pending: Int!
+  processing: Int!
+  delivered: Int!
+  failed: Int!
+}
+
+type StoreCapacityResult {
+  slotId: ID!
+  capacity: Int!
+  currentBookings: Int!
+  isAvailable: Boolean!
+  fee: Int!
+  reused: Boolean!
+}
+
+type InventoryAdjustmentResult {
+  success: Boolean!
+  adjustmentId: ID!
+  inventoryLotId: ID!
+  productId: ID!
+  quantityDelta: Int!
+  quantityRemaining: Int!
+  productStock: Int!
+  reused: Boolean!
+}
+
+input PurchaseOrderDraftItemInput {
+  productId: ID!
+  quantity: Int!
+  unitCost: Float!
+}
+
+type PurchaseOrderDraftResult {
+  success: Boolean!
+  purchaseOrderId: ID!
+  poNumber: String!
+  status: String!
+  totalAmount: Float!
+  itemCount: Int!
+  reused: Boolean!
+}
+
+type PurchaseOrderDraftItemRemovalResult {
+  success: Boolean!
+  purchaseOrderId: ID!
+  removedItemId: ID!
+  totalAmount: Float!
+  itemCount: Int!
+  reused: Boolean!
+}
+
+input PurchaseOrderReceiptInput {
+  poItemId: ID!
+  targetQuantityReceived: Int!
+  lotNumber: String!
+  expirationDate: String!
+  location: String
+}
+
+type PurchaseOrderWorkflowResult {
+  success: Boolean!
+  purchaseOrderId: ID!
+  status: String!
+  receivedUnits: Int!
+  message: String!
+}
+
+type GroceryOnboardingResult {
+  completed: Boolean!
+  reused: Boolean!
+  counts: JSON!
+}
+
+type PaymentWebhookResult {
+  success: Boolean!
+  duplicate: Boolean!
+  providerCode: String!
+  eventType: String!
+  paymentId: String
+  updatedPaymentId: ID
+  message: String!
+}
+
+type PaymentRefundResult {
+  success: Boolean!
+  refundId: ID!
+  paymentId: ID!
+  amountCents: Int!
+  status: String!
+  providerRefundId: String
+  reused: Boolean!
+  message: String!
+}
+
+type GroceryPlatformOrderLineItem {
+  id: ID!
+  title: String!
+  sku: String!
+  quantity: Int!
+  unitPrice: Float!
+  unitPriceCents: Int!
+  thumbnail: String!
+  metadata: JSON
+}
+
+type GroceryPlatformPaymentRefund {
+  id: ID!
+  amountCents: Int!
+  status: String!
+  reason: String!
+  requestedAt: String
+  processedAt: String
+  failureMessage: String
+  reconciliationAttempts: Int!
+  reconciliationNextAttemptAt: String
+  reconciliationDeadLetterAt: String
+  reconciliationLastError: String
+}
+
+type GroceryPlatformPayment {
+  id: ID!
+  amountCents: Int!
+  status: String!
+  providerPaymentId: String
+  processedAt: String
+  errorMessage: String
+  providerCode: String!
+  refunds: [GroceryPlatformPaymentRefund!]!
+}
+
+type GroceryPlatformSalesSummary {
+  todayOrders: Int!
+  todayGrossCents: Int!
+  thirtyDayOrders: Int!
+  thirtyDayGrossCents: Int!
+  thirtyDayRefundCents: Int!
+  thirtyDayNetCents: Int!
+  averageBasketCents: Int!
+}
+
+type GroceryPlatformOrder {
+  id: ID!
+  displayId: Int!
+  email: String!
+  status: String!
+  deliveryDate: String
+  deliveryTimeWindow: String!
+  createdAt: String
+  currencyCode: String!
+  subtotalCents: Int!
+  taxCents: Int!
+  deliveryFeeCents: Int!
+  discountCents: Int!
+  totalCents: Int!
+  substitutionPreference: String
+  metadata: JSON
+  lineItems: [GroceryPlatformOrderLineItem!]!
+  payments: [GroceryPlatformPayment!]!
+}
+
+type GroceryPlatformOrdersProjection {
+  currencyCode: String!
+  orders: [GroceryPlatformOrder!]!
+  page: Int!
+  pageSize: Int!
+  totalOrders: Int!
+  totalPages: Int!
+  salesSummary: GroceryPlatformSalesSummary!
+  pending: Int!
+  picking: Int!
+  packed: Int!
+  outForDelivery: Int!
+  delivered: Int!
+}
+
+type GroceryPlatformSubstitution {
+  id: ID!
+  orderItem: String!
+  originalProduct: String!
+  substitutedProduct: String!
+  reason: String!
+  customerApproved: Boolean!
+  approvedAt: String
+}
+
+type GroceryPlatformFulfillmentProjection {
+  pending: [GroceryPlatformOrder!]!
+  picking: [GroceryPlatformOrder!]!
+  packed: [GroceryPlatformOrder!]!
+  orderItemSubstitutions: [GroceryPlatformSubstitution!]!
+}
+
+type GroceryPlatformDriver {
+  id: ID!
+  name: String!
+  email: String!
+}
+
+type GroceryPlatformRouteOrder {
+  id: ID!
+  displayId: Int!
+  status: String!
+  metadata: JSON
+}
+
+type GroceryPlatformRoute {
+  id: ID!
+  date: String!
+  timeWindow: String!
+  status: String
+  startedAt: String
+  completedAt: String
+  driver: GroceryPlatformDriver
+  orders: [GroceryPlatformRouteOrder!]!
+}
+
+type GroceryPlatformDeliverySlot {
+  id: ID!
+  date: String!
+  startTime: String!
+  endTime: String!
+  capacity: Int!
+  currentBookings: Int!
+  isActive: Boolean!
+  deliveryFee: Int!
+}
+
+type GroceryPlatformDeliveryProjection {
+  deliveryRoutes: [GroceryPlatformRoute!]!
+  readyOrders: [GroceryPlatformOrder!]!
+  drivers: [GroceryPlatformDriver!]!
+  deliverySlots: [GroceryPlatformDeliverySlot!]!
+}
+
+type GroceryPlatformPickupSlot {
+  id: ID!
+  date: String!
+  startTime: String!
+  endTime: String!
+  maxOrders: Int!
+  currentOrders: Int!
+  isAvailable: Boolean!
+}
+
+type GroceryPlatformParkingSpot {
+  id: ID!
+  spotNumber: String!
+  description: String
+  isAccessible: Boolean!
+  isAvailable: Boolean!
+}
+
+type GroceryPlatformPickupOrder {
+  id: ID!
+  displayId: Int!
+  email: String!
+  status: String!
+  metadata: JSON
+}
+
+type GroceryPlatformPickupProjection {
+  pickupSlots: [GroceryPlatformPickupSlot!]!
+  parkingSpots: [GroceryPlatformParkingSpot!]!
+  pickupOrders: [GroceryPlatformPickupOrder!]!
+}
+
+type GroceryPlatformInventoryProduct {
+  id: ID!
+  title: String!
+  sku: String!
+  stockQuantity: Int
+  recordedStockQuantity: Int!
+  lowStockThreshold: Int
+  inStock: Boolean!
+  activeBackInStockAlerts: Int!
+  department: String
+  supplier: GroceryPlatformSupplier
+}
+
+type GroceryPlatformInventoryLot {
+  id: ID!
+  lotNumber: String!
+  expirationDate: String!
+  quantity: Int!
+  quantityRemaining: Int!
+  location: String
+  isExpired: Boolean!
+  isExpiringSoon: Boolean!
+  product: GroceryPlatformInventoryProductRef
+  supplier: GroceryPlatformSupplier
+}
+
+type GroceryPlatformInventoryProductRef {
+  id: ID!
+  title: String!
+}
+
+type GroceryPlatformSupplier {
+  id: ID!
+  name: String!
+}
+
+type GroceryPlatformInventoryProjection {
+  products: [GroceryPlatformInventoryProduct!]!
+  inventoryLots: [GroceryPlatformInventoryLot!]!
+}
+
+type GroceryPlatformSupplierRow {
+  id: ID!
+  name: String!
+  contactName: String
+  email: String!
+  phone: String
+  paymentTerms: String
+  deliveryDays: JSON
+  minimumOrder: Float
+  minimumOrderCents: Int!
+  products: [GroceryPlatformInventoryProductRef!]!
+  purchaseOrders: [GroceryPlatformPurchaseOrderRef!]!
+}
+
+type GroceryPlatformPurchaseOrderRef {
+  id: ID!
+  status: String
+}
+
+type GroceryPlatformSuppliersProjection {
+  currencyCode: String!
+  suppliers: [GroceryPlatformSupplierRow!]!
+}
+
+type GroceryPlatformPurchaseOrder {
+  id: ID!
+  poNumber: String!
+  orderDate: String!
+  expectedDeliveryDate: String
+  status: String
+  totalAmount: Float
+  totalAmountCents: Int
+  notes: String
+  isDueSoon: Boolean!
+  supplier: GroceryPlatformSupplier
+  items: [GroceryPlatformPurchaseItem!]!
+}
+
+type GroceryPlatformPurchaseItem {
+  id: ID!
+  productTitle: String!
+  productSku: String!
+  quantity: Int!
+  quantityReceived: Int!
+  unitCost: Float!
+  unitCostCents: Int!
+}
+
+type GroceryPlatformPurchasingProjection {
+  currencyCode: String!
+  purchaseOrders: [GroceryPlatformPurchaseOrder!]!
+}
+
+type GroceryPlatformDepartment {
+  id: ID!
+  name: String!
+  handle: String!
+  sortOrder: Int
+  isActive: Boolean!
+  temperatureZone: String
+  products: [GroceryPlatformInventoryProductRef!]!
+}
+
+type GroceryPlatformCoupon {
+  id: ID!
+  code: String!
+  discountType: String!
+  discountValue: Float
+  discountValueCents: Int!
+  minPurchase: Float
+  minPurchaseCents: Int!
+  maxUses: Int!
+  currentUses: Int!
+  productCategories: JSON
+  isActive: Boolean!
+  validFrom: String
+  validTo: String
+}
+
+type GroceryPlatformMerchandisingProjection {
+  currencyCode: String!
+  departments: [GroceryPlatformDepartment!]!
+  coupons: [GroceryPlatformCoupon!]!
+}
+
+type GroceryPlatformCustomer {
+  id: ID!
+  name: String!
+  email: String!
+  onboardingStatus: String
+  createdAt: String!
+  orderCount: Int!
+  shoppingListCount: Int!
+  lastOrder: GroceryPlatformCustomerLastOrder
+}
+
+type GroceryPlatformCustomerLastOrder {
+  displayId: Int!
+  status: String!
+  createdAt: String!
+}
+
+type GroceryPlatformCustomersProjection {
+  users: [GroceryPlatformCustomer!]!
+  totalCustomers: Int!
+  savedCarts: Int!
+}
+
+type GroceryPlatformPaymentOrder {
+  id: ID!
+  displayId: Int!
+  status: String!
+}
+
+type GroceryPlatformPaymentRow {
+  id: ID!
+  amountCents: Int!
+  status: String!
+  paymentMethod: String
+  providerPaymentId: String
+  providerCode: String!
+  processedAt: String
+  createdAt: String!
+  errorMessage: String
+  order: GroceryPlatformPaymentOrder!
+  refunds: [GroceryPlatformPaymentRefund!]!
+}
+
+type GroceryPlatformPaymentProviderTruth {
+  id: ID!
+  name: String!
+  code: String!
+  isInstalled: Boolean!
+  publicCheckout: Boolean!
+  runtimeConfigured: Boolean!
+}
+
+type GroceryPlatformPaymentSummary {
+  paymentCount: Int!
+  failedCount: Int!
+  processingCount: Int!
+  capturedCents: Int!
+  refundedCents: Int!
+  netCents: Int!
+  recovery: JSON!
+}
+
+type GroceryPlatformPaymentsProjection {
+  currencyCode: String!
+  payments: [GroceryPlatformPaymentRow!]!
+  providers: [GroceryPlatformPaymentProviderTruth!]!
+  summary: GroceryPlatformPaymentSummary!
+}
+
+type GroceryPlatformStoreTruth {
+  id: ID!
+  name: String!
+  timezone: String!
+  currencyCode: String!
+  isActive: Boolean!
+}
+
+type GroceryPlatformSettingsTruth {
+  id: ID!
+  name: String!
+  tagline: String!
+  homepageTitle: String!
+  homepageDescription: String!
+  contactEmail: String!
+  contactPhone: String!
+  address: String!
+  logoUrl: String!
+  brandHue: Int
+  currencyCode: String!
+  taxRateBps: Int!
+  locale: String!
+  timezone: String!
+  countryCode: String!
+  hours: JSON!
+  isActive: Boolean!
+}
+
+type GroceryPlatformSettingsCounts {
+  products: Int!
+  suppliers: Int!
+  deliverySlots: Int!
+  pickupSlots: Int!
+  parkingSpots: Int!
+}
+
+type GroceryPlatformSettingsProjection {
+  store: GroceryPlatformStoreTruth!
+  settings: GroceryPlatformSettingsTruth!
+  counts: GroceryPlatformSettingsCounts!
+}
+
 input SubmitGroceryOrderAddressInput {
   firstName: String!
   lastName: String!
@@ -4501,11 +7107,19 @@ input SubmitGroceryOrderAddressInput {
   phone: String!
 }
 
+input CheckoutRecoveryInput {
+  email: String!
+  deliveryAddress: SubmitGroceryOrderAddressInput!
+  substitutionPreference: String!
+  deliveryInstructions: String
+}
+
 input SubmitGroceryOrderInput {
   cartId: ID!
   paymentSessionId: ID!
   paymentIntentId: String!
   sessionId: String
+  couponCode: String
   email: String!
   deliveryAddress: SubmitGroceryOrderAddressInput!
   deliveryDate: String!
@@ -4523,5 +7137,6 @@ type SubmitGroceryOrderResult {
   success: Boolean!
   orderId: ID
   displayId: Int
+  guestOrderToken: String
   message: String!
 }

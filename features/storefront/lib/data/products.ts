@@ -4,69 +4,61 @@ import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 export type ProductSortOption = 'name' | 'price-asc' | 'price-desc' | 'newest' | 'low-stock';
 export type ProductAvailabilityFilter = 'in-stock' | 'all' | 'low-stock';
 
-function mapProduct(product: any): GroceryProduct {
+type PublicCatalogProduct = {
+  id: string;
+  title: string;
+  handle: string;
+  description?: unknown;
+  sku: string;
+  price?: number | null;
+  compareAtPrice?: number | null;
+  unitOfMeasure?: string | null;
+  pricingMethod?: string | null;
+  imageUrl?: string | null;
+  thumbnailUrl?: string | null;
+  isPerishable: boolean;
+  shelfLife?: number | null;
+  organicCertified: boolean;
+  allergens: string[];
+  department?: { id: string; name: string; handle: string; isActive: boolean } | null;
+  inStock: boolean;
+  stockQuantity: number;
+  backInStockRequested: boolean;
+};
+
+const PUBLIC_PRODUCT_FIELDS = `
+  id
+  title
+  handle
+  description
+  sku
+  price
+  compareAtPrice
+  unitOfMeasure
+  pricingMethod
+  imageUrl
+  thumbnailUrl
+  isPerishable
+  shelfLife
+  organicCertified
+  allergens
+  department { id name handle isActive }
+  inStock
+  stockQuantity
+  backInStockRequested
+`;
+
+function mapProduct(product: PublicCatalogProduct): GroceryProduct {
   return {
     ...product,
     name: product.title,
-    unit: product.unitOfMeasure,
-    department: product.departmentRef,
+    price: Number(product.price || 0),
+    compareAtPrice: product.compareAtPrice ?? undefined,
+    unit: product.unitOfMeasure || undefined,
+    imageUrl: product.imageUrl || undefined,
+    thumbnailUrl: product.thumbnailUrl || undefined,
+    department: product.department || undefined,
   };
-}
-
-function buildProductWhere(options?: {
-  department?: string;
-  search?: string;
-  availability?: ProductAvailabilityFilter;
-  organic?: boolean;
-}) {
-  const where: Record<string, any> = {
-    status: { equals: 'published' },
-  };
-
-  if (options?.department) {
-    where.departmentRef = { handle: { equals: options.department } };
-  }
-
-  if (options?.search?.trim()) {
-    const query = options.search.trim();
-    where.OR = [
-      { title: { contains: query, mode: 'insensitive' } },
-      { sku: { contains: query, mode: 'insensitive' } },
-      { handle: { contains: query, mode: 'insensitive' } },
-    ];
-  }
-
-  if (options?.organic) {
-    where.organicCertified = { equals: true };
-  }
-
-  if (options?.availability === 'all') {
-    return where;
-  }
-
-  where.inStock = { equals: true };
-
-  if (options?.availability === 'low-stock') {
-    where.stockQuantity = { lt: 10 };
-  }
-
-  return where;
-}
-
-function buildProductOrderBy(sort?: ProductSortOption) {
-  switch (sort) {
-    case 'price-asc':
-      return [{ price: 'asc' }];
-    case 'price-desc':
-      return [{ price: 'desc' }];
-    case 'newest':
-      return [{ createdAt: 'desc' }];
-    case 'low-stock':
-      return [{ stockQuantity: 'asc' }, { title: 'asc' }];
-    case 'name':
-    default:
-      return [{ title: 'asc' }];
-  }
 }
 
 export async function getProductsList(options?: {
@@ -87,174 +79,96 @@ export async function getProductsList(options?: {
     limit = 24,
     offset = 0,
   } = options || {};
-
-  try {
-    const where = buildProductWhere({ department, search, availability, organic });
-    const orderBy = buildProductOrderBy(sort as ProductSortOption);
-
-    const { data, errors } = await storefrontGraphQL<{
-      products: any[];
-      productsCount: number;
-    }>(`
-      query GetProducts($where: ProductWhereInput!, $orderBy: [ProductOrderByInput!]!, $take: Int, $skip: Int) {
-        products(
-          where: $where
-          orderBy: $orderBy
-          take: $take
-          skip: $skip
-        ) {
-          id
-          title
-          handle
-          sku
-          price
-          compareAtPrice
-          unitOfMeasure
-          pricingMethod
-          imageUrl
-          thumbnailUrl
-          isPerishable
-          inStock
-          stockQuantity
-          organicCertified
-          departmentRef {
-            id
-            name
-            handle
-          }
-        }
-        productsCount(where: $where)
+  const take = Math.min(100, Math.max(1, Math.trunc(limit)));
+  const skip = Math.max(0, Math.trunc(offset));
+  const { data, errors } = await storefrontGraphQL<{
+    publicGroceryProducts: { products: PublicCatalogProduct[]; totalCount: number };
+  }>(`
+    query GetPublicGroceryProducts(
+      $department: String
+      $search: String
+      $availability: String
+      $organic: Boolean
+      $sort: String
+      $take: Int
+      $skip: Int
+    ) {
+      publicGroceryProducts(
+        department: $department
+        search: $search
+        availability: $availability
+        organic: $organic
+        sort: $sort
+        take: $take
+        skip: $skip
+      ) {
+        products { ${PUBLIC_PRODUCT_FIELDS} }
+        totalCount
       }
-    `, { where, orderBy, take: limit, skip: offset }, { next: { revalidate: 300 } });
-
-    throwGraphQLErrors(errors);
-
-    const products = (data?.products || []).map(mapProduct);
-
-    return {
-      products,
-      count: data?.productsCount || products.length,
-    };
-  } catch (error) {
-    console.error('Error fetching products list:', error);
-    return { products: [], count: 0 };
-  }
-}
-
-export async function getProductByHandle(
-  handle: string
-): Promise<GroceryProduct | null> {
-  try {
-    const { data } = await storefrontGraphQL<{ product: any | null }>(`
-      query GetProduct($handle: String!) {
-        product(where: { handle: $handle }) {
-          id
-          title
-          handle
-          description {
-            document
-          }
-          sku
-          price
-          compareAtPrice
-          unitOfMeasure
-          pricingMethod
-          imageUrl
-          thumbnailUrl
-          isPerishable
-          shelfLife
-          organicCertified
-          allergens
-          inStock
-          stockQuantity
-          departmentRef {
-            id
-            name
-            handle
-          }
-          supplier {
-            id
-            name
-          }
-        }
-      }
-    `, { handle }, { next: { revalidate: 300 } });
-    const product = data?.product;
-
-    if (!product) return null;
-
-    return mapProduct(product);
-  } catch (error) {
-    console.error('Error fetching product:', error);
-    return null;
-  }
-}
-
-export async function getProductsByIds(
-  ids: string[]
-): Promise<{ products: GroceryProduct[] }> {
-  try {
-    if (!ids.length) {
-      return { products: [] };
     }
+  `, { department, search, availability, organic, sort, take, skip }, { cache: 'no-store' });
+  throwGraphQLErrors(errors);
+  if (!data?.publicGroceryProducts) throw new Error('Public catalog did not return an authoritative response');
+  return {
+    products: data.publicGroceryProducts.products.map(mapProduct),
+    count: data.publicGroceryProducts.totalCount,
+  };
+}
 
-    const { data } = await storefrontGraphQL<{ products: any[] }>(`
-      query GetProductsByIds($ids: [ID!]) {
-        products(where: { id: { in: $ids } }) {
-          id
-          title
-          handle
-          sku
-          price
-          unitOfMeasure
-          pricingMethod
-          imageUrl
-          thumbnailUrl
-          isPerishable
-          inStock
-          stockQuantity
-          organicCertified
-          departmentRef {
-            id
-            name
-            handle
-          }
-        }
+export async function getProductByHandle(handle: string): Promise<GroceryProduct | null> {
+  const { data, errors } = await storefrontGraphQL<{ publicGroceryProduct: PublicCatalogProduct | null }>(`
+    query GetPublicGroceryProduct($handle: String!) {
+      publicGroceryProduct(handle: $handle) { ${PUBLIC_PRODUCT_FIELDS} }
+    }
+  `, { handle }, { cache: 'no-store' });
+  throwGraphQLErrors(errors);
+  return data?.publicGroceryProduct ? mapProduct(data.publicGroceryProduct) : null;
+}
+
+export async function getProductsByIds(ids: string[]): Promise<{ products: GroceryProduct[] }> {
+  if (!ids.length) return { products: [] };
+  const { data, errors } = await storefrontGraphQL<{
+    publicGroceryProducts: { products: PublicCatalogProduct[] };
+  }>(`
+    query GetPublicGroceryProductsById($ids: [ID!], $take: Int) {
+      publicGroceryProducts(ids: $ids, availability: "all", take: $take) {
+        products { ${PUBLIC_PRODUCT_FIELDS} }
       }
-    `, { ids }, { next: { revalidate: 300 } });
-    const products = (data?.products || []).map(mapProduct);
-
-    return { products };
-  } catch (error) {
-    console.error('Error fetching products by IDs:', error);
-    return { products: [] };
-  }
+    }
+  `, { ids: ids.slice(0, 100), take: Math.min(ids.length, 100) }, { cache: 'no-store' });
+  throwGraphQLErrors(errors);
+  return { products: (data?.publicGroceryProducts.products || []).map(mapProduct) };
 }
 
-export async function searchProducts(
-  query: string,
-  options?: { limit?: number }
-): Promise<{ products: GroceryProduct[] }> {
-  const { limit = 10 } = options || {};
-
-  try {
-    const { products } = await getProductsList({ search: query, limit, offset: 0 });
-    return { products };
-  } catch (error) {
-    console.error('Error searching products:', error);
-    return { products: [] };
-  }
+export async function searchProducts(query: string, options?: { limit?: number }) {
+  const { products } = await getProductsList({ search: query, limit: options?.limit || 10, offset: 0 });
+  return { products };
 }
 
-// Get featured/popular products for homepage
-export async function getFeaturedProducts(
-  limit: number = 8
-): Promise<{ products: GroceryProduct[] }> {
-  try {
-    const { products } = await getProductsList({ sort: 'newest', limit, offset: 0 });
-    return { products };
-  } catch (error) {
-    console.error('Error fetching featured products:', error);
-    return { products: [] };
-  }
+export async function getFeaturedProducts(limit: number = 8) {
+  const { products } = await getProductsList({ sort: 'newest', limit, offset: 0 });
+  return { products };
+}
+
+export async function requestBackInStockAlert(productId: string) {
+  const { data, errors } = await storefrontGraphQL<{
+    requestGroceryBackInStockAlert: {
+      requested: boolean;
+      reused: boolean;
+      productId: string;
+      message: string;
+    };
+  }>(`
+    mutation RequestGroceryBackInStockAlert($productId: ID!) {
+      requestGroceryBackInStockAlert(productId: $productId) {
+        requested
+        reused
+        productId
+        message
+      }
+    }
+  `, { productId }, { cache: 'no-store' });
+  throwGraphQLErrors(errors);
+  if (!data?.requestGroceryBackInStockAlert) throw new Error('Back-in-stock alert was not confirmed');
+  return data.requestGroceryBackInStockAlert;
 }

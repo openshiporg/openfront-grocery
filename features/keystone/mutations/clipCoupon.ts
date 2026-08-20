@@ -1,4 +1,5 @@
 import type { Context } from '.keystone/types';
+import { requireSessionStore } from '../lib/storeScope';
 
 /**
  * Clip a coupon to the user's account
@@ -22,6 +23,7 @@ export async function clipCoupon(
   }
 
   const userId = context.session.itemId;
+  const store = await requireSessionStore(context);
   const sudoContext = context.sudo();
 
   // Find the coupon by ID or code
@@ -32,6 +34,7 @@ export async function clipCoupon(
       where: { id: couponId },
       query: `
         id
+        store { id }
         code
         isActive
         validFrom
@@ -49,6 +52,7 @@ export async function clipCoupon(
       where: { code: { equals: couponCode } },
       query: `
         id
+        store { id }
         code
         isActive
         validFrom
@@ -66,8 +70,8 @@ export async function clipCoupon(
     throw new Error('You must provide either a couponId or couponCode');
   }
 
-  if (!coupon) {
-    throw new Error('Coupon not found');
+  if (!coupon || coupon.store?.id !== store.id) {
+    throw new Error('Coupon is not available in the active store');
   }
 
   // Check if coupon is active

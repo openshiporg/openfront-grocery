@@ -5,6 +5,24 @@ import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
 
 export type OnboardingStatus = 'not_started' | 'in_progress' | 'completed' | 'dismissed';
 
+export async function runGroceryOnboardingAction(seed: Record<string, unknown>) {
+  const response = await keystoneClient<{
+    runGroceryOnboarding: { completed: boolean; reused: boolean; counts: Record<string, number> };
+  }>(`
+    mutation RunGroceryOnboarding($seed: JSON!) {
+      runGroceryOnboarding(seed: $seed) {
+        completed
+        reused
+        counts
+      }
+    }
+  `, { seed });
+
+  if (!response.success) return { success: false as const, error: response.error };
+  revalidatePath('/dashboard');
+  return { success: true as const, data: response.data.runGroceryOnboarding };
+}
+
 export async function updateOnboardingStatus(status: OnboardingStatus) {
   try {
     const query = `
@@ -29,11 +47,10 @@ export async function updateOnboardingStatus(status: OnboardingStatus) {
     revalidatePath('/dashboard/(admin)');
 
     return { success: true, data: response.data?.updateActiveUser };
-  } catch (error) {
-    console.error('Error updating onboarding status:', error);
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'An unexpected error occurred' 
+  } catch {
+    return {
+      success: false,
+      error: 'Unable to update onboarding status'
     };
   }
 }

@@ -8,27 +8,26 @@ import {
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
 import { isSignedIn, permissions } from "../access";
+import { ownerStoreScopedFilter } from '../lib/storeAccess';
 
 export const LoyaltyTransaction = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: permissions.canManageOrders,
-      update: permissions.canManageOrders,
-      delete: permissions.canManageOrders,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
     filter: {
-      query: ({ session }) => {
-        // Admins can see all transactions
-        if (permissions.canManageOrders({ session })) {
-          return true;
-        }
-        // Users can only see their own transactions
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
+      query: async ({ session, context }) => {
+        const store = ownerStoreScopedFilter('user')({ session });
+        if (store === false) return false;
+        if (await permissions.canManageOrders({ session, context })) return store;
+        if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
         return false;
       },
+      update: ownerStoreScopedFilter('user'),
+      delete: ownerStoreScopedFilter('user'),
     },
   },
   ui: {

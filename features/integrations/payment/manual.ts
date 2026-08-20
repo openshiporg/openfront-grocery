@@ -1,44 +1,29 @@
-export async function createPaymentFunction({ amount }: { amount: number }) {
-  return {
-    clientSecret: `manual_secret_${Date.now()}`,
-    paymentIntentId: `manual_${Date.now()}`,
-    amount,
-    provider: 'manual',
-  };
+function operatorOnly(): never {
+  throw new Error(
+    'Manual and cash payments require an authenticated operator reconciliation workflow; they cannot settle public checkout or webhook requests.'
+  );
 }
 
-export async function capturePaymentFunction({ paymentId, amount }: { paymentId: string; amount?: number }) {
-  return {
-    status: 'succeeded',
-    amount,
-    data: { id: paymentId, provider: 'manual' },
-  };
+export async function createPaymentFunction() {
+  return operatorOnly();
 }
 
-export async function refundPaymentFunction({ paymentId, amount }: { paymentId: string; amount?: number }) {
-  return {
-    status: 'refunded',
-    amount,
-    data: { id: paymentId, provider: 'manual' },
-  };
+export async function capturePaymentFunction() {
+  return operatorOnly();
 }
 
-export async function getPaymentStatusFunction({ paymentId }: { paymentId: string }) {
-  return {
-    status: 'succeeded',
-    amount: 0,
-    data: { id: paymentId, provider: 'manual' },
-  };
+export async function refundPaymentFunction() {
+  return operatorOnly();
 }
 
-export async function generatePaymentLinkFunction({ paymentId }: { paymentId: string }) {
-  return `manual://${paymentId}`;
+export async function getPaymentStatusFunction() {
+  return operatorOnly();
 }
 
-export async function handleWebhookFunction({ event }: { event: any }) {
-  return {
-    isValid: true,
-    type: event?.type || 'manual.event',
-    resource: event,
-  };
+export async function generatePaymentLinkFunction() {
+  return operatorOnly();
+}
+
+export async function handleWebhookFunction() {
+  return operatorOnly();
 }

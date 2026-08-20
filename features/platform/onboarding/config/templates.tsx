@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 export type TemplateType = 'full' | 'minimal' | 'custom';
 
 export type SeedSectionKey =
+  | 'storeSettings'
   | 'departments'
   | 'suppliers'
   | 'products'
@@ -12,10 +13,7 @@ export type SeedSectionKey =
   | 'pickupSlots'
   | 'parkingSpots'
   | 'paymentProviders'
-  | 'customers'
-  | 'orders'
-  | 'coupons'
-  | 'loyaltyPrograms';
+  | 'coupons';
 
 export interface StoreTemplate {
   name: string;
@@ -36,9 +34,10 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
   full: {
     name: 'Complete Setup',
     description:
-      'Seed a believable grocery demo with departments, suppliers, products, live slots, a customer profile, orders, coupons, and loyalty data.',
+      'Initialize the Store profile, catalog, suppliers, full-count inventory, rolling Store-local fulfillment policy, dated slot capacity, parking, coupons, and static payment adapters.',
     icon: <Building2 className="h-5 w-5" />,
     include: {
+      storeSettings: ['Juniper Market'],
       departments: ['produce', 'dairy', 'meat-seafood', 'bakery', 'frozen', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com', 'ocean-catch@example.com'],
       products: [
@@ -64,13 +63,11 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       deliverySlots: ['AM Rush', 'Late Morning', 'Early Afternoon', 'After Work', 'Evening'],
       pickupSlots: ['Curbside 9AM', 'Curbside 11AM', 'Curbside 1PM', 'Curbside 4PM', 'Curbside 6PM'],
       parkingSpots: ['A1', 'A2', 'B1', 'ADA-1'],
-      paymentProviders: ['Stripe Checkout', 'Manual Demo'],
-      customers: ['alex.shopper@example.com'],
-      orders: ['1001', '1002'],
+      paymentProviders: ['Stripe Checkout'],
       coupons: ['WELCOME10', 'FRESH5'],
-      loyaltyPrograms: ['Fresh Rewards'],
     },
     displayNames: {
+      storeSettings: ['Juniper Market'],
       departments: ['Produce', 'Dairy & Eggs', 'Meat & Seafood', 'Bakery', 'Frozen', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy', 'Ocean Catch Seafood'],
       products: [
@@ -96,19 +93,17 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       deliverySlots: ['AM Rush', 'Late Morning', 'Early Afternoon', 'After Work', 'Evening'],
       pickupSlots: ['Curbside 9AM', 'Curbside 11AM', 'Curbside 1PM', 'Curbside 4PM', 'Curbside 6PM'],
       parkingSpots: ['A1', 'A2', 'B1', 'ADA-1'],
-      paymentProviders: ['Stripe Checkout', 'Manual Demo'],
-      customers: ['Alex Shopper'],
-      orders: ['Order #1001', 'Order #1002'],
+      paymentProviders: ['Stripe Checkout'],
       coupons: ['WELCOME10', 'FRESH5'],
-      loyaltyPrograms: ['Fresh Rewards'],
     },
   },
   minimal: {
     name: 'Basic Setup',
     description:
-      'Seed just enough grocery data to browse products, test slots, and inspect one customer and one order.',
+      'Initialize a smaller connected catalog, supplier, inventory, slot, parking, coupon, and adapter baseline.',
     icon: <Package className="h-5 w-5" />,
     include: {
+      storeSettings: ['Juniper Market'],
       departments: ['produce', 'dairy', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com'],
       products: ['organic-bananas', 'whole-milk-gallon', 'jasmine-rice', 'sourdough-bread'],
@@ -116,13 +111,11 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       deliverySlots: ['AM Rush', 'After Work'],
       pickupSlots: ['Curbside 11AM', 'Curbside 4PM'],
       parkingSpots: ['A1', 'ADA-1'],
-      paymentProviders: ['Stripe Checkout', 'Manual Demo'],
-      customers: ['alex.shopper@example.com'],
-      orders: ['1001'],
+      paymentProviders: ['Stripe Checkout'],
       coupons: ['WELCOME10'],
-      loyaltyPrograms: ['Fresh Rewards'],
     },
     displayNames: {
+      storeSettings: ['Juniper Market'],
       departments: ['Produce', 'Dairy & Eggs', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy'],
       products: ['Organic Bananas', 'Whole Milk', 'Jasmine Rice', 'Sourdough Bread'],
@@ -130,19 +123,17 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       deliverySlots: ['AM Rush', 'After Work'],
       pickupSlots: ['Curbside 11AM', 'Curbside 4PM'],
       parkingSpots: ['A1', 'ADA-1'],
-      paymentProviders: ['Stripe Checkout', 'Manual Demo'],
-      customers: ['Alex Shopper'],
-      orders: ['Order #1001'],
+      paymentProviders: ['Stripe Checkout'],
       coupons: ['WELCOME10'],
-      loyaltyPrograms: ['Fresh Rewards'],
     },
   },
   custom: {
     name: 'Custom Setup',
     description:
-      'Start from the minimal grocery JSON and customize the exact seed data you want to create.',
+      'Start from the smaller launch JSON and customize real Store-owned baseline data before initialization.',
     icon: <SlidersHorizontal className="h-5 w-5" />,
     include: {
+      storeSettings: ['Juniper Market'],
       departments: ['produce', 'dairy', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com'],
       products: ['organic-bananas', 'whole-milk-gallon', 'jasmine-rice', 'sourdough-bread'],
@@ -150,13 +141,11 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       deliverySlots: ['AM Rush', 'After Work'],
       pickupSlots: ['Curbside 11AM', 'Curbside 4PM'],
       parkingSpots: ['A1', 'ADA-1'],
-      paymentProviders: ['Stripe Checkout', 'Manual Demo'],
-      customers: ['alex.shopper@example.com'],
-      orders: ['1001'],
+      paymentProviders: ['Stripe Checkout'],
       coupons: ['WELCOME10'],
-      loyaltyPrograms: ['Fresh Rewards'],
     },
     displayNames: {
+      storeSettings: ['Juniper Market'],
       departments: ['Produce', 'Dairy & Eggs', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy'],
       products: ['Organic Bananas', 'Whole Milk', 'Jasmine Rice', 'Sourdough Bread'],
@@ -164,26 +153,21 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       deliverySlots: ['AM Rush', 'After Work'],
       pickupSlots: ['Curbside 11AM', 'Curbside 4PM'],
       parkingSpots: ['A1', 'ADA-1'],
-      paymentProviders: ['Stripe Checkout', 'Manual Demo'],
-      customers: ['Alex Shopper'],
-      orders: ['Order #1001'],
+      paymentProviders: ['Stripe Checkout'],
       coupons: ['WELCOME10'],
-      loyaltyPrograms: ['Fresh Rewards'],
     },
   },
 };
 
 export const SECTION_DEFINITIONS: SectionDefinition[] = [
-  { id: 1, type: 'departments', label: 'Departments', jsonKey: 'departments' },
-  { id: 2, type: 'suppliers', label: 'Suppliers', jsonKey: 'suppliers' },
-  { id: 3, type: 'products', label: 'Products', jsonKey: 'products' },
-  { id: 4, type: 'inventoryLots', label: 'Inventory Lots', jsonKey: 'inventoryLots' },
-  { id: 5, type: 'deliverySlots', label: 'Delivery Slots', jsonKey: 'deliverySlots' },
-  { id: 6, type: 'pickupSlots', label: 'Pickup Slots', jsonKey: 'pickupSlots' },
-  { id: 7, type: 'parkingSpots', label: 'Curbside Parking', jsonKey: 'parkingSpots' },
-  { id: 8, type: 'paymentProviders', label: 'Payment Providers', jsonKey: 'paymentProviders' },
-  { id: 9, type: 'customers', label: 'Customers & Preferences', jsonKey: 'customers' },
-  { id: 10, type: 'orders', label: 'Sample Orders', jsonKey: 'orders' },
-  { id: 11, type: 'coupons', label: 'Coupons', jsonKey: 'coupons' },
-  { id: 12, type: 'loyaltyPrograms', label: 'Loyalty Programs', jsonKey: 'loyaltyPrograms' },
+  { id: 1, type: 'storeSettings', label: 'Business Profile', jsonKey: 'storeSettings' },
+  { id: 2, type: 'departments', label: 'Departments', jsonKey: 'departments' },
+  { id: 3, type: 'suppliers', label: 'Suppliers', jsonKey: 'suppliers' },
+  { id: 4, type: 'products', label: 'Products', jsonKey: 'products' },
+  { id: 5, type: 'inventoryLots', label: 'Inventory Lots', jsonKey: 'inventoryLots' },
+  { id: 6, type: 'deliverySlots', label: 'Delivery Slots', jsonKey: 'deliverySlots' },
+  { id: 7, type: 'pickupSlots', label: 'Pickup Slots', jsonKey: 'pickupSlots' },
+  { id: 8, type: 'parkingSpots', label: 'Curbside Parking', jsonKey: 'parkingSpots' },
+  { id: 9, type: 'paymentProviders', label: 'Payment Providers', jsonKey: 'paymentProviders' },
+  { id: 10, type: 'coupons', label: 'Coupons', jsonKey: 'coupons' },
 ];

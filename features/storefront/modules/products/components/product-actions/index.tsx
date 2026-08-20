@@ -2,11 +2,12 @@
 
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
+import { Bell } from 'lucide-react';
 import type { GroceryProduct, ShoppingList } from '@/features/storefront/types';
 import { addToCart } from '@/features/storefront/lib/data/cart';
+import { requestBackInStockAlert } from '@/features/storefront/lib/data/products';
 import { addItemToList, createShoppingList } from '@/features/storefront/lib/data/lists';
-import { createSubscription } from '@/features/storefront/lib/data/subscriptions';
-import { UrbanButton, UrbanPanel, UrbanSelect, UrbanTextInput } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { UrbanButton, UrbanSelect, UrbanTextInput } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 interface ProductActionsProps {
   product: GroceryProduct;
@@ -16,11 +17,11 @@ interface ProductActionsProps {
 
 export default function ProductActions({ product, lists: initialLists, isSignedIn }: ProductActionsProps) {
   const [quantity, setQuantity] = useState(1);
-  const [frequency, setFrequency] = useState<'weekly' | 'biweekly' | 'monthly'>('weekly');
   const [selectedListId, setSelectedListId] = useState(initialLists[0]?.id || '');
   const [newListName, setNewListName] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [alertRequested, setAlertRequested] = useState(Boolean(product.backInStockRequested));
   const [isPending, startTransition] = useTransition();
 
   const run = (fn: () => Promise<void>) => {
@@ -36,16 +37,22 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
   };
 
   const handleAddToCart = () => run(async () => {
-    await addToCart(product.id, quantity);
-    window.dispatchEvent(new CustomEvent('cartUpdated', { detail: { increment: quantity } }));
-    setMessage(`Added ${quantity} × ${product.name} to cart.`);
+    const cart = await addToCart(product.id, quantity);
+    if (!cart) throw new Error('Could not add product to cart.');
+    setMessage(`Added ${quantity} × ${product.name} to basket.`);
+  });
+
+  const handleRequestAlert = () => run(async () => {
+    const result = await requestBackInStockAlert(product.id);
+    setAlertRequested(result.requested);
+    setMessage(result.message);
   });
 
   const handleAddToList = () => run(async () => {
     if (!isSignedIn) throw new Error('Sign in to save products to a shopping list.');
     let listId = selectedListId;
     if (!listId) {
-      const created = await createShoppingList(newListName.trim() || 'Urban Express staples');
+      const created = await createShoppingList(newListName.trim() || 'Weekly staples');
       if (!created) throw new Error('Could not create a list.');
       listId = created.id;
       setSelectedListId(created.id);
@@ -55,42 +62,47 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
     setMessage(`Saved ${product.name} to ${updated.name}.`);
   });
 
-  const handleSubscribe = () => run(async () => {
-    if (!isSignedIn) throw new Error('Sign in to create a recurring grocery subscription.');
-    const subscription = await createSubscription({ productId: product.id, quantity, frequency });
-    if (!subscription) throw new Error('Could not create subscription.');
-    setMessage(`Subscription created for ${quantity} × ${product.name}.`);
-  });
-
   return (
     <div className="mt-6 space-y-4">
       {(message || error) && (
-        <div className={`border px-4 py-3 text-sm ${error ? 'border-[#ffb4ab] bg-[#331718] text-[#ffb4ab]' : 'border-[#b6c6ed] bg-[#182033] text-[#b6c6ed]'}`}>
+        <div className={`border px-4 py-3 text-sm ${error ? 'border-[var(--sf-danger-bg)] bg-[var(--sf-danger-bg)] text-[var(--sf-danger)]' : 'border-[var(--sf-info-bg)] bg-[var(--sf-info-bg)] text-[var(--sf-info)]'}`}>
           {error || message}
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-[180px_1fr]">
-        <div className="grid grid-cols-3 border border-[#5a4136] bg-[#282a2b]">
-          <button type="button" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="py-3 font-market-label text-2xl font-black text-[#ffb693] hover:bg-[#333535]" aria-label="Decrease quantity">-</button>
-          <span className="border-x border-[#5a4136] py-3 text-center font-market-label text-2xl font-black text-[#e2e2e2]">{quantity}</span>
-          <button type="button" onClick={() => setQuantity(quantity + 1)} className="py-3 font-market-label text-2xl font-black text-[#ffb693] hover:bg-[#333535]" aria-label="Increase quantity">+</button>
-        </div>
-        <UrbanButton type="button" onClick={handleAddToCart} disabled={!product.inStock || isPending} className="w-full">
-          {isPending ? 'Working…' : 'Add to basket'}
-        </UrbanButton>
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-2">
-        <UrbanPanel className="p-4">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="font-market-label text-xl font-black uppercase text-[#e2e2e2]">Save to list</h3>
-              <p className="mt-1 text-sm text-[#e2bfb0]">Keep the item in a repeat grocery run.</p>
-            </div>
-            {!isSignedIn ? <Link href="/dashboard/signin?from=/products" className="font-market-label text-xs font-black uppercase tracking-[0.14em] text-[#ffb693]">Sign in</Link> : null}
+      {product.inStock ? (
+        <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
+          <div className="grid grid-cols-3 border border-[var(--sf-rule-strong)]">
+            <button type="button" onClick={() => setQuantity(Math.max(1, quantity - 1))} className="py-2.5 text-xl font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)]" aria-label="Decrease quantity">−</button>
+            <span className="border-x border-[var(--sf-rule)] py-2.5 text-center text-lg font-medium">{quantity}</span>
+            <button type="button" onClick={() => setQuantity(Math.min(product.stockQuantity, quantity + 1))} disabled={quantity >= product.stockQuantity} className="py-2.5 text-xl font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)] disabled:cursor-not-allowed disabled:opacity-50" aria-label="Increase quantity">+</button>
           </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
+          <UrbanButton type="button" onClick={handleAddToCart} disabled={isPending} className="w-full">
+            {isPending ? 'Working…' : 'Add to basket'}
+          </UrbanButton>
+        </div>
+      ) : (
+        <div className="border border-[var(--sf-rule-strong)] bg-[var(--sf-paper-2)] p-4">
+          <p className="text-sm leading-6 text-[var(--sf-ink-muted)]">No unexpired inventory is available. This item cannot be added to your basket.</p>
+          {isSignedIn ? (
+            <UrbanButton type="button" variant="ghost" onClick={handleRequestAlert} disabled={isPending || alertRequested} className="mt-3 w-full">
+              <Bell className="h-4 w-4" />
+              {alertRequested ? 'Back-in-stock alert requested' : isPending ? 'Requesting…' : 'Request a back-in-stock alert'}
+            </UrbanButton>
+          ) : (
+            <Link href={`/dashboard/signin?from=${encodeURIComponent(`/products/${product.handle}`)}`} className="mt-3 inline-flex w-full items-center justify-center gap-2 border border-[var(--sf-rule-strong)] px-4 py-2.5 text-sm font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper)]">
+              <Bell className="h-4 w-4" /> Sign in for a back-in-stock alert
+            </Link>
+          )}
+        </div>
+      )}
+
+      <div className="border-t border-[var(--sf-rule)] pt-5">
+        <div>
+          <h3 className="font-[family-name:var(--sf-font-display)] text-lg font-semibold text-[var(--sf-ink)]">Save to a list</h3>
+          <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">Keep this in a reusable grocery run.</p>
+          {!isSignedIn ? <Link href="/dashboard/signin?from=/products" className="mt-2 inline-block text-sm font-medium text-[var(--sf-accent)]">Sign in</Link> : null}
+          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
             {initialLists.length > 0 ? (
               <UrbanSelect value={selectedListId} onChange={(event) => setSelectedListId(event.target.value)}>
                 {initialLists.map((list) => <option key={list.id} value={list.id}>{list.name}</option>)}
@@ -100,21 +112,8 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
             )}
             <UrbanButton type="button" variant="ghost" onClick={handleAddToList} disabled={isPending || !isSignedIn}>Save</UrbanButton>
           </div>
-        </UrbanPanel>
+        </div>
 
-        <UrbanPanel className="p-4">
-          <h3 className="font-market-label text-xl font-black uppercase text-[#e2e2e2]">Auto replenish</h3>
-          <p className="mt-1 text-sm text-[#e2bfb0]">Turn staples into scheduled inventory.</p>
-          <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_auto]">
-            <UrbanSelect value={frequency} onChange={(event) => setFrequency(event.target.value as 'weekly' | 'biweekly' | 'monthly')}>
-              <option value="weekly">Weekly</option>
-              <option value="biweekly">Every 2 weeks</option>
-              <option value="monthly">Monthly</option>
-            </UrbanSelect>
-            <UrbanButton type="button" variant="ghost" onClick={handleSubscribe} disabled={isPending || !isSignedIn}>Start</UrbanButton>
-          </div>
-          {!isSignedIn ? <p className="mt-2 text-xs text-[#b6c6ed]">Sign in to create recurring grocery deliveries.</p> : null}
-        </UrbanPanel>
       </div>
     </div>
   );

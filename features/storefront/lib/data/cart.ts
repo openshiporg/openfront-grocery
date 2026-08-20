@@ -1,15 +1,57 @@
 import type { GroceryCart } from '../../types';
-import { storefrontGraphQL } from './graphql';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
+
+const GUEST_CART_STORAGE_KEY = 'grocery_cart_session';
+const GUEST_CART_COOKIE = 'grocery_cart_session';
+const GUEST_CART_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
+
+function getClientCookie(name: string) {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie
+    .split('; ')
+    .find((entry) => entry.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.split('=').slice(1).join('=')) : null;
+}
+
+function setClientCookie(name: string, value: string) {
+  if (typeof document === 'undefined') return;
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${GUEST_CART_COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
+}
+
+function clearClientCookie(name: string) {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=; path=/; max-age=0; SameSite=Lax`;
+}
+
+async function getServerSessionId() {
+  if (typeof window !== 'undefined') return null;
+
+  try {
+    const { cookies } = await import('next/headers');
+    const cookieStore = await cookies();
+    return cookieStore.get(GUEST_CART_COOKIE)?.value || null;
+  } catch {
+    return null;
+  }
+}
+
+function guestSessionEntropy() {
+  if (!globalThis.crypto?.randomUUID) throw new Error('Secure browser randomness is required for guest carts');
+  return globalThis.crypto.randomUUID();
+}
 
 // Get or generate a session ID for guest carts
 export function getSessionId(): string {
   if (typeof window === 'undefined') return '';
 
-  let sessionId = localStorage.getItem('grocery_cart_session');
+  let sessionId = localStorage.getItem(GUEST_CART_STORAGE_KEY) || getClientCookie(GUEST_CART_COOKIE);
   if (!sessionId) {
-    sessionId = `guest_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-    localStorage.setItem('grocery_cart_session', sessionId);
+    sessionId = `guest_${guestSessionEntropy()}`;
   }
+
+  localStorage.setItem(GUEST_CART_STORAGE_KEY, sessionId);
+  setClientCookie(GUEST_CART_COOKIE, sessionId);
   return sessionId;
 }
 
@@ -22,10 +64,10 @@ function dispatchCartUpdate(cart: GroceryCart | null) {
 
 export async function retrieveCart(): Promise<GroceryCart | null> {
   try {
-    const sessionId = getSessionId();
+    const sessionId = typeof window === 'undefined' ? await getServerSessionId() : getSessionId();
     if (!sessionId) return null;
 
-    const { data } = await storefrontGraphQL<{ groceryCart: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ groceryCart: GroceryCart | null }>(`
       query GetCart($sessionId: String) {
         groceryCart(sessionId: $sessionId) {
           id
@@ -54,6 +96,7 @@ export async function retrieveCart(): Promise<GroceryCart | null> {
         }
       }
     `, { sessionId }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
     return data?.groceryCart || null;
   } catch (error) {
     console.error('Error retrieving cart:', error);
@@ -67,9 +110,9 @@ export async function addToCart(
 ): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
-    if (!sessionId) return null;
+    if (!sessionId) throw new Error('No guest cart session available');
 
-    const { data } = await storefrontGraphQL<{ addItemToGroceryCart: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ addItemToGroceryCart: GroceryCart | null }>(`
       mutation AddToCart($productId: ID!, $quantity: Int!, $sessionId: String) {
         addItemToGroceryCart(productId: $productId, quantity: $quantity, sessionId: $sessionId) {
           id
@@ -91,6 +134,7 @@ export async function addToCart(
         }
       }
     `, { productId, quantity, sessionId }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
     const cart = data?.addItemToGroceryCart || null;
     dispatchCartUpdate(cart);
     return cart;
@@ -108,7 +152,7 @@ export async function updateCartItem(
     const sessionId = getSessionId();
     if (!sessionId) return null;
 
-    const { data } = await storefrontGraphQL<{ updateGroceryCartItem: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ updateGroceryCartItem: GroceryCart | null }>(`
       mutation UpdateCartItem($itemId: ID!, $quantity: Int!, $sessionId: String) {
         updateGroceryCartItem(itemId: $itemId, quantity: $quantity, sessionId: $sessionId) {
           id
@@ -116,10 +160,17 @@ export async function updateCartItem(
             id
             quantity
             subtotal
+            substitutionPreference
             product {
               id
               name
+              handle
               price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
           subtotal
@@ -130,6 +181,7 @@ export async function updateCartItem(
         }
       }
     `, { itemId, quantity, sessionId }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
     const cart = data?.updateGroceryCartItem || null;
     dispatchCartUpdate(cart);
     return cart;
@@ -146,7 +198,7 @@ export async function removeFromCart(
     const sessionId = getSessionId();
     if (!sessionId) return null;
 
-    const { data } = await storefrontGraphQL<{ removeItemFromGroceryCart: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ removeItemFromGroceryCart: GroceryCart | null }>(`
       mutation RemoveFromCart($itemId: ID!, $sessionId: String) {
         removeItemFromGroceryCart(itemId: $itemId, sessionId: $sessionId) {
           id
@@ -154,10 +206,17 @@ export async function removeFromCart(
             id
             quantity
             subtotal
+            substitutionPreference
             product {
               id
               name
+              handle
               price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
           subtotal
@@ -168,6 +227,7 @@ export async function removeFromCart(
         }
       }
     `, { itemId, sessionId }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
     const cart = data?.removeItemFromGroceryCart || null;
     dispatchCartUpdate(cart);
     return cart;
@@ -178,12 +238,12 @@ export async function removeFromCart(
 }
 
 // Clear entire cart
-export async function clearCart(): Promise<GroceryCart | null> {
+export async function clearCart(options: { preserveSession?: boolean } = {}): Promise<GroceryCart | null> {
   try {
     const sessionId = getSessionId();
     if (!sessionId) return null;
 
-    const { data } = await storefrontGraphQL<{ clearGroceryCart: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ clearGroceryCart: GroceryCart | null }>(`
       mutation ClearCart($sessionId: String) {
         clearGroceryCart(sessionId: $sessionId) {
           id
@@ -205,7 +265,16 @@ export async function clearCart(): Promise<GroceryCart | null> {
         }
       }
     `, { sessionId }, { cache: 'no-store' });
-    return data?.clearGroceryCart || null;
+    throwGraphQLErrors(errors);
+    const cart = data?.clearGroceryCart || null;
+    if (cart?.itemCount === 0 && !options.preserveSession) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(GUEST_CART_STORAGE_KEY);
+      }
+      clearClientCookie(GUEST_CART_COOKIE);
+    }
+    dispatchCartUpdate(cart);
+    return cart;
   } catch (error) {
     console.error('Error clearing cart:', error);
     return null;
@@ -215,12 +284,12 @@ export async function clearCart(): Promise<GroceryCart | null> {
 // Merge guest cart into user cart after login
 export async function mergeGuestCart(): Promise<GroceryCart | null> {
   try {
-    const guestSessionId = localStorage.getItem('grocery_cart_session');
+    const guestSessionId = localStorage.getItem(GUEST_CART_STORAGE_KEY);
     if (!guestSessionId) {
       return await retrieveCart();
     }
 
-    const { data } = await storefrontGraphQL<{ mergeGuestGroceryCart: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ mergeGuestGroceryCart: GroceryCart | null }>(`
       mutation MergeGuestCart($guestSessionId: String!) {
         mergeGuestGroceryCart(guestSessionId: $guestSessionId) {
           id
@@ -242,10 +311,14 @@ export async function mergeGuestCart(): Promise<GroceryCart | null> {
         }
       }
     `, { guestSessionId }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
 
     // Clear the guest session after merge
-    localStorage.removeItem('grocery_cart_session');
-    return data?.mergeGuestGroceryCart || null;
+    localStorage.removeItem(GUEST_CART_STORAGE_KEY);
+    clearClientCookie(GUEST_CART_COOKIE);
+    const cart = data?.mergeGuestGroceryCart || null;
+    dispatchCartUpdate(cart);
+    return cart;
   } catch (error) {
     console.error('Error merging guest cart:', error);
     return null;
@@ -261,7 +334,7 @@ export async function updateSubstitutionPreference(
     const sessionId = getSessionId();
     if (!sessionId) return null;
 
-    const { data } = await storefrontGraphQL<{ updateGrocerySubstitutionPreference: GroceryCart | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ updateGrocerySubstitutionPreference: GroceryCart | null }>(`
       mutation UpdateSubstitutionPreference($itemId: ID!, $preference: String!, $sessionId: String) {
         updateGrocerySubstitutionPreference(itemId: $itemId, preference: $preference, sessionId: $sessionId) {
           id
@@ -273,7 +346,13 @@ export async function updateSubstitutionPreference(
             product {
               id
               name
+              handle
               price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
           subtotal
@@ -284,7 +363,10 @@ export async function updateSubstitutionPreference(
         }
       }
     `, { itemId, preference, sessionId }, { cache: 'no-store' });
-    return data?.updateGrocerySubstitutionPreference || null;
+    throwGraphQLErrors(errors);
+    const cart = data?.updateGrocerySubstitutionPreference || null;
+    dispatchCartUpdate(cart);
+    return cart;
   } catch (error) {
     console.error('Error updating substitution preference:', error);
     return null;

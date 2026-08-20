@@ -90,42 +90,10 @@ export async function signIn(prevState: { message: string | null, formData: { em
 }
 
 export async function signUp(prevState: { message: string | null, formData: { email: string, password: string } }, formData: FormData) {
-  try {
-    const email = formData.get('email') as string;
-    const password = formData.get('password') as string;
-    const name = email.split('@')[0]; // Simple name derivation
-
-    // Create user
-    const createQuery = `
-      mutation($email: String!, $name: String!, $password: String!) {
-        createUser(data: { email: $email, name: $name, password: $password }) {
-          id
-          email
-          name
-        }
-      }
-    `;
-
-    const response = await keystoneClient(createQuery, { email, name, password });
-
-    if (!response.success) {
-      return {
-        message: `Failed to create user: ${response.error}`,
-        formData: { email, password }
-      };
-    }
-
-    // Sign them in after creation
-    return signIn({ message: null, formData: { email, password } }, formData);
-  } catch (error) {
-    return {
-      message: error instanceof Error ? error.message : 'An error occurred',
-      formData: {
-        email: formData.get('email') as string,
-        password: formData.get('password') as string
-      }
-    };
-  }
+  return {
+    message: 'Public account sign-up is not available. Continue as a guest or ask the retailer to provision an account.',
+    formData: { email: String(formData.get('email') || ''), password: '' },
+  };
 }
 
 export async function signOut() {
@@ -297,6 +265,7 @@ export async function getAuthenticatedUser() {
           email
           name
           onboardingStatus
+          store { id code name }
           role {
             canAccessDashboard
             canManageOnboarding

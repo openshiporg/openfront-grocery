@@ -2,58 +2,11 @@ import { convertToModelMessages, streamText, stepCountIs } from 'ai';
 import { createMCPClient } from '@ai-sdk/mcp';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { getBaseUrl } from '@/features/dashboard/lib/getBaseUrl';
-import { StreamableHTTPClientTransport, StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-
-// Cookie-aware transport that properly handles cookie forwarding
-class CookieAwareTransport extends StreamableHTTPClientTransport {
-  private cookies: string[] = [];
-  private originalFetch: typeof fetch;
-
-  constructor(url: URL, opts?: StreamableHTTPClientTransportOptions, cookies?: string) {
-    super(url, opts);
-
-    this.originalFetch = global.fetch;
-
-    if (cookies) {
-      this.cookies = [cookies];
-    }
-
-    global.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      init = init || {};
-      const headers = new Headers(init.headers);
-
-      if (this.cookies.length > 0) {
-        headers.set('Cookie', this.cookies.join('; '));
-      }
-
-      init.headers = headers;
-
-      const response = await this.originalFetch(input, init);
-
-      if (typeof response.headers.getSetCookie === 'function') {
-        const setCookies = response.headers.getSetCookie();
-        if (setCookies.length > 0) {
-          this.cookies = [...this.cookies, ...setCookies];
-        }
-      } else {
-        const setCookieHeader = response.headers.get('set-cookie');
-        if (setCookieHeader) {
-          this.cookies = [...this.cookies, setCookieHeader];
-        }
-      }
-
-      return response;
-    };
-  }
-
-  async close(): Promise<void> {
-    global.fetch = this.originalFetch;
-    this.cookies = [];
-    await super.close();
-  }
-}
+import { createExactOriginFetch } from '@/features/ai/exactOriginFetch';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 export async function POST(req: Request) {
+  if (process.env.MCP_ENABLED !== 'true') return new Response('Not found', { status: 404 });
   let mcpClient: any = null;
   let dataHasChanged = false;
 
@@ -93,12 +46,7 @@ export async function POST(req: Request) {
     const model = body.model;
     const maxTokens = body.maxTokens ? parseInt(body.maxTokens) : undefined;
 
-    console.log('Starting completion request:', {
-      model,
-      maxTokens,
-      hasApiKey: !!apiKey,
-      apiKeyPrefix: apiKey?.substring(0, 10) + '...'
-    });
+    console.log('Starting completion request:', { model, maxTokens, hasApiKey: true });
 
     try {
       const testResponse = await fetch('https://openrouter.ai/api/v1/models', {
@@ -110,8 +58,6 @@ export async function POST(req: Request) {
 
       if (!testResponse.ok) {
         const errorText = await testResponse.text();
-        console.log('API key validation failed:', errorText);
-
         let errorMessage = 'Invalid API key';
         try {
           const errorJson = JSON.parse(errorText);
@@ -143,7 +89,10 @@ export async function POST(req: Request) {
     const mcpEndpoint = `${baseUrl}/api/mcp-transport/http`;
     const cookie = req.headers.get('cookie') || '';
 
-    const transport = new CookieAwareTransport(new URL(mcpEndpoint), {}, cookie);
+    const endpoint = new URL(mcpEndpoint);
+    const transport = new StreamableHTTPClientTransport(endpoint, {
+      fetch: createExactOriginFetch({ endpoint, cookie }),
+    });
     mcpClient = await createMCPClient({ transport });
     const aiTools = await mcpClient.tools();
 

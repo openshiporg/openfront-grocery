@@ -1,6 +1,7 @@
 import { STORE_TEMPLATES, type SeedSectionKey, type TemplateType } from '../config/templates';
 
 const SECTION_KEYS: SeedSectionKey[] = [
+  'storeSettings',
   'departments',
   'suppliers',
   'products',
@@ -9,16 +10,15 @@ const SECTION_KEYS: SeedSectionKey[] = [
   'pickupSlots',
   'parkingSpots',
   'paymentProviders',
-  'customers',
-  'orders',
   'coupons',
-  'loyaltyPrograms',
 ];
 
 export function getItemsFromJsonData(jsonData: any, sectionType: SeedSectionKey): string[] {
   if (!jsonData) return [];
 
   switch (sectionType) {
+    case 'storeSettings':
+      return jsonData.storeSettings ? [jsonData.storeSettings.name || 'Business Profile'] : [];
     case 'departments':
       return (jsonData.departments || []).map((item: any) => item.name || item.handle || 'Department');
     case 'suppliers':
@@ -35,14 +35,8 @@ export function getItemsFromJsonData(jsonData: any, sectionType: SeedSectionKey)
       return (jsonData.parkingSpots || []).map((item: any) => item.spotNumber || 'Parking Spot');
     case 'paymentProviders':
       return (jsonData.paymentProviders || []).map((item: any) => item.name || item.code || 'Payment Provider');
-    case 'customers':
-      return (jsonData.customers || []).map((item: any) => item.name || item.email || 'Customer');
-    case 'orders':
-      return (jsonData.orders || []).map((item: any) => `Order #${item.displayId}`);
     case 'coupons':
       return (jsonData.coupons || []).map((item: any) => item.code || 'Coupon');
-    case 'loyaltyPrograms':
-      return (jsonData.loyaltyPrograms || []).map((item: any) => item.name || 'Loyalty Program');
     default:
       return [];
   }
@@ -53,6 +47,11 @@ export function getSeedForTemplate(template: TemplateType, seedData: any) {
   const selected = STORE_TEMPLATES[templateToUse].include;
 
   const filtered = SECTION_KEYS.reduce((acc, key) => {
+    if (key === 'storeSettings') {
+      acc.storeSettings = seedData.storeSettings;
+      return acc;
+    }
+
     const items = seedData[key] || [];
     const allow = new Set(selected[key]);
     acc[key] = items.filter((item: any) => {
@@ -72,14 +71,8 @@ export function getSeedForTemplate(template: TemplateType, seedData: any) {
           return allow.has(item.spotNumber);
         case 'paymentProviders':
           return allow.has(item.name);
-        case 'customers':
-          return allow.has(item.email);
-        case 'orders':
-          return allow.has(String(item.displayId));
         case 'coupons':
           return allow.has(item.code);
-        case 'loyaltyPrograms':
-          return allow.has(item.name);
         default:
           return false;
       }

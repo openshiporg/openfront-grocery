@@ -6,22 +6,39 @@ import { statelessSessions } from "@keystone-6/core/session";
 import { extendGraphqlSchema } from "./mutations";
 import { sendPasswordResetEmail } from "./lib/mail";
 import { permissions } from "./access";
+import { assertProductionPaymentConfig, getCanonicalSiteUrl, getDatabaseUrl, getPublicStoreId, getSessionMaxAge, getSessionSecret, getStorageConfig, isProduction } from './lib/runtimeConfig';
+import { boundedGraphqlDepthRule, rejectIntrospectionInProduction } from './lib/graphqlSecurity';
+import { graphqlRateLimitPlugin } from './lib/graphqlRateLimit';
+import { resolveApplicationOrigin } from '../../lib/applicationOrigin';
 
-const databaseURL = process.env.DATABASE_URL || "file:./keystone.db";
+const databaseURL = getDatabaseUrl();
+assertProductionPaymentConfig();
+const publicStoreId = getPublicStoreId();
+const production = isProduction();
+const canonicalSiteUrl = production ? getCanonicalSiteUrl() : null;
+
+function passwordResetOrigin(context: { req?: { headers?: Record<string, string | string[] | undefined> } }) {
+  const requestHeaders = context.req?.headers;
+  return resolveApplicationOrigin({
+    nodeEnv: production ? 'production' : 'development',
+    canonicalSiteUrl: canonicalSiteUrl || undefined,
+    headers: requestHeaders ? {
+      get(name: string) {
+        const value = requestHeaders[name.toLowerCase()];
+        return Array.isArray(value) ? value.join(',') : value || null;
+      },
+    } : null,
+  });
+}
 
 const sessionConfig = {
-  maxAge: 60 * 60 * 24 * 360, // How long they stay signed in?
-  secret:
-    process.env.SESSION_SECRET || "this secret should only be used in testing",
+  maxAge: getSessionMaxAge(),
+  secret: getSessionSecret(),
+  secure: isProduction(),
+  sameSite: 'lax' as const,
 };
 
-const {
-  S3_BUCKET_NAME: bucketName = "keystone-test",
-  S3_REGION: region = "ap-southeast-2",
-  S3_ACCESS_KEY_ID: accessKeyId = "keystone",
-  S3_SECRET_ACCESS_KEY: secretAccessKey = "keystone",
-  S3_ENDPOINT: endpoint = "https://sfo3.digitaloceanspaces.com",
-} = process.env;
+const { bucketName, region, accessKeyId, secretAccessKey, endpoint } = getStorageConfig();
 
 const { withAuth } = createAuth({
   listKey: "User",
@@ -30,8 +47,10 @@ const { withAuth } = createAuth({
   initFirstItem: {
     fields: ["name", "email", "password"],
     itemData: {
+      store: { connect: { id: publicStoreId } },
       role: {
         create: {
+          store: { connect: { id: publicStoreId } },
           name: "Admin",
           canManageProducts: true,
           canManageOrders: true,
@@ -48,13 +67,13 @@ const { withAuth } = createAuth({
   },
   passwordResetLink: {
     async sendToken(args) {
-      // send the email
-      await sendPasswordResetEmail(args.token, args.identity);
+      await sendPasswordResetEmail(args.token, args.identity, passwordResetOrigin(args.context));
     },
   },
   sessionData: `
     name
     email
+    store { id code name }
     role {
       id
       name
@@ -92,11 +111,21 @@ export default withAuth(
       },
     },
     ui: {
-      isAccessAllowed: ({ session }) => permissions.canAccessDashboard({ session }),
+      // UI visibility is not authorization; List/custom operation access below
+      // resolves current capabilities from the database.
+      isAccessAllowed: ({ session }) => session?.data.role?.canAccessDashboard ?? false,
     },
     session: statelessSessions(sessionConfig),
     graphql: {
       extendGraphqlSchema,
+      playground: !production,
+      debug: !production,
+      bodyParser: { limit: '1mb' },
+      cors: { origin: canonicalSiteUrl || true, credentials: true },
+      apolloConfig: {
+        validationRules: [boundedGraphqlDepthRule, rejectIntrospectionInProduction],
+        plugins: [graphqlRateLimitPlugin()],
+      },
     },
   })
 );

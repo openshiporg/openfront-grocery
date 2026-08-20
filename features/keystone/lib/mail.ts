@@ -1,16 +1,19 @@
-'use server' 
+'use server'
 
 import { createTransport, getTestMessageUrl } from "nodemailer";
 
 // Utility function to get base URL for emails
 function getBaseUrlForEmails(): string {
-  if (process.env.SMTP_STORE_LINK) {
-    return process.env.SMTP_STORE_LINK;
+  const value = process.env.NEXT_PUBLIC_SITE_URL;
+  if (value) {
+    const parsed = new URL(value);
+    if (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') {
+      throw new Error('Password reset origin must use HTTPS in production');
+    }
+    return value.replace(/\/$/, '');
   }
-  
-  // Fallback warning - this should be set in production
-  console.warn('SMTP_STORE_LINK not set. Please add SMTP_STORE_LINK to your environment variables for email links to work properly.');
-  return '';
+  if (process.env.NODE_ENV === 'production') throw new Error('NEXT_PUBLIC_SITE_URL is required in production');
+  return 'http://localhost:3000';
 }
 
 const transport = createTransport({
@@ -59,9 +62,11 @@ function passwordResetEmail({ url }: { url: string }): string {
 }
 
 export async function sendPasswordResetEmail(resetToken: string, to: string, baseUrl?: string): Promise<void> {
-  // Use provided baseUrl or fall back to utility function
+  if (process.env.NODE_ENV === 'production' && (!process.env.SMTP_HOST || !process.env.SMTP_FROM)) {
+    throw new Error('SMTP_HOST and SMTP_FROM are required in production');
+  }
   const frontendUrl = baseUrl || getBaseUrlForEmails();
-  
+
   // email the user a token
   const info = await transport.sendMail({
     to,

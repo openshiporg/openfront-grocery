@@ -5,40 +5,44 @@ import {
   select,
   timestamp,
   decimal,
+  integer,
   json,
 } from "@keystone-6/core/fields";
 
 import { isSignedIn, permissions } from "../access";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const Payment = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: permissions.canManageOrders,
+      // Payment rows and status transitions are domain-operation owned.
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
     filter: {
-      query: ({ session }) => {
-        if (permissions.canManageOrders({ session })) {
-          return true;
-        }
-        if (session?.itemId) {
-          return { order: { user: { id: { equals: session.itemId } } } };
-        }
+      query: async ({ session, context }) => {
+        const store = storeScopedFilter({ session });
+        if (store === false) return false;
+        if (await permissions.canManageOrders({ session, context })) return store;
+        if (session?.itemId) return { AND: [store, { order: { user: { id: { equals: session.itemId } } } }] };
         return false;
       },
-      update: ({ session }) => {
-        if (permissions.canManageOrders({ session })) {
-          return true;
+      update: storeScopedFilter,
+      delete: () => false,
+    },
+  },
+  hooks: {
+    validate: {
+      delete: async ({ addValidationError }) => addValidationError('Payment evidence cannot be deleted'),
+      update: async ({ resolvedData, addValidationError }) => {
+        if (resolvedData.amount !== undefined || resolvedData.order !== undefined || resolvedData.paymentProvider !== undefined || resolvedData.providerPaymentId !== undefined) {
+          addValidationError('Payment amount, ownership, provider, and provider identity are immutable');
         }
-        if (session?.itemId) {
-          return { order: { user: { id: { equals: session.itemId } } } };
-        }
-        return false;
       },
-      delete: ({ session }) => permissions.canManageOrders({ session }),
     },
   },
   ui: {
@@ -51,9 +55,13 @@ export const Payment = list({
       precision: 10,
       scale: 2,
       validation: { isRequired: true },
-      ui: {
-        description: "Payment amount in dollars",
-      },
+      ui: { description: "Legacy display amount; amountCents is authoritative" },
+    }),
+    amountCents: integer({
+      validation: { isRequired: true, min: 0 },
+      defaultValue: 0,
+      access: { create: () => false, update: () => false },
+      label: 'Payment amount (minor units)',
     }),
 
     status: select({
@@ -129,9 +137,13 @@ export const Payment = list({
       precision: 10,
       scale: 2,
       defaultValue: "0.00",
-      ui: {
-        description: "Delivery tip amount included in payment",
-      },
+      ui: { description: "Legacy display tip; deliveryTipCents is authoritative" },
+    }),
+    deliveryTipCents: integer({
+      validation: { isRequired: true, min: 0 },
+      defaultValue: 0,
+      access: { create: () => false, update: () => false },
+      label: 'Delivery tip (minor units)',
     }),
 
     // Timestamps
@@ -156,8 +168,16 @@ export const Payment = list({
     }),
 
     // Relationships
+    store: relationship({
+      ref: 'Store.payments',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { update: () => false },
+    }),
     order: relationship({
-      ref: "Order",
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      ref: "Order.payments",
       ui: {
         displayMode: "select",
       },
@@ -168,6 +188,20 @@ export const Payment = list({
       ui: {
         displayMode: 'select',
       },
+    }),
+
+    refunds: relationship({
+      ref: 'PaymentRefund.payment',
+      many: true,
+      access: { update: () => false },
+      ui: { itemView: { fieldMode: 'read' } },
+    }),
+
+    webhookEvents: relationship({
+      ref: 'PaymentWebhookEvent.payment',
+      many: true,
+      access: { update: () => false },
+      ui: { itemView: { fieldMode: 'read' } },
     }),
 
     processedBy: relationship({

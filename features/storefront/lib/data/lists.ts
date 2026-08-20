@@ -107,23 +107,8 @@ export async function getShoppingListById(id: string): Promise<ShoppingList | nu
 
 export async function createShoppingList(name: string): Promise<ShoppingList | null> {
   try {
-    const authData = await requestGraphQL<{ authenticatedItem?: { id: string } | null }>(`
-      query GetAuthenticatedListOwner {
-        authenticatedItem {
-          ... on User {
-            id
-          }
-        }
-      }
-    `);
-
-    const userId = authData?.authenticatedItem?.id;
-    if (!userId) {
-      throw new Error('You must be signed in to create a shopping list.');
-    }
-
     const data = await requestGraphQL<{
-      createShoppingList: {
+      createCustomerShoppingList: {
         id: string;
         name: string;
         isDefault?: boolean;
@@ -131,8 +116,8 @@ export async function createShoppingList(name: string): Promise<ShoppingList | n
         items: any[];
       } | null;
     }>(`
-      mutation CreateShoppingList($data: ShoppingListCreateInput!) {
-        createShoppingList(data: $data) {
+      mutation CreateCustomerShoppingList($name: String!) {
+        createCustomerShoppingList(name: $name) {
           id
           name
           isDefault
@@ -148,14 +133,11 @@ export async function createShoppingList(name: string): Promise<ShoppingList | n
           }
         }
       }
-    `, {
-      data: {
-        name,
-        user: { connect: { id: userId } },
-      },
-    });
+    `, { name });
 
-    return data?.createShoppingList ? mapList(data.createShoppingList) : null;
+    return data?.createCustomerShoppingList
+      ? mapList(data.createCustomerShoppingList)
+      : null;
   } catch (error) {
     console.error('Error creating shopping list:', error);
     return null;
@@ -354,15 +336,18 @@ export async function addShoppingListToCart(listId: string): Promise<{
 
 export async function deleteShoppingList(id: string): Promise<boolean> {
   try {
-    const data = await requestGraphQL<{ deleteShoppingList: { id: string } | null }>(`
-      mutation DeleteShoppingList($id: ID!) {
-        deleteShoppingList(where: { id: $id }) {
-          id
+    const data = await requestGraphQL<{
+      deleteCustomerShoppingList: { success: boolean; listId: string } | null;
+    }>(`
+      mutation DeleteCustomerShoppingList($listId: ID!) {
+        deleteCustomerShoppingList(listId: $listId) {
+          success
+          listId
         }
       }
-    `, { id });
+    `, { listId: id });
 
-    return Boolean(data?.deleteShoppingList?.id);
+    return Boolean(data?.deleteCustomerShoppingList?.success);
   } catch (error) {
     console.error('Error deleting shopping list:', error);
     return false;

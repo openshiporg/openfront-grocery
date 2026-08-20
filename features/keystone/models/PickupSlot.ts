@@ -4,18 +4,33 @@ import {
   checkbox,
   timestamp,
   text,
+  relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const PickupSlot = list({
   access: {
     operation: {
-      query: () => true,
-      create: permissions.canManageOrders,
-      update: permissions.canManageOrders,
-      delete: permissions.canManageOrders,
+      query: isSignedIn,
+      create: permissions.canManageDelivery,
+      update: permissions.canManageDelivery,
+      delete: permissions.canManageDelivery,
     },
+    filter: {
+      query: storeScopedFilter,
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
+    },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) return resolvedData;
+      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+    },
+    validate: { delete: async ({ item, addValidationError }) => { if (Number(item.currentOrders || 0) > 0) addValidationError('Booked pickup slots cannot be deleted'); } },
   },
   ui: {
     listView: {
@@ -23,6 +38,13 @@ export const PickupSlot = list({
     },
   },
   fields: {
+    store: relationship({
+      ref: 'Store.pickupSlots',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageDelivery, update: () => false },
+    }),
+    orders: relationship({ ref: 'Order.pickupSlot', many: true, access: { update: () => false } }),
     date: timestamp({
       validation: { isRequired: true },
       label: "Date",
@@ -45,6 +67,7 @@ export const PickupSlot = list({
       },
     }),
     maxOrders: integer({
+      access: { update: () => false },
       validation: { isRequired: true },
       defaultValue: 10,
       label: "Max Orders",
@@ -53,17 +76,25 @@ export const PickupSlot = list({
       },
     }),
     currentOrders: integer({
+      access: { create: () => false, update: () => false },
       defaultValue: 0,
       label: "Current Orders",
       ui: {
         description: "Current number of orders scheduled for this slot",
       },
     }),
-    isAvailable: checkbox({
+    isActive: checkbox({
+      access: { update: () => false },
       defaultValue: true,
-      label: "Is Available",
+      label: 'Operationally active',
+      ui: { description: 'Operator-owned slot state; capacity changes never reopen a closed slot' },
+    }),
+    isAvailable: checkbox({
+      access: { update: () => false },
+      defaultValue: true,
+      label: "Has capacity",
       ui: {
-        description: "Whether this slot is available for new orders",
+        description: "Derived from operational state and remaining capacity",
       },
     }),
     ...trackingFields,

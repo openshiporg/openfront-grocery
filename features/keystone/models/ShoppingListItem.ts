@@ -8,14 +8,15 @@ import {
 } from "@keystone-6/core/fields";
 import { isSignedIn } from "../access";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 
 export const ShoppingListItem = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
     filter: {
       query: ({ session }) => {
@@ -50,6 +51,9 @@ export const ShoppingListItem = list({
   fields: {
     // Shopping list this item belongs to
     list: relationship({
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: () => false, update: () => false },
       ref: "ShoppingList.items",
       label: "Shopping List",
       ui: {
@@ -59,10 +63,17 @@ export const ShoppingListItem = list({
     // Product name or ID
     product: text({
       validation: { isRequired: true },
-      label: "Product",
+      label: "Product Snapshot",
       ui: {
-        description: "Product name or ID to add to the list",
+        description: "Legacy product name snapshot",
       },
+    }),
+    productRef: relationship({
+      ref: 'Product.shoppingListItems',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { update: () => false },
+      label: 'Product',
     }),
     // Quantity needed
     quantity: integer({

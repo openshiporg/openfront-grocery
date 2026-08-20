@@ -63,8 +63,11 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
-  const [selectedDriverId, setSelectedDriverId] = useState('');
+  const [selectedDriverId, setSelectedDriverId] = useState(drivers[0]?.id || '');
   const [routeGroupKey, setRouteGroupKey] = useState('');
+  const [search, setSearch] = useState('');
+  const [slotView, setSlotView] = useState('all');
+  const [sort, setSort] = useState('date');
   const [isPending, startTransition] = useTransition();
 
   const runAction = (fn: () => Promise<void>) => {
@@ -79,9 +82,15 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
     });
   };
 
+  const query = search.trim().toLowerCase();
+  const filteredSlots = useMemo(() => [...slots]
+    .filter((slot) => !query || `${slot.date} ${slot.startTime} ${slot.endTime}`.toLowerCase().includes(query))
+    .filter((slot) => slotView === 'all' || (slotView === 'open' ? slot.isActive : slotView === 'closed' ? !slot.isActive : slot.capacity > 0 && slot.currentBookings / slot.capacity >= 0.8))
+    .sort((a, b) => sort === 'pressure' ? (b.currentBookings / Math.max(1, b.capacity)) - (a.currentBookings / Math.max(1, a.capacity)) : sort === 'capacity' ? (a.capacity - a.currentBookings) - (b.capacity - b.currentBookings) : `${a.date}${a.startTime}`.localeCompare(`${b.date}${b.startTime}`)), [query, slotView, slots, sort]);
+  const filteredRoutes = useMemo(() => routes.filter((route) => !query || `${route.id} ${route.timeWindow} ${route.status} ${route.driver?.name || ''} ${route.driver?.email || ''} ${route.orders.map((order) => order.displayId).join(' ')}`.toLowerCase().includes(query)), [query, routes]);
   const unroutedOrders = useMemo(
-    () => readyOrders.filter((order) => !order.metadata?.deliveryRouteId),
-    [readyOrders]
+    () => readyOrders.filter((order) => !order.metadata?.deliveryRouteId).filter((order) => !query || `${order.displayId} ${order.email || ''} ${order.deliveryTimeWindow || ''}`.toLowerCase().includes(query)),
+    [query, readyOrders]
   );
 
   const groupedReadyOrders = useMemo(() => {
@@ -117,7 +126,7 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
         deliveryDate: new Date(deliveryDate).toISOString(),
         deliveryTimeWindow,
         orderIds,
-        driverId: selectedDriverId || undefined,
+        driverId: selectedDriverId,
       });
       setMessage(`Created route ${result.routeId.slice(-6)} with ${orderIds.length} orders.`);
       setSelectedOrderIds([]);
@@ -142,6 +151,12 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
         </div>
       )}
 
+      <div className="grid gap-3 rounded-xl border bg-background p-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <label className="grid gap-1 text-xs font-medium text-muted-foreground">Search operations<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Date, window, route, driver, or order" className="h-10 min-w-0 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" /></label>
+        <label className="grid gap-1 text-xs font-medium text-muted-foreground">Capacity state<select value={slotView} onChange={(event) => setSlotView(event.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="all">All slots</option><option value="open">Open</option><option value="closed">Closed</option><option value="pressure">80%+ booked</option></select></label>
+        <label className="grid gap-1 text-xs font-medium text-muted-foreground">Sort slots<select value={sort} onChange={(event) => setSort(event.target.value)} className="h-10 rounded-md border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="date">Date and time</option><option value="pressure">Highest pressure</option><option value="capacity">Least capacity left</option></select></label>
+      </div>
+
       <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
         <section className="rounded-2xl border bg-background shadow-sm overflow-hidden">
           <div className="border-b px-4 py-4 md:px-6">
@@ -149,10 +164,10 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
             <p className="text-sm text-muted-foreground">Adjust live delivery slot capacity, fees, and availability as demand shifts.</p>
           </div>
           <div className="divide-y">
-            {slots.length === 0 ? (
-              <div className="px-6 py-10 text-sm text-muted-foreground">No delivery slots configured.</div>
+            {filteredSlots.length === 0 ? (
+              <div className="px-6 py-10 text-sm text-muted-foreground">No delivery slots match the current controls.</div>
             ) : (
-              slots.map((slot) => {
+              filteredSlots.map((slot) => {
                 const pressure = slot.capacity > 0 ? Math.min(100, Math.round((slot.currentBookings / slot.capacity) * 100)) : 0;
                 return (
                   <div key={slot.id} className="px-4 py-4 md:px-6 space-y-3">
@@ -288,14 +303,14 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
                   onChange={(event) => setSelectedDriverId(event.target.value)}
                   className="rounded-md border px-3 py-2 text-sm"
                 >
-                  <option value="">Assign driver later</option>
+                  {drivers.length === 0 ? <option value="">No eligible drivers available</option> : null}
                   {drivers.map((driver) => (
                     <option key={driver.id} value={driver.id}>{driver.name || driver.email}</option>
                   ))}
                 </select>
                 <button
                   type="button"
-                  disabled={isPending || !activeGroup}
+                  disabled={isPending || !activeGroup || !selectedDriverId}
                   onClick={createRoute}
                   className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
                 >
@@ -312,11 +327,11 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
           <h2 className="text-base font-semibold">Routes</h2>
           <p className="text-sm text-muted-foreground">Dispatch routes and complete delivery runs while keeping order statuses in sync.</p>
         </div>
-        {routes.length === 0 ? (
-          <div className="px-6 py-10 text-sm text-muted-foreground">No delivery routes found.</div>
+        {filteredRoutes.length === 0 ? (
+          <div className="px-6 py-10 text-sm text-muted-foreground">No delivery routes match the current search.</div>
         ) : (
           <div className="divide-y">
-            {routes.map((route) => (
+            {filteredRoutes.map((route) => (
               <div key={route.id} className="px-4 py-4 md:px-6 grid gap-4 xl:grid-cols-[1.1fr_0.9fr_auto]">
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">

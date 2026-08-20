@@ -4,30 +4,33 @@ import {
   checkbox,
   timestamp,
   text,
+  relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
+import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
+import { storeScopedFilter } from '../lib/storeAccess';
 
 export const DeliverySlot = list({
   access: {
     operation: {
-      query: () => true, // Logged in users can see available slots
+      query: isSignedIn,
       create: permissions.canManageDelivery,
       update: permissions.canManageDelivery,
       delete: permissions.canManageDelivery,
     },
     filter: {
-      query: ({ session }) => {
-        // Admins can see all slots
-        if (permissions.canManageDelivery({ session })) {
-          return true;
-        }
-        // Regular users can only see available slots
-        return {
-          isActive: { equals: true },
-        };
-      },
+      query: storeScopedFilter,
+      update: storeScopedFilter,
+      delete: storeScopedFilter,
     },
+  },
+  hooks: {
+    resolveInput: async ({ resolvedData, context }) => {
+      if (!context.session?.data.store?.id) return resolvedData;
+      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+    },
+    validate: { delete: async ({ item, addValidationError }) => { if (Number(item.currentBookings || 0) > 0) addValidationError('Booked delivery slots cannot be deleted'); } },
   },
   ui: {
     listView: {
@@ -35,6 +38,13 @@ export const DeliverySlot = list({
     },
   },
   fields: {
+    store: relationship({
+      ref: 'Store.deliverySlots',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: permissions.canManageDelivery, update: () => false },
+    }),
+    orders: relationship({ ref: 'Order.deliverySlot', many: true, access: { update: () => false } }),
     // Date of the delivery slot
     date: timestamp({
       validation: { isRequired: true },
@@ -62,6 +72,7 @@ export const DeliverySlot = list({
     }),
     // Maximum number of deliveries for this slot
     capacity: integer({
+      access: { update: () => false },
       validation: { isRequired: true, min: 1 },
       defaultValue: 10,
       label: "Capacity",
@@ -71,6 +82,7 @@ export const DeliverySlot = list({
     }),
     // Current number of deliveries booked
     currentBookings: integer({
+      access: { create: () => false, update: () => false },
       defaultValue: 0,
       validation: { min: 0 },
       label: "Current Bookings",
@@ -80,6 +92,7 @@ export const DeliverySlot = list({
     }),
     // Whether the slot is active and available for booking
     isActive: checkbox({
+      access: { update: () => false },
       defaultValue: true,
       label: "Is Active",
       ui: {
@@ -88,6 +101,7 @@ export const DeliverySlot = list({
     }),
     // Delivery fee for this slot (e.g., premium for express slots)
     deliveryFee: integer({
+      access: { update: () => false },
       defaultValue: 0,
       validation: { min: 0 },
       label: "Delivery Fee (cents)",

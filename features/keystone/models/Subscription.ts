@@ -9,50 +9,31 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
-import { isSignedIn, permissions } from "../access";
+import { requiredRelationshipPrisma } from './relationshipConfig';
+import { isSignedIn, permissions, type Session } from "../access";
+import { ownerStoreScopedFilter } from '../lib/storeAccess';
+
+async function subscriptionAccessFilter({ session, context }: { session?: Session; context?: { prisma?: any } }) {
+  const store = ownerStoreScopedFilter('user')({ session });
+  if (store === false) return false;
+  if (await permissions.canManageOrders({ session, context })) return store;
+  return session?.itemId
+    ? { AND: [store, { user: { id: { equals: session.itemId } } }] }
+    : false;
+}
 
 export const Subscription = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
     filter: {
-      query: ({ session }) => {
-        // Admins can see all subscriptions
-        if (permissions.canManageOrders({ session })) {
-          return true;
-        }
-        // Users can only see their own subscriptions
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      update: ({ session }) => {
-        // Admins can update all subscriptions
-        if (permissions.canManageOrders({ session })) {
-          return true;
-        }
-        // Users can only update their own subscriptions
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
-      delete: ({ session }) => {
-        // Admins can delete all subscriptions
-        if (permissions.canManageOrders({ session })) {
-          return true;
-        }
-        // Users can only delete their own subscriptions
-        if (session?.itemId) {
-          return { user: { id: { equals: session.itemId } } };
-        }
-        return false;
-      },
+      query: subscriptionAccessFilter,
+      update: subscriptionAccessFilter,
+      delete: subscriptionAccessFilter,
     },
   },
   ui: {
@@ -64,6 +45,9 @@ export const Subscription = list({
   fields: {
     // User who owns the subscription
     user: relationship({
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { create: () => false, update: () => false },
       ref: "User",
       label: "User",
       ui: {
@@ -74,10 +58,17 @@ export const Subscription = list({
     product: text({
       validation: { isRequired: true },
       isIndexed: true,
-      label: "Product",
+      label: "Product Snapshot",
       ui: {
-        description: "Product ID for the subscription",
+        description: "Legacy product handle snapshot",
       },
+    }),
+    productRef: relationship({
+      ref: 'Product.subscriptions',
+      db: { extendPrismaSchema: requiredRelationshipPrisma },
+      graphql: { isNonNull: { read: true, create: true } },
+      access: { update: () => false },
+      label: 'Product',
     }),
     // Quantity to deliver each time
     quantity: integer({
@@ -112,12 +103,16 @@ export const Subscription = list({
     }),
     // Subscription discount percentage
     discount: float({
-      label: "Discount",
-      ui: {
-        description: "Discount percentage applied to subscription orders (0-100)",
-      },
+      label: "Discount percentage (legacy display)",
+      ui: { description: "Legacy display value; discountBps is authoritative" },
       validation: { min: 0, max: 100 },
       defaultValue: 0,
+    }),
+    discountBps: integer({
+      defaultValue: 0,
+      validation: { isRequired: true, min: 0, max: 10000 },
+      access: { create: () => false, update: () => false },
+      label: "Discount (basis points)",
     }),
     // Whether subscription is currently active
     isActive: checkbox({

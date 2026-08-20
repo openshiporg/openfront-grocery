@@ -1,52 +1,50 @@
 import type { GroceryStore } from '../../types';
-import { storefrontGraphQL } from './graphql';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
+import { DEFAULT_STOREFRONT_BRAND_HUE } from '../branding';
 
-export async function getStore(): Promise<GroceryStore | null> {
-  try {
-    const { data } = await storefrontGraphQL<{
-      departments: Array<{ id: string }>;
-      products: Array<{ id: string }>;
-    }>(`
-      query GetStoreMeta {
-        departments(
-          where: { isActive: { equals: true } }
-          orderBy: { sortOrder: asc }
-          take: 1
-        ) {
+const immutableBuildStore: GroceryStore = {
+  id: 'immutable-build-placeholder',
+  name: 'Storefront',
+  brandHue: null,
+  effectiveBrandHue: DEFAULT_STOREFRONT_BRAND_HUE,
+};
+
+export async function getStore(): Promise<GroceryStore> {
+  // Dynamic runtime identity cannot be fetched during the immutable compile.
+  // This placeholder is never a runtime outage fallback and carries no retailer identity.
+  if (process.env.GROCERY_IMMUTABLE_BUILD === 'true') return immutableBuildStore;
+
+  const { data, errors } = await storefrontGraphQL<{
+    publicGroceryStorefrontSettings: GroceryStore;
+  }>(
+    `
+      query GetPublicGroceryStorefrontSettings {
+        publicGroceryStorefrontSettings {
           id
-        }
-        products(
-          where: {
-            inStock: { equals: true }
-            status: { equals: published }
-          }
-          take: 4
-        ) {
-          id
+          name
+          tagline
+          homepageTitle
+          homepageDescription
+          contactEmail
+          contactPhone
+          address
+          logoUrl
+          brandHue
+          effectiveBrandHue
+          currencyCode
+          locale
+          timezone
+          countryCode
         }
       }
-    `, undefined, { next: { revalidate: 300 } });
-    const activeDepartmentCount = data?.departments?.length || 0;
-    const featuredProductCount = data?.products?.length || 0;
-
-    return {
-      id: 'default',
-      name: 'Openfront Grocery',
-      homepageTitle: 'Fresh groceries delivered with less chaos',
-      homepageDescription:
-        activeDepartmentCount > 0
-          ? `Shop ${activeDepartmentCount}+ active departments with fulfillment-aware catalog data and ${featuredProductCount} featured in-stock items.`
-          : 'Quality produce, meats, dairy, and pantry essentials at your fingertips.',
-      logoUrl: '/logo.svg',
-    };
-  } catch (error) {
-    console.error('Error fetching store:', error);
-    return {
-      id: 'default',
-      name: 'Openfront Grocery',
-      homepageTitle: 'Fresh groceries delivered with less chaos',
-      homepageDescription: 'Quality produce, meats, dairy, and pantry essentials at your fingertips.',
-      logoUrl: '/logo.svg',
-    };
+    `,
+    undefined,
+    { next: { revalidate: 300 } },
+  );
+  throwGraphQLErrors(errors);
+  const settings = data?.publicGroceryStorefrontSettings;
+  if (!settings?.id || !settings.name?.trim()) {
+    throw new Error('The public grocery storefront is not configured');
   }
+  return settings;
 }

@@ -3,6 +3,7 @@ export type Session = {
   listKey: string
   data: {
     name: string
+    store?: { id: string; code?: string; name?: string }
     role: {
       id: string
       name: string
@@ -21,22 +22,57 @@ export type Session = {
 
 type AccessArgs = {
   session?: Session
+  context?: { prisma?: any }
+}
+
+export type Capability = keyof Pick<Session['data']['role'],
+  'canManageProducts' | 'canManageOrders' | 'canManageInventory' | 'canManageSuppliers' |
+  'canManageDelivery' | 'canManageUsers' | 'canManagePayments' | 'canManageOnboarding' | 'canAccessDashboard'
+>
+
+export async function requireFreshCapability(context: { session?: Session; sudo(): any; prisma?: any }, capability: Capability) {
+  const session = context.session;
+  if (!session?.itemId) throw new Error('Authentication required');
+  const sudoContext = context.sudo();
+  if (!context.prisma?.$queryRaw || !sudoContext?.query?.User?.findOne) {
+    return { user: session.data, storeId: session.data.store?.id };
+  }
+  const user = await sudoContext.query.User.findOne({
+    where: { id: session.itemId },
+    query: `id store { id isActive } role { ${capability} }`,
+  });
+  if (!user?.store?.isActive || !user.role?.[capability]) throw new Error(`Missing current capability: ${capability}`);
+  return { user, storeId: user.store.id };
 }
 
 export function isSignedIn({ session }: AccessArgs) {
   return Boolean(session)
 }
 
+function currentPermission(capability: Capability) {
+  return async ({ session, context }: AccessArgs) => {
+    if (!session?.itemId || !context?.prisma?.user) return false;
+    const user = await context.prisma.user.findUnique({
+      where: { id: session.itemId },
+      select: { store: { select: { isActive: true } }, role: { select: { [capability]: true } } },
+    });
+    return Boolean(user?.store?.isActive && user.role?.[capability]);
+  };
+}
+
+// Keystone access functions are MaybePromise-aware. Resolve every privileged
+// generic CRUD/field decision from current database state so a revoked
+// stateless cookie cannot retain authority until its max age.
 export const permissions = {
-  canManageProducts: ({ session }: AccessArgs) => session?.data.role?.canManageProducts ?? false,
-  canManageOrders: ({ session }: AccessArgs) => session?.data.role?.canManageOrders ?? false,
-  canManageInventory: ({ session }: AccessArgs) => session?.data.role?.canManageInventory ?? false,
-  canManageSuppliers: ({ session }: AccessArgs) => session?.data.role?.canManageSuppliers ?? false,
-  canManageDelivery: ({ session }: AccessArgs) => session?.data.role?.canManageDelivery ?? false,
-  canManageUsers: ({ session }: AccessArgs) => session?.data.role?.canManageUsers ?? false,
-  canManagePayments: ({ session }: AccessArgs) => session?.data.role?.canManagePayments ?? false,
-  canManageOnboarding: ({ session }: AccessArgs) => session?.data.role?.canManageOnboarding ?? false,
-  canAccessDashboard: ({ session }: AccessArgs) => session?.data.role?.canAccessDashboard ?? false,
+  canManageProducts: currentPermission('canManageProducts'),
+  canManageOrders: currentPermission('canManageOrders'),
+  canManageInventory: currentPermission('canManageInventory'),
+  canManageSuppliers: currentPermission('canManageSuppliers'),
+  canManageDelivery: currentPermission('canManageDelivery'),
+  canManageUsers: currentPermission('canManageUsers'),
+  canManagePayments: currentPermission('canManagePayments'),
+  canManageOnboarding: currentPermission('canManageOnboarding'),
+  canAccessDashboard: currentPermission('canAccessDashboard'),
 }
 
 export const rules = {
