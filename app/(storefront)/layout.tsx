@@ -44,7 +44,7 @@ export default async function StorefrontLayout({
   const brandVariables = storefrontBrandCssVariables(store.effectiveBrandHue) as CSSProperties;
   return (
     <div
-      className={`${marketBody.variable} ${marketDisplay.variable} min-h-screen font-[family-name:var(--sf-font-body)] antialiased`}
+      className={`storefront-ui ${marketBody.variable} ${marketDisplay.variable} min-h-screen font-[family-name:var(--sf-font-body)] antialiased`}
       style={{ ...brandVariables, backgroundColor: 'var(--sf-paper)', color: 'var(--sf-ink)' }}
     >
       <MainLayout>{children}</MainLayout>

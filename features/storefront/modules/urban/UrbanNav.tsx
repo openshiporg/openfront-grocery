@@ -1,87 +1,40 @@
 import Link from 'next/link';
-import { Search, ShoppingBasket, User } from 'lucide-react';
-
-import { getDepartmentsList } from '@/features/storefront/lib/data/departments';
-import { getStore } from '@/features/storefront/lib/data/store';
+import { User } from 'lucide-react';
+import { getDepartmentsList } from '../../lib/data/departments';
+import { getStore } from '../../lib/data/store';
 import UrbanMobileMenu from './UrbanMobileMenu';
+import { UrbanSearchStrip } from './UrbanPrimitives';
+import { MarketBasketLink } from '../market/MarketBasket';
+import { MarketModeLink } from '../market/MarketMode';
 
 export default async function UrbanNav() {
-  const [store, { departments }] = await Promise.all([getStore(), getDepartmentsList(0, 6)]);
-  const storeName = store.name;
-  const mobileDepartments = [
-    ...departments.map((d) => ({ href: `/departments/${d.handle}`, label: d.name })),
-    { href: '/departments', label: 'All aisles' },
-  ];
-
-  return (
-    <>
-      <div className="bg-[var(--sf-header)] text-[var(--sf-header-ink)]">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-2 text-xs sm:px-6 lg:px-8">
-          {store.tagline ? <p className="text-[var(--sf-header-ink)]/80">{store.tagline}</p> : <span aria-hidden="true" />}
-          <div className="hidden items-center gap-4 sm:flex">
-            <Link href="/deals" className="transition hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-header-ink)]">
-              Weekly specials
-            </Link>
-            <Link href="/account" className="transition hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-header-ink)]">
-              Account
-            </Link>
-          </div>
+  const [store, { departments }] = await Promise.all([getStore(), getDepartmentsList(0, 8).catch(() => ({ departments: [] }))]);
+  return <>
+    {store.tagline ? <div className="bg-[var(--sf-header)] px-4 py-2 text-center text-xs leading-5 text-[var(--sf-header-ink)]">{store.tagline}</div> : null}
+    <header className="sticky top-0 z-40 border-b border-[var(--sf-rule)] bg-[var(--sf-paper)]">
+      <div className="mx-auto grid max-w-6xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-3 px-4 py-3 sm:px-6 lg:grid-cols-[minmax(10rem,1fr)_minmax(12rem,1.4fr)_auto] lg:px-8">
+        <Link prefetch={false} href="/" className="flex min-w-0 items-center gap-2 font-[family-name:var(--sf-font-display)] text-xl font-semibold leading-tight tracking-tight sm:text-2xl">
+          {store.logoUrl ? <img src={store.logoUrl} alt="" width={40} height={40} className="h-10 w-10 shrink-0 object-contain" /> : null}
+          <span>{store.name}</span>
+        </Link>
+        <div className="col-span-2 row-start-2 min-w-0 lg:col-span-1 lg:col-start-2 lg:row-start-1"><UrbanSearchStrip placeholder="What’s on your list?" /></div>
+        <div className="col-start-2 row-start-1 flex items-center gap-2 lg:col-start-3">
+          <Link prefetch={false} href="/account" aria-label="Your account" className="hidden min-h-11 min-w-11 items-center justify-center rounded-md border border-[var(--sf-rule)] sm:inline-flex"><User className="h-5 w-5" aria-hidden="true" /></Link>
+          <MarketBasketLink />
+          <UrbanMobileMenu departments={departments.map((d) => ({ href: `/departments/${d.handle}`, label: d.name }))} />
         </div>
       </div>
-
-      <header className="sticky top-0 z-50 border-b border-[var(--sf-rule-strong)] bg-[var(--sf-paper)]">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
-          <Link
-            href="/"
-            className="min-w-0 font-[family-name:var(--sf-font-display)] text-xl font-semibold tracking-[-0.02em] text-[var(--sf-ink)] sm:text-2xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--sf-focus)]"
-          >
-            {storeName}
-          </Link>
-
-          <nav className="hidden items-center gap-1 lg:flex" aria-label="Departments">
-            {departments.map((department) => (
-              <Link
-                key={department.id}
-                href={`/departments/${department.handle}`}
-                className="whitespace-nowrap px-3 py-2 text-sm font-medium text-[var(--sf-ink-muted)] transition hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]"
-              >
-                {department.name}
-              </Link>
-            ))}
-            <Link
-              href="/departments"
-              className="whitespace-nowrap px-3 py-2 text-sm font-medium text-[var(--sf-ink-faint)] transition hover:text-[var(--sf-accent)]"
-            >
-              All aisles
-            </Link>
+      <div className="border-t border-[var(--sf-rule)]">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+          <nav aria-label="Shop" className="sf-scroll-row min-w-0 text-sm font-medium">
+            <Link prefetch={false} href="/products" className="inline-flex min-h-11 items-center pr-3">Shop all</Link>
+            <Link prefetch={false} href="/departments" className="inline-flex min-h-11 items-center px-2">Aisles</Link>
+            <Link prefetch={false} href="/deals" className="inline-flex min-h-11 items-center px-2 text-[var(--sf-accent)]">Specials</Link>
+            <Link prefetch={false} href="/lists" className="hidden min-h-11 items-center px-2 md:inline-flex">My lists</Link>
           </nav>
-
-          <div className="flex shrink-0 items-center gap-1">
-            <Link
-              href="/products"
-              aria-label="Search products"
-              className="p-2.5 text-[var(--sf-ink)] transition hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]"
-            >
-              <Search className="h-5 w-5" />
-            </Link>
-            <Link
-              href="/cart"
-              aria-label="Basket"
-              className="p-2.5 text-[var(--sf-ink)] transition hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]"
-            >
-              <ShoppingBasket className="h-5 w-5" />
-            </Link>
-            <Link
-              href="/account"
-              aria-label="Account"
-              className="hidden p-2.5 text-[var(--sf-ink)] transition hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] sm:block"
-            >
-              <User className="h-5 w-5" />
-            </Link>
-            <UrbanMobileMenu departments={mobileDepartments} />
-          </div>
+          <div className="shrink-0"><MarketModeLink /></div>
         </div>
-      </header>
-    </>
-  );
+      </div>
+    </header>
+  </>;
 }

@@ -1,3 +1,5 @@
+import { boundedReturnPath } from "./lib/boundedReturnPath";
+import { trustedClientIp } from "@/features/keystone/lib/clientIp";
 import { NextResponse } from "next/server";
 import { NextRequest } from "next/server";
 import { getGraphQLEndpoint } from "@/features/dashboard/lib/getBaseUrl";
@@ -35,6 +37,15 @@ function formatGraphQLErrors(error: ClientError): { message: string; errors?: an
   };
 }
 
+// Carry only the deployment-trusted Railway client address over the server-side
+// GraphQL hop. Arbitrary forwarding and legacy signed-identity headers are ignored.
+function middlewareRequestHeaders(request: NextRequest): Record<string, string> {
+  const headers: Record<string, string> = { cookie: request.headers.get('cookie') || '' };
+  const clientIp = trustedClientIp(request.headers);
+  if (clientIp) headers['x-real-ip'] = clientIp;
+  return headers;
+}
+
 // Lightweight check for redirectToInit status only
 export async function checkInitStatus(request: NextRequest) {
   const query = `
@@ -43,9 +54,7 @@ export async function checkInitStatus(request: NextRequest) {
     }
   `;
 
-  const headers = {
-    cookie: request.headers.get("cookie") || "",
-  };
+  const headers = middlewareRequestHeaders(request);
 
   try {
     const client = await createMiddlewareGraphQLClient(headers);
@@ -73,9 +82,7 @@ export async function getAuthenticatedUser(request: NextRequest) {
     }
   `;
 
-  const headers = {
-    cookie: request.headers.get("cookie") || "",
-  };
+  const headers = middlewareRequestHeaders(request);
 
   try {
     const client = await createMiddlewareGraphQLClient(headers);
@@ -85,18 +92,14 @@ export async function getAuthenticatedUser(request: NextRequest) {
     };
     
     return {
+      status: 'available' as const,
       user: data.authenticatedItem,
       redirectToInit: data.redirectToInit
     };
   } catch (error) {
-    console.error("Auth check failed:", error);
-    
-    if (error instanceof ClientError) {
-      const { message } = formatGraphQLErrors(error);
-      console.error("GraphQL error details:", message);
-    }
-    
-    return { user: null, redirectToInit: false };
+    // Authentication service failure is distinct from an anonymous visitor.
+    // Do not log GraphQL request headers, cookies or provider response bodies.
+    return { status: 'unavailable' as const, code: 'AUTH_SERVICE_UNAVAILABLE' as const, user: null, redirectToInit: false };
   }
 }
 
@@ -143,9 +146,8 @@ export async function handleDashboardRoutes(
 
   // Handle authenticated users trying to access signin
   if (user && (isSigninRoute || isResetRoute)) {
-    if (fromPath && !fromPath.includes("no-access")) {
-      return NextResponse.redirect(new URL(fromPath, request.url));
-    }
+    const returnPath = boundedReturnPath(fromPath);
+    if (returnPath) return NextResponse.redirect(new URL(returnPath, request.url));
     return NextResponse.redirect(new URL(basePath, request.url));
   }
 
@@ -155,4 +157,7 @@ export async function handleDashboardRoutes(
   }
 
   return NextResponse.next();
+}
+export function authUnavailableResponse(code: string) {
+  return NextResponse.json({ error: code, message: 'Sign-in service is temporarily unavailable. Please retry.' }, {status:503,headers:{'Cache-Control':'no-store','Retry-After':'15'}});
 }

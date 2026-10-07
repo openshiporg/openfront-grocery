@@ -1,3 +1,6 @@
+import {enqueueGroceryOutboxEvent} from "../lib/groceryOutbox";
+import { createHash } from 'node:crypto';
+import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
@@ -10,6 +13,10 @@ type ReceiptInput = {
   lotNumber: string;
   expirationDate: string;
   location?: string | null;
+  receiptKey?: string | null;
+  deliveryReference?: string | null;
+  conditionStatus?: string | null;
+  inspectionNote?: string | null;
 };
 
 type ReceiveArgs = {
@@ -26,19 +33,42 @@ async function assertCanManageInventory(context: Context) {
   await requireFreshCapability(context, 'canManageInventory');
 }
 
+export function receiptQuantityDelta({
+  targetQuantityReceived,
+  orderedQuantity,
+  currentQuantityReceived,
+  productTitle,
+}: {
+  targetQuantityReceived: number;
+  orderedQuantity: number;
+  currentQuantityReceived: number;
+  productTitle: string;
+}) {
+  quantityMilli(targetQuantityReceived); quantityMilli(orderedQuantity); quantityMilli(currentQuantityReceived);
+  if (targetQuantityReceived > orderedQuantity) {
+    throw new Error(`Received quantity cannot exceed ordered quantity for ${productTitle}`);
+  }
+  if (targetQuantityReceived < currentQuantityReceived) {
+    throw new Error(`Received quantity cannot move backward for ${productTitle}`);
+  }
+  return (quantityMilli(targetQuantityReceived) - quantityMilli(currentQuantityReceived)) / 1000;
+}
+
 function assertUniqueReceipts(receipts: ReceiptInput[]) {
   if (!receipts.length) throw new Error('At least one purchase order receipt is required');
   if (new Set(receipts.map((receipt) => receipt.poItemId)).size !== receipts.length) {
     throw new Error('Each purchase order item may appear only once per receipt request');
   }
   for (const receipt of receipts) {
-    if (!Number.isInteger(receipt.targetQuantityReceived) || receipt.targetQuantityReceived < 0) {
-      throw new Error('Received quantity targets must be non-negative integers');
+    if (quantityMilli(receipt.targetQuantityReceived) < 0) {
+      throw new Error('Received quantity targets must be non-negative quantities with at most three decimal places');
     }
+    if (!['accepted', 'inspection_pending', 'rejected'].includes(receipt.conditionStatus || 'accepted')) throw new Error('Invalid receipt inspection condition');
+    if (receipt.conditionStatus && receipt.conditionStatus !== 'accepted' && !receipt.inspectionNote?.trim()) throw new Error('Inspection exception requires evidence');
     if (!receipt.lotNumber.trim()) throw new Error('Each received item requires a lot number');
     const expirationDate = new Date(receipt.expirationDate);
     if (!Number.isFinite(expirationDate.getTime())) throw new Error('Each received item requires a valid expiration date');
-    if (expirationDate.getTime() <= Date.now()) throw new Error('Inventory lot expiration date must be in the future');
+    if (receipt.receiptKey != null && receipt.receiptKey.trim().length < 12) throw new Error('Receipt idempotency key must contain at least 12 characters');
   }
 }
 
@@ -63,12 +93,12 @@ async function loadPurchaseOrder(sudoContext: Context, purchaseOrderId: string, 
       poNumber
       status
       receivedAt
-      supplier { id }
+      supplier { id name email store { id } }
       items {
         id
         quantity
         quantityReceived
-        unitCost
+        productTitle productSku unitCost unitCostCents
         product { id title stockQuantity inStock }
       }
     `,
@@ -89,7 +119,8 @@ export async function transitionPurchaseOrder(
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     await lockPurchaseOrder(transactionContext, purchaseOrderId);
-    const sudoContext = transactionContext.sudo();
+    // Decimal fields are source-owned; generated Context types await the reviewed migration.
+    const sudoContext: any = transactionContext.sudo();
     const purchaseOrder = await loadPurchaseOrder(sudoContext, purchaseOrderId, store.id);
     if (!purchaseOrder) throw new Error('Purchase order not found in active store');
     if (purchaseOrder.status === status) {
@@ -107,12 +138,17 @@ export async function transitionPurchaseOrder(
       throw new Error('A purchase order with received inventory cannot be cancelled');
     }
 
+    if(status==='sent') {
+      const supplier:any=purchaseOrder.supplier;
+      if(!supplier || supplier.store?.id!==store.id || !supplier.email?.trim())throw new Error('Purchase order needs a same-Store supplier email before sending');
+      await enqueueGroceryOutboxEvent(transactionContext.prisma,{storeId:store.id,eventKey:`purchase-order:${purchaseOrderId}:send`,eventType:'purchase_order.send_requested',aggregateType:'PurchaseOrder',aggregateId:purchaseOrderId,occurredAt:new Date().toISOString(),payload:{purchaseOrderId,supplierId:supplier.id,recipient:supplier.email,poNumber:purchaseOrder.poNumber,currencyCode:store.currencyCode,lines:purchaseOrder.items.map((item:any)=>({title:item.productTitle || item.product?.title,sku:item.productSku,quantity:Number(item.quantity),unitCostCents:Number(item.unitCostCents)}))}});
+    }
     await sudoContext.db.PurchaseOrder.updateOne({
       where: { id: purchaseOrderId },
       data: { status: status as any },
     });
-    return { success: true, purchaseOrderId, status, receivedUnits: 0, message: `Purchase order moved to ${status}.` };
-  }, { isolationLevel: 'ReadCommitted' as any }));
+    return { success: true, purchaseOrderId, status, receivedUnits: 0, message: status==='sent'?'Purchase order queued for supplier delivery; inspect Communications for the delivery outcome.':`Purchase order moved to ${status}.` };
+  }, { isolationLevel: 'Serializable' as any }));
 }
 
 export async function receivePurchaseOrder(
@@ -126,7 +162,8 @@ export async function receivePurchaseOrder(
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     await lockPurchaseOrder(transactionContext, purchaseOrderId);
-    const sudoContext = transactionContext.sudo();
+    // Decimal fields are source-owned; generated Context types await the reviewed migration.
+    const sudoContext: any = transactionContext.sudo();
     const purchaseOrder = await loadPurchaseOrder(sudoContext, purchaseOrderId, store.id);
     if (!purchaseOrder) throw new Error('Purchase order not found in active store');
     if (purchaseOrder.status === 'draft' || purchaseOrder.status === 'cancelled') {
@@ -169,34 +206,46 @@ export async function receivePurchaseOrder(
     for (const receipt of receipts) {
       const item = itemsById.get(receipt.poItemId);
       if (!item.product) throw new Error('Purchase order item is missing its product');
+      const receiptKey = receipt.receiptKey?.trim() || `receipt:${purchaseOrderId}:${item.id}:${receipt.targetQuantityReceived}`;
+      const existingReceipt = await (transactionContext.prisma as any).purchaseReceipt.findUnique({ where: { idempotencyKey: receiptKey } });
+      if (existingReceipt) {
+        if (existingReceipt.storeId !== store.id || existingReceipt.poItemId !== item.id || existingReceipt.supplierLotNumber !== receipt.lotNumber.trim() || quantityMilli(existingReceipt.targetQuantityReceived) !== quantityMilli(receipt.targetQuantityReceived) || existingReceipt.conditionStatus !== (receipt.conditionStatus || 'accepted') || (existingReceipt.inspectionNote || '') !== (receipt.inspectionNote?.trim() || '') || (existingReceipt.deliveryReference || '') !== (receipt.deliveryReference?.trim() || '') || new Date(existingReceipt.expirationDate).getTime() !== new Date(receipt.expirationDate).getTime()) throw new Error('Receipt replay conflicts with original delivery evidence');
+        resultingTargets.set(item.id, Number(item.quantityReceived || 0));
+        continue;
+      }
       const currentReceived = Number(item.quantityReceived || 0);
-      if (receipt.targetQuantityReceived > item.quantity) {
-        throw new Error(`Received quantity cannot exceed ordered quantity for ${item.product.title}`);
-      }
-      if (receipt.targetQuantityReceived < currentReceived) {
-        throw new Error(`Received quantity cannot move backward for ${item.product.title}`);
-      }
-      const quantityDelta = receipt.targetQuantityReceived - item.quantityReceived;
+      const quantityDelta = receiptQuantityDelta({
+        targetQuantityReceived: receipt.targetQuantityReceived,
+        orderedQuantity: Number(item.quantity),
+        currentQuantityReceived: currentReceived,
+        productTitle: item.product.title,
+      });
       resultingTargets.set(item.id, receipt.targetQuantityReceived);
       if (quantityDelta === 0) continue;
+      if (new Date(receipt.expirationDate).getTime() <= Date.now()) throw new Error('Inventory lot expiration date must be in the future');
 
-      const lotNumber = receipt.lotNumber.trim();
-      const existingLot = await transactionContext.prisma.inventoryLot.findUnique({
-        where: { lotNumber },
-        select: { id: true },
-      });
-      if (existingLot) throw new Error(`Inventory lot ${lotNumber} has already received inventory`);
-
-      await sudoContext.db.InventoryLot.createOne({
+      const supplierLotNumber = receipt.lotNumber.trim();
+      const batchRecalls: any[] = [];
+      for (let skip = 0; ; skip += 100) {
+        const page = await (transactionContext.prisma as any).inventoryRecall.findMany({ where: { storeId: store.id }, orderBy: { id: 'asc' }, take: 100, skip });
+        batchRecalls.push(...page.filter((recall: any) => recall.scope?.productId === item.product.id || (recall.scope?.lots || []).some((lot: any) => lot.productId === item.product.id && lot.supplierId === (purchaseOrder.supplier?.id || null) && lot.supplierLotNumber === supplierLotNumber)));
+        if (page.length < 100) break;
+      }
+      const lotNumber = `R-${createHash('sha256').update(`${store.id}:${receiptKey}`).digest('hex').slice(0, 32)}`;
+      const lot = await sudoContext.db.InventoryLot.createOne({
         data: {
           store: { connect: { id: store.id } },
           lotNumber,
+          supplierLotNumber,
+          safetyStatus: batchRecalls.length ? 'recalled' : (receipt.conditionStatus || 'accepted') === 'accepted' ? 'available' : 'quarantined',
+          conditionStatus: receipt.conditionStatus || 'accepted',
+          safetyReason: receipt.inspectionNote?.trim() || undefined,
           expirationDate: new Date(receipt.expirationDate).toISOString(),
           receivedDate: new Date().toISOString(),
-          quantity: quantityDelta,
-          quantityRemaining: quantityDelta,
+          quantity: String(quantityDelta),
+          quantityRemaining: String(quantityDelta),
           costPerUnit: item.unitCost,
-          costPerUnitCents: Math.round(item.unitCost * 100),
+          costPerUnitCents: Number(item.unitCostCents ?? Math.round(Number(item.unitCost) * 100)),
           location: receipt.location?.trim() || undefined,
           product: { connect: { id: item.product.id } },
           supplier: purchaseOrder.supplier?.id
@@ -204,21 +253,27 @@ export async function receivePurchaseOrder(
             : undefined,
         },
       });
-      const nextStock = (productStock.get(item.product.id) || 0) + quantityDelta;
+      for (const recall of batchRecalls) {
+        await (transactionContext.prisma as any).inventoryRecall.update({ where: { id: recall.id }, data: { status: 'open', ...(recall.status === 'closed' ? { closedAt: null, closedBy: '' } : {}), scope: { ...recall.scope, lots: [...recall.scope.lots, { id: lot.id, supplierLotNumber, supplierId: purchaseOrder.supplier?.id || null, productId: item.product.id, quantity: quantityDelta, quantityRemaining: quantityDelta }] }, events: [...(recall.events || []), { action: recall.status === 'closed' ? 'reopened_for_receipt' : 'receipt_join', idempotencyKey: receiptKey, actorId: context.session?.itemId, at: new Date().toISOString(), reason: 'New delivery matches active recall scope', evidence: { inventoryLotId: lot.id, quantity: quantityDelta } }] } });
+      }
+      const stockBefore = productStock.get(item.product.id) || 0;
+      const nextStock = (quantityMilli(stockBefore) + quantityMilli(quantityDelta)) / 1000;
+      const receiptRecord = await (transactionContext.prisma as any).purchaseReceipt.create({ data: { storeId: store.id, purchaseOrderId, poItemId: item.id, inventoryLotId: lot.id, productId: item.product.id, supplierId: purchaseOrder.supplier?.id || null, idempotencyKey: receiptKey, supplierLotNumber, deliveryReference: receipt.deliveryReference?.trim() || '', quantity: quantityDelta, targetQuantityReceived: receipt.targetQuantityReceived, unitCostCents: Number(item.unitCostCents ?? Math.round(Number(item.unitCost) * 100)), conditionStatus: receipt.conditionStatus || 'accepted', inspectionNote: receipt.inspectionNote?.trim() || '', receivedBy: context.session?.itemId, expirationDate: new Date(receipt.expirationDate) } });
+      await appendInventoryMovement(transactionContext.prisma, { storeId: store.id, productId: item.product.id, inventoryLotId: lot.id, sourceType: 'purchase_receipt', sourceId: receiptRecord.id, idempotencyKey: `movement:${receiptKey}`, actorId: context.session?.itemId, reason: receipt.inspectionNote?.trim() || (batchRecalls.length ? 'Purchase receipt held by active recall' : 'Purchase receipt accepted'), quantityBefore: 0, quantityAfter: quantityDelta, productStockBefore: stockBefore, productStockAfter: nextStock, metadata: { purchaseOrderId, poItemId: item.id, supplierLotNumber, conditionStatus: receipt.conditionStatus || 'accepted' } });
       productStock.set(item.product.id, nextStock);
       await sudoContext.db.Product.updateOne({
         where: { id: item.product.id },
-        data: { stockQuantity: nextStock, inStock: true },
+        data: { stockQuantity: String(nextStock), inStock: true },
       });
       await sudoContext.db.POItem.updateOne({
         where: { id: item.id },
-        data: { quantityReceived: receipt.targetQuantityReceived },
+        data: { quantityReceived: String(receipt.targetQuantityReceived) },
       });
       receivedUnits += quantityDelta;
     }
 
     const fullyReceived = purchaseOrder.items.every((item: any) =>
-      (resultingTargets.get(item.id) ?? Number(item.quantityReceived || 0)) === item.quantity
+      (resultingTargets.get(item.id) ?? Number(item.quantityReceived || 0)) === Number(item.quantity)
     );
     if (fullyReceived && purchaseOrder.status !== 'received') {
       await sudoContext.db.PurchaseOrder.updateOne({
@@ -239,5 +294,5 @@ export async function receivePurchaseOrder(
         ? 'Purchase order receipt was already applied.'
         : `Received ${receivedUnits} unit${receivedUnits === 1 ? '' : 's'}.`,
     };
-  }, { isolationLevel: 'ReadCommitted' as any }));
+  }, { isolationLevel: 'Serializable' as any }));
 }

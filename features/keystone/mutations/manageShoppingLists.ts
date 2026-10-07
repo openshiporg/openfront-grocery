@@ -5,6 +5,17 @@ function requireUser(context: Context) {
   return context.session.itemId;
 }
 
+export function normalizeShoppingListGraphQLResult(list: any) {
+  return {
+    ...list,
+    updatedAt: list.updatedAt ? new Date(list.updatedAt) : null,
+    items: (list.items || []).map((item: any) => ({
+      ...item,
+      addedAt: item.addedAt ? new Date(item.addedAt) : null,
+    })),
+  };
+}
+
 export async function createShoppingList(
   _root: unknown,
   { name }: { name: string },
@@ -22,12 +33,13 @@ export async function createShoppingList(
     take: 1,
     query: 'id name isDefault updatedAt items { id product quantity unit checked notes addedAt }',
   });
-  if (existing[0]) return existing[0];
+  if (existing[0]) return normalizeShoppingListGraphQLResult(existing[0]);
 
-  return sudoContext.query.ShoppingList.createOne({
+  const created = await sudoContext.query.ShoppingList.createOne({
     data: { name: normalizedName, user: { connect: { id: userId } } },
     query: 'id name isDefault updatedAt items { id product quantity unit checked notes addedAt }',
   });
+  return normalizeShoppingListGraphQLResult(created);
 }
 
 export async function deleteShoppingList(

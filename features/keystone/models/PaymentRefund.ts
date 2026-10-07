@@ -4,7 +4,7 @@ import { decimal, integer, json, relationship, select, text, timestamp } from '@
 import { permissions } from '../access';
 import { trackingFields } from './trackingFields';
 import { requiredRelationshipPrisma } from './relationshipConfig';
-import { relatedStoreScopedFilter } from '../lib/storeAccess';
+import { currentMembershipRelatedStoreScopedFilter } from '../lib/storeAccess';
 
 export const PaymentRefund = list({
   access: {
@@ -14,7 +14,7 @@ export const PaymentRefund = list({
       update: () => false,
       delete: () => false,
     },
-    filter: { query: relatedStoreScopedFilter('payment'), update: relatedStoreScopedFilter('payment'), delete: relatedStoreScopedFilter('payment') },
+    filter: { query: currentMembershipRelatedStoreScopedFilter('payment'), update: currentMembershipRelatedStoreScopedFilter('payment'), delete: currentMembershipRelatedStoreScopedFilter('payment') },
   },
   hooks: {
     validate: {
@@ -57,18 +57,18 @@ export const PaymentRefund = list({
     providerPaymentId: text({ validation: { isRequired: true }, access: { update: () => false } }),
     providerRefundId: text({ access: { update: () => false } }),
     providerStatus: text({ access: { update: () => false } }),
-    providerData: json({ defaultValue: {}, access: { update: () => false } }),
+    providerData: json({ defaultValue: {}, access: { read: () => false, update: () => false } }),
     providerEventId: text({ db: { isNullable: true }, access: { update: () => false } }),
     providerEventCreatedAt: timestamp({ db: { isNullable: true }, access: { update: () => false } }),
     providerEventVersion: integer({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { update: () => false } }),
-    failureMessage: text({ access: { update: () => false } }),
+    failureMessage: text({ access: { read: () => false, update: () => false } }),
     reconciliationAttempts: integer({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { update: () => false } }),
     reconciliationOwner: text({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationToken: text({ db: { isNullable: true }, access: { update: () => false } }),
+    reconciliationToken: text({ db: { isNullable: true }, access: { read: () => false, update: () => false } }),
     reconciliationLeaseExpiresAt: timestamp({ db: { isNullable: true }, access: { update: () => false } }),
     reconciliationNextAttemptAt: timestamp({ db: { isNullable: true }, access: { update: () => false } }),
     reconciliationDeadLetterAt: timestamp({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationLastError: text({ db: { isNullable: true }, access: { update: () => false } }),
+    reconciliationLastError: text({ db: { isNullable: true }, access: { read: () => false, update: () => false } }),
     requestedAt: timestamp({ validation: { isRequired: true }, access: { update: () => false } }),
     processedAt: timestamp({ access: { update: () => false } }),
     payment: relationship({
@@ -79,8 +79,6 @@ export const PaymentRefund = list({
     }),
     requestedBy: relationship({
       ref: 'User.paymentRefunds',
-      db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
       access: { update: () => false },
     }),
     ...trackingFields,

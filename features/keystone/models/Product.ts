@@ -8,12 +8,50 @@ import {
   multiselect,
   json,
   float,
+  decimal,
 } from "@keystone-6/core/fields";
 import { document } from "@keystone-6/fields-document";
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { permissions } from "../access";
-import { publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
+import { deriveProductSkuIdentity, normalizeProductSku } from '../lib/productSkuIdentity';
+import { initialProductInformation } from '../lib/productInformation';
+
+export async function resolveProductCatalogIdentity({ resolvedData, context, item, operation }: any) {
+  const existingStoreId = item?.storeId;
+  const session = context.session;
+  let actorStoreId: string | undefined;
+  if (session?.itemId) {
+    actorStoreId = await currentMembershipStoreId({ session, context }) ?? undefined;
+    if (!actorStoreId) throw new Error('An active Store account is required for Product writes');
+  } else if (operation !== 'update' || Object.entries(resolvedData).some(([key, value]) => value !== undefined && !['stockQuantity', 'inStock'].includes(key))) {
+    throw new Error('Catalog identity changes require an active Store account');
+  }
+  // Guest checkout may adjust only an existing product's stock caches through
+  // trusted sudo code. It cannot create a product, choose a SKU or reparent it.
+  if (operation === 'update' && (!existingStoreId || (actorStoreId && existingStoreId !== actorStoreId))) throw new Error('Product belongs to another Store');
+  const storeId = operation === 'update' ? existingStoreId : actorStoreId;
+  if (!storeId) throw new Error('A Product must belong to one Store');
+  if (resolvedData.store !== undefined && (!resolvedData.store || resolvedData.store.connect?.id !== storeId || Object.keys(resolvedData.store).some(key => key !== 'connect'))) throw new Error('Product Store ownership cannot be reassigned');
+  const sku = normalizeProductSku(resolvedData.sku !== undefined ? resolvedData.sku : item?.sku);
+  if (operation === 'update' && ['unitOfMeasure','pricingMethod'].some(key => resolvedData[key] !== undefined && resolvedData[key] !== item?.[key])) {
+    const [lots, orders, purchasing] = await Promise.all([
+      context.prisma.inventoryLot.count({where:{productId:String(item.id)}}),
+      context.prisma.orderLineItem.count({where:{productId:String(item.id)}}),
+      context.prisma.pOItem.count({where:{productId:String(item.id)}}),
+    ]);
+    if (lots + orders + purchasing > 0) throw new Error('Physical units on stocked or historically transacted products are immutable; create a separate SKU');
+  }
+  return {
+    ...resolvedData,
+    sku,
+    skuIdentity: deriveProductSkuIdentity(storeId, sku),
+    priceCents: resolvedData.price !== undefined ? Math.round(Number(resolvedData.price) * 100) : resolvedData.priceCents,
+    costPriceCents: resolvedData.costPrice !== undefined ? Math.round(Number(resolvedData.costPrice) * 100) : resolvedData.costPriceCents,
+    ...(operation === 'create' ? { store: { connect: { id: storeId } }, initialInformation:initialProductInformation(resolvedData,session.itemId,'operator_catalog_create') } : {}),
+  };
+}
 
 export const Product = list({
   access: {
@@ -25,7 +63,7 @@ export const Product = list({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = storeScopedFilter({ session });
+        const store = await storeScopedFilter({ session, context });
         if (await permissions.canManageProducts({ session, context })) return store;
         return { AND: [publicStoreScopedFilter(), { status: { equals: "published" } }] };
       },
@@ -34,18 +72,10 @@ export const Product = list({
     },
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) return resolvedData;
-      return {
-        ...resolvedData,
-        priceCents: resolvedData.price !== undefined ? Math.round(Number(resolvedData.price) * 100) : resolvedData.priceCents,
-        costPriceCents: resolvedData.costPrice !== undefined ? Math.round(Number(resolvedData.costPrice) * 100) : resolvedData.costPriceCents,
-        store: { connect: { id: context.session.data.store.id } },
-      };
-    },
+    resolveInput: resolveProductCatalogIdentity,
     validate: {
       create: async ({ resolvedData, context, addValidationError }) => {
-        const storeId = context.session?.data.store?.id;
+        const storeId = await currentMembershipStoreId({ session: context.session, context });
         const supplierId = resolvedData.supplier?.connect?.id;
         const departmentId = resolvedData.departmentRef?.connect?.id;
         if (supplierId) {
@@ -58,7 +88,7 @@ export const Product = list({
         }
       },
       update: async ({ resolvedData, context, addValidationError }) => {
-        const storeId = context.session?.data.store?.id;
+        const storeId = await currentMembershipStoreId({ session: context.session, context });
         const supplierId = resolvedData.supplier?.connect?.id;
         const departmentId = resolvedData.departmentRef?.connect?.id;
         if (supplierId) {
@@ -108,6 +138,18 @@ export const Product = list({
     },
   },
   fields: {
+    skuIdentity: text({
+      isIndexed: 'unique',
+      db: { isNullable: true },
+      access: { read: () => false, create: () => false, update: () => false },
+      ui: { createView: { fieldMode: 'hidden' }, itemView: { fieldMode: 'hidden' } },
+    }),
+    variantOf: relationship({ref:'Product',access:{create:()=>false,update:()=>false}}),
+    variantLabel: text({access:{create:()=>false,update:()=>false}}),
+    packBaseUnitsMilli: integer({defaultValue:1000,validation:{isRequired:true,min:1},access:{create:()=>false,update:()=>false}}),
+    nutrition: json({defaultValue:{},access:{create:()=>false,update:()=>false}}),
+    informationSource: text({access:{create:()=>false,update:()=>false}}),
+    initialInformation: json({defaultValue:{},access:{read:permissions.canManageProducts,create:()=>false,update:()=>false}}),
     title: text({
       validation: { isRequired: true },
       label: "Product Title",
@@ -181,18 +223,18 @@ export const Product = list({
         description: "Reporting cache only; public sellability is derived from Store-owned unexpired inventory lots",
       },
     }),
-    stockQuantity: integer({
+    stockQuantity: decimal({ precision: 18, scale: 3,
       access: {
         read: permissions.canManageProducts,
         create: () => false,
         update: () => false,
       },
-      defaultValue: 0,
+      defaultValue: "0",
       label: "Stock Quantity",
       ui: {
         description: "Reporting cache only; public sellable quantity is derived from Store-owned unexpired inventory lots",
       },
-      validation: { min: 0 },
+      validation: { min: "0" },
     }),
     lowStockThreshold: integer({
       access: { read: permissions.canManageProducts },
@@ -252,6 +294,11 @@ export const Product = list({
         description: "Number of days product remains fresh",
       },
     }),
+    taxRateBasisPoints: integer({
+      validation: { min: 0, max: 10000 },
+      db: { isNullable: true },
+      ui: { description: 'Item tax basis points; blank inherits the Store rate, zero is exempt. Confirm your configured policy.' },
+    }),
     pricingMethod: select({
       type: "enum",
       options: [
@@ -290,6 +337,7 @@ export const Product = list({
       },
     }),
     allergens: multiselect({
+      access: { update: () => false },
       type: "enum",
       options: [
         { label: "Milk", value: "milk" },

@@ -1,5 +1,5 @@
 import { list } from '@keystone-6/core';
-import { integer, relationship, select, text } from '@keystone-6/core/fields';
+import { decimal, relationship, select, text } from '@keystone-6/core/fields';
 
 import { permissions } from '../access';
 import { trackingFields } from './trackingFields';
@@ -29,11 +29,11 @@ export const InventoryAdjustment = list({
       ],
       validation: { isRequired: true },
     }),
-    quantityBefore: integer({ validation: { isRequired: true } }),
-    quantityAfter: integer({ validation: { isRequired: true } }),
-    quantityDelta: integer({ validation: { isRequired: true } }),
-    productStockBefore: integer({ validation: { isRequired: true } }),
-    productStockAfter: integer({ validation: { isRequired: true } }),
+    quantityBefore: decimal({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    quantityAfter: decimal({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    quantityDelta: decimal({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    productStockBefore: decimal({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    productStockAfter: decimal({ precision: 18, scale: 3, validation: { isRequired: true } }),
     note: text(),
     store: relationship({
       ref: 'Store.inventoryAdjustments',

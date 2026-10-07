@@ -1,0 +1,2 @@
+import { UrbanContainer, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
+export default function Loading() { return <UrbanPageShell><UrbanContainer className="space-y-5 py-8" ><h1 className="sf-title">Getting things ready…</h1><p role="status" className="sf-copy">Loading your shop. Please wait.</p><div aria-hidden="true" className="grid grid-cols-2 gap-4 md:grid-cols-4">{[1,2,3,4].map((item) => <div key={item} className="aspect-[3/4] animate-pulse rounded-lg bg-[var(--sf-paper-3)]" />)}</div></UrbanContainer></UrbanPageShell>; }

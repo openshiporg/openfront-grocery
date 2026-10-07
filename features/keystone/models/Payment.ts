@@ -12,7 +12,7 @@ import {
 import { isSignedIn, permissions } from "../access";
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreScopedFilter } from '../lib/storeAccess';
 
 export const Payment = list({
   access: {
@@ -25,13 +25,13 @@ export const Payment = list({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = storeScopedFilter({ session });
+        const store = await currentMembershipStoreScopedFilter({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { order: { user: { id: { equals: session.itemId } } } }] };
         return false;
       },
-      update: storeScopedFilter,
+      update: currentMembershipStoreScopedFilter,
       delete: () => false,
     },
   },
@@ -68,6 +68,7 @@ export const Payment = list({
       type: "string",
       options: [
         { label: "Pending", value: "pending" },
+        { label: "Authorized", value: "authorized" },
         { label: "Processing", value: "processing" },
         { label: "Succeeded", value: "succeeded" },
         { label: "Failed", value: "failed" },
@@ -112,8 +113,10 @@ export const Payment = list({
       },
     }),
 
+    // Raw provider and fencing diagnostics stay on trusted server-side paths.
     providerData: json({
       defaultValue: {},
+      access: { read: () => false },
       ui: {
         description: 'Normalized provider payload and metadata',
       },

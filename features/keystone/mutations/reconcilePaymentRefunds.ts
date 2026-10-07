@@ -1,11 +1,13 @@
+import { reconcileOrderLineRefundRows } from '../lib/refundAllocations';
+import { reconcileVerifiedRefundEvents } from './handlePaymentProviderWebhook';
 import { randomUUID } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
-import { refundPayment } from '../utils/paymentProviderAdapter';
+import { refundPayment, getRefundStatus } from '../utils/paymentProviderAdapter';
 import { withSerializableRetry } from '../utils/serializableTransaction';
-import type { RefundStatus } from '../lib/refundState';
+import { assertRefundBudget, assertRefundCreationWindow, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
 
 export const REFUND_RECONCILIATION_LEASE_MS = 30_000;
 export const REFUND_RECONCILIATION_MAX_ATTEMPTS = 5;
@@ -19,19 +21,16 @@ type RefundWorkerClaim = {
   providerPaymentId: string;
   amountCents: number;
   idempotencyKey: string;
-  provider: { id: string; code: string; isInstalled: boolean; metadata: unknown };
+  providerRefundId: string | null;
+  requestedAt: Date;
+  currencyCode: string;
+  provider: { id: string; code: string; isInstalled: boolean; publicCheckout: boolean; supportsIdempotentCapture: boolean; captureIdempotencyEvidence: string; credentials: unknown; metadata: unknown;
+    createPaymentFunction: string; capturePaymentFunction: string; refundPaymentFunction: string; getPaymentStatusFunction: string;
+    getRefundStatusFunction: string; cancelPaymentFunction: string; generatePaymentLinkFunction: string; handleWebhookFunction: string };
   owner: string;
   token: string;
   attempts: number;
 };
-
-function providerResultStatus(result: any): RefundStatus {
-  const status = String(result?.status || '').toLowerCase();
-  if (status === 'succeeded' || status === 'paid') return 'succeeded';
-  if (status === 'pending' || status === 'processing') return 'processing';
-  if (status === 'canceled' || status === 'cancelled') return 'canceled';
-  return 'failed';
-}
 
 function retryDelayMs(attempts: number) {
   return Math.min(5 * 60_000, 10_000 * (2 ** Math.max(0, attempts - 1)));
@@ -49,7 +48,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
   }
 }
 
-async function claimNextRefund(context: Context, owner: string, storeId: string): Promise<RefundWorkerClaim | null> {
+async function claimNextRefund(context: Context, owner: string, storeId: string, currencyCode: string): Promise<RefundWorkerClaim | null> {
   const token = randomUUID();
   const rows = await context.prisma.$queryRawUnsafe<any[]>(
     `WITH candidate AS (
@@ -73,8 +72,14 @@ async function claimNextRefund(context: Context, owner: string, storeId: string)
      FROM candidate c, "Payment" p, "PaymentProvider" pp
      WHERE r."id" = c."id" AND p."id" = r."payment" AND pp."id" = p."paymentProvider"
      RETURNING r."id", r."payment" AS "paymentId", p."store" AS "storeId", r."providerCode",
-       r."providerPaymentId", r."amountCents", r."idempotencyKey", r."reconciliationAttempts" AS "attempts",
-       pp."id" AS "providerId", pp."code" AS "providerProviderCode", pp."isInstalled" AS "providerInstalled", pp."metadata" AS "providerMetadata"`,
+       r."providerPaymentId", r."providerRefundId", r."requestedAt", r."amountCents", r."idempotencyKey", r."reconciliationAttempts" AS "attempts",
+       pp."id" AS "providerId", pp."code" AS "providerProviderCode", pp."isInstalled" AS "providerInstalled",
+       pp."publicCheckout" AS "providerPublicCheckout", pp."supportsIdempotentCapture" AS "providerSupportsIdempotentCapture",
+       pp."captureIdempotencyEvidence" AS "providerCaptureIdempotencyEvidence", pp."credentials" AS "providerCredentials", pp."metadata" AS "providerMetadata",
+       pp."createPaymentFunction" AS "providerCreatePaymentFunction", pp."capturePaymentFunction" AS "providerCapturePaymentFunction",
+       pp."refundPaymentFunction" AS "providerRefundPaymentFunction", pp."getPaymentStatusFunction" AS "providerGetPaymentStatusFunction",
+       pp."getRefundStatusFunction" AS "providerGetRefundStatusFunction", pp."cancelPaymentFunction" AS "providerCancelPaymentFunction",
+       pp."generatePaymentLinkFunction" AS "providerGeneratePaymentLinkFunction", pp."handleWebhookFunction" AS "providerHandleWebhookFunction"`,
     owner, token, REFUND_RECONCILIATION_LEASE_MS, storeId,
   );
   const row = rows[0];
@@ -87,7 +92,16 @@ async function claimNextRefund(context: Context, owner: string, storeId: string)
     providerPaymentId: row.providerPaymentId,
     amountCents: Number(row.amountCents),
     idempotencyKey: row.idempotencyKey,
-    provider: { id: row.providerId, code: row.providerProviderCode, isInstalled: row.providerInstalled, metadata: row.providerMetadata },
+    providerRefundId: row.providerRefundId || null,
+    requestedAt: row.requestedAt,
+    currencyCode,
+    provider: { id: row.providerId, code: row.providerProviderCode, isInstalled: row.providerInstalled, publicCheckout: row.providerPublicCheckout,
+      supportsIdempotentCapture: row.providerSupportsIdempotentCapture, captureIdempotencyEvidence: row.providerCaptureIdempotencyEvidence,
+      credentials: row.providerCredentials, metadata: row.providerMetadata, createPaymentFunction: row.providerCreatePaymentFunction,
+      capturePaymentFunction: row.providerCapturePaymentFunction, refundPaymentFunction: row.providerRefundPaymentFunction,
+      getPaymentStatusFunction: row.providerGetPaymentStatusFunction, getRefundStatusFunction: row.providerGetRefundStatusFunction,
+      cancelPaymentFunction: row.providerCancelPaymentFunction, generatePaymentLinkFunction: row.providerGeneratePaymentLinkFunction,
+      handleWebhookFunction: row.providerHandleWebhookFunction },
     owner,
     token,
     attempts: Number(row.attempts),
@@ -118,14 +132,9 @@ async function releaseForRetry(context: Context, claim: RefundWorkerClaim, messa
 }
 
 async function completeClaim(context: Context, claim: RefundWorkerClaim, response: any) {
-  const status = providerResultStatus(response);
-  const providerRefundId = response?.data?.id || response?.id || null;
-  if (response?.amount !== undefined && Number(response.amount) !== claim.amountCents) {
-    return releaseForRetry(context, claim, 'Payment provider returned a mismatched refund amount');
-  }
-  if (response?.currency && String(response.currency).toLowerCase() !== 'usd') {
-    return releaseForRetry(context, claim, 'Payment provider returned a mismatched refund currency');
-  }
+  const normalized = normalizeProviderRefund(response, claim);
+  const status = normalized.status;
+  const providerRefundId = normalized.id;
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
@@ -134,8 +143,10 @@ async function completeClaim(context: Context, claim: RefundWorkerClaim, respons
     const refund = await tx.paymentRefund.findUnique({ where: { id: claim.id } });
     if (!refund || refund.status !== 'processing' || refund.reconciliationOwner !== claim.owner || refund.reconciliationToken !== claim.token) return 'fenced';
     if (status === 'processing') {
-      await tx.paymentRefund.update({ where: { id: claim.id }, data: { reconciliationOwner: null, reconciliationToken: null, reconciliationLeaseExpiresAt: null, reconciliationNextAttemptAt: new Date(Date.now() + retryDelayMs(claim.attempts)), reconciliationLastError: 'Provider still reports processing', providerStatus: 'processing' } });
-      return 'retry';
+      const deadLetter = claim.attempts >= REFUND_RECONCILIATION_MAX_ATTEMPTS;
+      await tx.paymentRefund.update({ where: { id: claim.id }, data: { providerRefundId, providerData: refundProviderData(refund.providerData, normalized.resource), reconciliationOwner: null, reconciliationToken: null, reconciliationLeaseExpiresAt: null, reconciliationNextAttemptAt: deadLetter ? null : new Date(Date.now() + retryDelayMs(claim.attempts)), reconciliationDeadLetterAt: deadLetter ? new Date() : null, reconciliationLastError: 'Provider still reports processing', providerStatus: normalized.rawStatus, failureMessage: deadLetter ? 'Refund processing requires operator reconciliation after retry limit' : '' } });
+      await reconcileOrderLineRefundRows(tx, await tx.paymentRefund.findUnique({ where: { id: claim.id } }));
+      return deadLetter ? 'dead_letter' : 'retry';
     }
 
     await tx.paymentRefund.update({
@@ -144,7 +155,7 @@ async function completeClaim(context: Context, claim: RefundWorkerClaim, respons
         status,
         providerRefundId,
         providerStatus: String(response?.status || status).toLowerCase(),
-        providerData: response?.data || response || {},
+        providerData: refundProviderData(refund.providerData, normalized.resource),
         processedAt: new Date(),
         failureMessage: status === 'failed' ? 'Provider reported refund failure' : status === 'canceled' ? 'Provider canceled refund' : '',
         reconciliationOwner: null,
@@ -154,6 +165,7 @@ async function completeClaim(context: Context, claim: RefundWorkerClaim, respons
         reconciliationLastError: null,
       },
     });
+    await reconcileOrderLineRefundRows(tx, await tx.paymentRefund.findUnique({ where: { id: claim.id } }));
     if (status === 'succeeded') {
       const aggregate = await tx.paymentRefund.aggregate({ where: { paymentId: claim.paymentId, status: 'succeeded' }, _sum: { amountCents: true } });
       const refundedCents = Number(aggregate._sum.amountCents || 0);
@@ -172,21 +184,32 @@ export async function runRefundReconciliationOnce(context: Context, { limit = 20
   const boundedLimit = Math.max(1, Math.min(50, Math.trunc(Number(limit))));
   const results: unknown[] = [];
   for (let index = 0; index < boundedLimit; index += 1) {
-    const claim = await claimNextRefund(context, owner, store.id);
+    const claim = await claimNextRefund(context, owner, store.id, store.currencyCode.toLowerCase());
     if (!claim) break;
     if (!claim.provider.isInstalled) {
       results.push({ refundId: claim.id, status: await releaseForRetry(context, claim, 'Refund provider is unavailable') });
       continue;
     }
     try {
+      await context.transaction(async (transactionContext) => {
+        const tx = transactionContext.prisma;
+        await tx.$queryRawUnsafe('SELECT \"id\" FROM \"Payment\" WHERE \"id\" = $1 FOR UPDATE', claim.paymentId);
+        const current = await tx.paymentRefund.findUnique({ where: { id: claim.id } });
+        if (!current || current.status !== 'processing' || current.reconciliationToken !== claim.token) throw new Error('Refund worker claim was fenced');
+        const payment = await tx.payment.findUnique({ where: { id: claim.paymentId }, select: { amountCents: true } });
+        await assertRefundBudget(tx, claim.paymentId, Number(payment?.amountCents), claim.amountCents, claim.id, claim.idempotencyKey);
+        claim.providerRefundId = current.providerRefundId || null;
+      });
+      assertRefundCreationWindow(claim.requestedAt, claim.providerRefundId);
       const providerTimeoutMs = Math.max(25, Number(process.env.REFUND_RECONCILIATION_PROVIDER_TIMEOUT_MS || DEFAULT_PROVIDER_TIMEOUT_MS));
-      const response = await withTimeout(refundPayment({ provider: claim.provider as any, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey }), providerTimeoutMs);
+      const response = await withTimeout(claim.providerRefundId ? getRefundStatus({ provider: claim.provider, refundId: claim.providerRefundId }) : refundPayment({ provider: claim.provider, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey }), providerTimeoutMs);
       results.push({ refundId: claim.id, status: await completeClaim(context, claim, response) });
     } catch (error) {
       results.push({ refundId: claim.id, status: await releaseForRetry(context, claim, error instanceof Error ? error.message : 'Refund provider failed') });
     }
   }
-  return { scanned: results.length, results };
+  const webhookRecovery = await reconcileVerifiedRefundEvents(context, store.id, boundedLimit);
+  return { scanned: results.length, results, webhookRecovery };
 }
 
 export async function reconcilePaymentRefunds(_root: unknown, { limit = 20 }: { limit?: number }, context: Context) {

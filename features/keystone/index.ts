@@ -9,6 +9,7 @@ import { permissions } from "./access";
 import { assertProductionPaymentConfig, getCanonicalSiteUrl, getDatabaseUrl, getPublicStoreId, getSessionMaxAge, getSessionSecret, getStorageConfig, isProduction } from './lib/runtimeConfig';
 import { boundedGraphqlDepthRule, rejectIntrospectionInProduction } from './lib/graphqlSecurity';
 import { graphqlRateLimitPlugin } from './lib/graphqlRateLimit';
+import { extendPrismaClientWithErrorNormalization } from './utils/serializableTransaction';
 import { resolveApplicationOrigin } from '../../lib/applicationOrigin';
 
 const databaseURL = getDatabaseUrl();
@@ -95,6 +96,7 @@ export default withAuth(
     db: {
       provider: "postgresql",
       url: databaseURL,
+      extendPrismaClient: extendPrismaClientWithErrorNormalization,
     },
     lists: models,
     storage: {

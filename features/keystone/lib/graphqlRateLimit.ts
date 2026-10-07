@@ -27,17 +27,19 @@ export async function consumeSharedBucket(prisma: any, key: string, limit: numbe
 export async function enforceGraphqlRateLimit({
   prisma,
   headers,
+  remoteAddress,
   identity,
   query,
 }: {
   prisma: any;
   headers?: Headers;
+  remoteAddress?: string | null;
   identity?: string | null;
   query: string;
 }) {
   if (query.length > MAX_GRAPHQL_QUERY_LENGTH) throw new GraphQLError('GraphQL request is too large', { extensions: { code: 'QUERY_TOO_LARGE' } });
   if (!prisma) throw new GraphQLError('Rate limiter unavailable', { extensions: { code: 'RATE_LIMITER_UNAVAILABLE' } });
-  const ip = requestIp(headers);
+  const ip = requestIp(headers, remoteAddress);
   const operationClass = isDangerousAuthOperation(query) ? 'auth' : isGraphqlMutation(query) ? 'mutation' : 'query';
   const limit = operationClass === 'auth'
     ? AUTH_LIMIT

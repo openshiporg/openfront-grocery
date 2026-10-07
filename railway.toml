@@ -1,11 +1,8 @@
-# Build is immutable and never connects to the production database.
-# Railway runs migrations once in pre-deploy before starting replicas.
+# Match GOLD: build without DB access; migrate when the runtime starts.
 [build]
-buildCommand = "npm run build"
+buildCommand = "keystone build --no-ui && next build"
 
 [deploy]
-# Railway runs this after build and before starting immutable app replicas.
-preDeployCommand = "npm run release:migrate"
-startCommand = "next start"
+startCommand = "npm run migrate && next start"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 300

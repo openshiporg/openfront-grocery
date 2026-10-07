@@ -1,12 +1,19 @@
+import {initialProductInformation} from '../lib/productInformation';
 import type { Context } from '.keystone/types';
+import type { Prisma } from '@prisma/client';
+import { getPaymentProviderDefinition } from '../../integrations/payment';
 import seedDefaults from '../../platform/onboarding/lib/seed.json';
+import {
+  parseGroceryOnboardingSeed,
+  type GroceryOnboardingSeed,
+} from '../../platform/onboarding/lib/groceryOnboardingSeed';
 import { requireFreshCapability } from '../access';
 import { assertValidRollingFulfillmentPolicy, resolveRollingFulfillmentPolicy } from '../lib/rollingFulfillment';
 import { requireSessionStore } from '../lib/storeScope';
 import { normalizeTaxRateBps } from '../lib/storeMoney';
 import { assertValidTimeZone, zonedDateKeyOffset, zonedStartOfDateKey } from '../lib/storeTime';
+import { deriveProductSkuIdentity, normalizeProductSku } from '../lib/productSkuIdentity';
 
-type GrocerySeed = typeof seedDefaults;
 export type GroceryOnboardingFailurePoint = 'after-products';
 
 export function relativeDate(days: number, hour = 12, minute = 0, now = new Date()) {
@@ -20,12 +27,7 @@ function startOfStoreDay(days: number, timeZone: string, now = new Date()) {
   return zonedStartOfDateKey(zonedDateKeyOffset(now, timeZone, days), timeZone);
 }
 
-function assertSeed(seed: GrocerySeed) {
-  if (!seed?.storeSettings?.name || !seed.departments?.length || !seed.products?.length) {
-    throw new Error('Grocery onboarding requires store settings, departments, and products');
-  }
-  if (seed.storeSettings.currencyCode !== 'USD') throw new Error('The bounded initial launch supports USD stores only');
-  if (seed.storeSettings.isActive !== true) throw new Error('Onboarding cannot initialize an inactive Store');
+function assertSeedPolicy(seed: GroceryOnboardingSeed) {
   assertValidTimeZone(seed.storeSettings.timezone);
   assertValidRollingFulfillmentPolicy(seed.storeSettings.hours);
   const fulfillmentPolicy = resolveRollingFulfillmentPolicy({
@@ -37,19 +39,6 @@ function assertSeed(seed: GrocerySeed) {
     throw new Error('Onboarding requires configured rolling delivery and pickup windows');
   }
   normalizeTaxRateBps(seed.storeSettings.taxRateBps);
-  const handles = seed.products.map((product) => product.handle);
-  if (new Set(handles).size !== handles.length) throw new Error('Product handles must be unique');
-  for (const lot of seed.inventoryLots) {
-    if (!Number.isInteger(lot.expirationOffsetDays) || lot.expirationOffsetDays < 1) {
-      throw new Error(`Inventory lot ${lot.lotNumber} must expire relative to onboarding in the future`);
-    }
-    if (!Number.isInteger(lot.quantityRemaining) || lot.quantityRemaining < 0 || lot.quantityRemaining > lot.quantity) {
-      throw new Error(`Inventory lot ${lot.lotNumber} has an invalid remaining quantity`);
-    }
-  }
-  if (seed.paymentProviders?.length !== 1 || seed.paymentProviders[0]?.code !== 'pp_stripe_default') {
-    throw new Error('Onboarding requires exactly the static Stripe adapter registry entry');
-  }
 }
 
 function providerInstalled(code: string) {
@@ -57,19 +46,19 @@ function providerInstalled(code: string) {
     && Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 }
 
-function publicProviderMetadata(metadata: unknown) {
-  const source = metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata as Record<string, unknown> : {};
-  return Object.fromEntries(Object.entries(source).filter(([key]) => !/(secret|token|password|credential|key)/i.test(key)));
+function publicProviderMetadata(metadata: GroceryOnboardingSeed['paymentProviders'][number]['metadata']): Prisma.InputJsonValue {
+  return { provider: metadata.provider, configuration: metadata.configuration };
 }
 
 export async function runGroceryOnboardingTransaction(
-  seed: GrocerySeed,
+  input: unknown,
   context: Context,
   failurePoint?: GroceryOnboardingFailurePoint
 ) {
   const userId = context.session?.itemId;
   if (!userId) throw new Error('You must be signed in to run grocery onboarding');
-  assertSeed(seed);
+  const seed = parseGroceryOnboardingSeed(input);
+  assertSeedPolicy(seed);
   const store = await requireSessionStore(context);
   const launchCounts = {
     departments: seed.departments.length,
@@ -129,10 +118,14 @@ export async function runGroceryOnboardingTransaction(
         isActive: seed.storeSettings.isActive,
       },
     });
+    const storeSettingsData = {
+      ...seed.storeSettings,
+      hours: seed.storeSettings.hours as Prisma.InputJsonValue,
+    };
     await tx.storeSettings.upsert({
       where: { storeId: store.id },
-      update: seed.storeSettings,
-      create: { ...seed.storeSettings, storeId: store.id },
+      update: storeSettingsData,
+      create: { ...storeSettingsData, storeId: store.id },
     });
 
     const departmentIds = new Map<string, string>();
@@ -184,7 +177,8 @@ export async function runGroceryOnboardingTransaction(
     for (const product of seed.products) {
       const common = {
         title: product.title,
-        sku: product.sku,
+        sku: normalizeProductSku(product.sku),
+        skuIdentity: deriveProductSkuIdentity(store.id, product.sku),
         status: product.status as any,
         price: product.price,
         priceCents: Math.round(product.price * 100),
@@ -212,6 +206,8 @@ export async function runGroceryOnboardingTransaction(
         ? await tx.product.update({ where: { id: existing.id }, data: common, select: { id: true } })
         : await tx.product.create({ data: {
           ...common,
+          // Source-added field; generated Prisma artifacts remain intentionally preserved until the schema transition.
+          ...{initialInformation:initialProductInformation(product,context.session!.itemId,'grocery_onboarding_seed')},
           handle: product.handle,
           inStock: product.inStock,
           stockQuantity: product.stockQuantity,
@@ -288,10 +284,29 @@ export async function runGroceryOnboardingTransaction(
     }
 
     for (const provider of seed.paymentProviders) {
+      const definition = getPaymentProviderDefinition(provider.code);
+      const adapterSelectors = {
+        createPaymentFunction: definition.adapterKey,
+        capturePaymentFunction: definition.adapterKey,
+        refundPaymentFunction: definition.adapterKey,
+        getPaymentStatusFunction: definition.adapterKey,
+        getRefundStatusFunction: definition.adapterKey,
+        cancelPaymentFunction: definition.adapterKey,
+        generatePaymentLinkFunction: definition.adapterKey,
+        handleWebhookFunction: definition.adapterKey,
+      };
       await tx.paymentProvider.upsert({
         where: { code: provider.code },
-        update: { name: provider.name, isInstalled: providerInstalled(provider.code), metadata: publicProviderMetadata(provider.metadata) as any },
-        create: { ...provider, isInstalled: providerInstalled(provider.code), metadata: publicProviderMetadata(provider.metadata) as any },
+        // Keep persisted checkout opt-in and adapter configuration operator-owned.
+        update: { name: provider.name, isInstalled: providerInstalled(provider.code), metadata: publicProviderMetadata(provider.metadata) },
+        create: {
+          ...provider,
+          isInstalled: providerInstalled(provider.code),
+          publicCheckout: definition.publicCheckout,
+          supportsIdempotentCapture: definition.supportsIdempotentCapture,
+          ...adapterSelectors,
+          metadata: publicProviderMetadata(provider.metadata),
+        },
       });
     }
 
@@ -323,9 +338,9 @@ export async function runGroceryOnboardingTransaction(
 
 export async function runGroceryOnboarding(
   _root: unknown,
-  args: { seed?: GrocerySeed | null },
+  args: { seed?: unknown },
   context: Context
 ) {
   await requireFreshCapability(context, 'canManageOnboarding');
-  return runGroceryOnboardingTransaction(args.seed || seedDefaults, context);
+  return runGroceryOnboardingTransaction(args.seed ?? seedDefaults, context);
 }

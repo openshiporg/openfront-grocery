@@ -18,6 +18,8 @@ export const VIEW_ORDER = [
   "select",
   "json",
   "multiselect",
+  "json",
+  "json",
   "decimal",
   "document",
   "password"

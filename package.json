@@ -13,16 +13,16 @@
     "url": "https://github.com/openshiporg/openfront-grocery/issues"
   },
   "scripts": {
+    "worker:events": "tsx scripts/grocery-event-worker.ts",
+    "worker:subscriptions": "tsx scripts/grocery-subscription-worker.ts",
     "dev": "keystone build --no-ui && npm run migrate && next dev",
-    "build": "GROCERY_IMMUTABLE_BUILD=true keystone build --no-ui && GROCERY_IMMUTABLE_BUILD=true next build",
+    "build": "keystone build --no-ui && next build",
     "start": "next start",
-    "ingress:proxy": "tsx infra/grocery-ingress.ts",
     "lint": "eslint .",
     "worker:refund-reconcile": "tsx scripts/refund-reconciliation-worker.ts",
     "worker:refund-reconcile:once": "tsx scripts/reconcile-payment-refunds.ts",
     "migrate:gen": "keystone build --no-ui && tsx features/keystone/view-order/generate-view-order.ts && keystone prisma migrate dev",
-    "migrate": "prisma migrate deploy",
-    "release:migrate": "prisma migrate deploy"
+    "migrate": "prisma migrate deploy"
   },
   "dependencies": {
     "@ai-sdk/mcp": "^1.0.13",

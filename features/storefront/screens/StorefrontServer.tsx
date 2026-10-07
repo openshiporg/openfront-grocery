@@ -1,5 +1,6 @@
 'use client';
 
+import { MarketBasketProvider } from '../modules/market/MarketBasket';
 import QueryProvider from '../lib/providers/query-client-provider';
 
 interface StorefrontServerProps {
@@ -14,5 +15,5 @@ interface StorefrontServerProps {
 }
 
 export default function StorefrontServer({ children }: StorefrontServerProps) {
-  return <QueryProvider>{children}</QueryProvider>;
+  return <QueryProvider><MarketBasketProvider>{children}</MarketBasketProvider></QueryProvider>;
 }

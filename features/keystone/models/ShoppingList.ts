@@ -18,16 +18,16 @@ export const ShoppingList = list({
       delete: () => false,
     },
     filter: {
-      query: ({ session }) => {
-        const store = ownerStoreScopedFilter('user')({ session });
+      query: async ({ session, context }) => {
+        const store = await ownerStoreScopedFilter('user')({ session, context });
         return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
-      update: ({ session }) => {
-        const store = ownerStoreScopedFilter('user')({ session });
+      update: async ({ session, context }) => {
+        const store = await ownerStoreScopedFilter('user')({ session, context });
         return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
-      delete: ({ session }) => {
-        const store = ownerStoreScopedFilter('user')({ session });
+      delete: async ({ session, context }) => {
+        const store = await ownerStoreScopedFilter('user')({ session, context });
         return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
     },

@@ -4,10 +4,11 @@ export const JUNIPER_STORE_ID = 'store_juniper';
 
 export async function requireSessionStore(context: Context) {
   if (!context.session?.itemId) throw new Error('Store-scoped operation requires authentication');
-  const user = await context.prisma.user.findUnique({
+  const user = await (context.prisma as any).user.findUnique({
     where: { id: context.session.itemId },
-    select: { storeId: true, store: { select: { id: true, code: true, name: true, isActive: true, timezone: true, currencyCode: true } } },
+    select: { privacyErasedAt: true, storeId: true, store: { select: { id: true, code: true, name: true, isActive: true, timezone: true, currencyCode: true } } },
   });
+  if (user?.privacyErasedAt) throw new Error('This account has completed an erasure request');
   if (!user?.storeId || !user.store?.isActive) throw new Error('Active store scope is required');
   return user.store;
 }

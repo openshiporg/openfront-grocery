@@ -105,6 +105,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         await enforceGraphqlRateLimit({
           prisma: args.contextValue?.prisma,
           headers,
+          remoteAddress: req.socket.remoteAddress,
           identity: args.contextValue?.session?.itemId,
           query: print(args.document),
         });

@@ -1,26 +1,21 @@
-import { resolveApplicationOrigin } from '@/lib/applicationOrigin';
+import { getInternalGraphQLEndpoint, getTrustedApplicationOrigin } from '@/features/keystone/lib/internalTransport';
 
 const GRAPHQL_PATH = '/api/graphql';
 
 /**
- * Resolve the storefront origin from the live request. Portless development
- * needs no URL-specific environment variable: browser calls stay relative and
- * server calls follow the verified forwarded Host/protocol supplied by the
- * local proxy. Production remains pinned to NEXT_PUBLIC_SITE_URL.
+ * Resolve the storefront origin from browser location or trusted launcher /
+ * deployment configuration. Server-side credential-bearing requests never
+ * derive their destination from request Host or forwarding headers.
  */
 export async function getBaseUrl(): Promise<string> {
   if (typeof window !== 'undefined') return window.location.origin;
 
-  try {
-    const { headers } = await import('next/headers');
-    return resolveApplicationOrigin({ headers: await headers() });
-  } catch (error) {
-    if (process.env.NODE_ENV === 'production') throw error;
-    return resolveApplicationOrigin({ headers: null });
-  }
+  return getTrustedApplicationOrigin();
 }
 
 export async function getGraphQLEndpoint(): Promise<string> {
   if (typeof window !== 'undefined') return GRAPHQL_PATH;
-  return new URL(GRAPHQL_PATH, await getBaseUrl()).toString();
+  const internalEndpoint = getInternalGraphQLEndpoint();
+  if (internalEndpoint) return internalEndpoint;
+  return new URL(GRAPHQL_PATH, getTrustedApplicationOrigin()).toString();
 }

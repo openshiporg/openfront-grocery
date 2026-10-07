@@ -24,12 +24,12 @@ export async function SignInPage({ searchParams }: SignInPageProps) {
           Sign in to your account
         </h3>
         <p className="mt-2 text-sm text-muted-foreground dark:text-muted-foreground">
-          Don&apos;t have an account?
+          Sign in with your existing account. Public registration is not available.
           <Link
-            href="/dashboard/signup"
+            href="/products"
             className="ml-1 font-medium text-primary hover:text-primary/90 dark:text-primary hover:dark:text-primary/90"
           >
-            Sign up
+            Shop as a guest
           </Link>
         </p>
         <SignInForm from={from} />

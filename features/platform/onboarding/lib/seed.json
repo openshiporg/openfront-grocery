@@ -160,8 +160,8 @@
       "supplierEmail": "local-harvest@example.com",
       "isPerishable": true,
       "shelfLife": 7,
-      "pricingMethod": "unit",
-      "unitOfMeasure": "each",
+      "pricingMethod": "weight",
+      "unitOfMeasure": "lb",
       "organicCertified": true,
       "allergens": []
     },
@@ -256,8 +256,8 @@
       "supplierEmail": "ocean-catch@example.com",
       "isPerishable": true,
       "shelfLife": 4,
-      "pricingMethod": "unit",
-      "unitOfMeasure": "each",
+      "pricingMethod": "weight",
+      "unitOfMeasure": "lb",
       "organicCertified": false,
       "allergens": [
         "fish"

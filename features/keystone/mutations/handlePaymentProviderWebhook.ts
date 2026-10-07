@@ -1,3 +1,4 @@
+import { reconcileOrderLineRefundRows } from '../lib/refundAllocations';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { Context } from '.keystone/types';
@@ -5,7 +6,10 @@ import { requireFreshCapability } from '../access';
 import { verifyPaymentWebhook } from '../utils/paymentProviderAdapter';
 import { shouldApplyRefundTransition, type RefundEventOrder, type RefundStatus } from '../lib/refundState';
 import { paymentEventOrderFromProviderData, shouldApplyPaymentTransition, type PaymentEventStatus } from '../lib/paymentState';
-import { withSerializableRetry } from '../utils/serializableTransaction';
+import { assertRefundBudget, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
+import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
+import { requirePrismaSuccess, withSerializableRetry } from '../utils/serializableTransaction';
+import { requireSessionStore } from '../lib/storeScope';
 
 type HandlePaymentProviderWebhookArgs = {
   providerCode: string;
@@ -14,24 +18,43 @@ type HandlePaymentProviderWebhookArgs = {
 };
 
 function normalizePaymentId(resource: any) {
-  return resource?.payment_intent || resource?.id || null;
+  const value = resource?.payment_intent || resource?.id;
+  return typeof value === 'string' ? value : value?.id || null;
 }
 
 function normalizePaymentStatus(eventType: string): PaymentEventStatus | null {
-  if (eventType === 'payment_intent.succeeded' || eventType === 'charge.succeeded') return 'succeeded';
-  if (eventType === 'payment_intent.processing' || eventType === 'charge.pending') return 'processing';
-  if (eventType === 'payment_intent.payment_failed' || eventType === 'charge.failed') return 'failed';
-  if (eventType === 'payment_intent.canceled' || eventType === 'payment_intent.cancelled') return 'cancelled';
+  if (['payment.succeeded', 'payment_intent.succeeded', 'charge.succeeded'].includes(eventType)) return 'succeeded';
+  if (['payment.processing', 'payment_intent.processing', 'charge.pending'].includes(eventType)) return 'processing';
+  if (['payment.failed', 'payment_intent.payment_failed', 'charge.failed'].includes(eventType)) return 'failed';
+  if (['payment.cancelled', 'payment.canceled', 'payment_intent.canceled', 'payment_intent.cancelled'].includes(eventType)) return 'cancelled';
   return null;
 }
 
+function paymentEventMatchesFinancials(eventType: string, resource: any, payment: { amountCents: number }, currencyCode: string) {
+  // Stripe's successful PaymentIntent/Charge events distinguish requested
+  // amount from captured amount. Other adapters use Grocery's integer minor
+  // unit contract (`amountCents`, or integer `amount`) and ISO currency.
+  const amountCents = Number.isSafeInteger(resource?.amountCents)
+    ? resource.amountCents
+    : eventType === 'payment_intent.succeeded'
+      ? resource?.amount_received
+      : eventType === 'charge.succeeded'
+        ? resource?.amount_captured ?? (resource?.captured === true ? resource?.amount : undefined)
+        : resource?.amount;
+  const currencies = [resource?.currencyCode, resource?.currency].filter((value) => value !== undefined && value !== null);
+  if (!Number.isSafeInteger(amountCents) || amountCents < 0 || amountCents !== payment.amountCents || currencies.length === 0) return false;
+  if (currencies.some((value) => typeof value !== 'string' || !value.trim())) return false;
+  const normalizedCurrencies = currencies.map((value: string) => value.trim().toLowerCase());
+  return normalizedCurrencies.every((value) => value === currencyCode.trim().toLowerCase());
+}
+
 function normalizeRefundStatus(eventType: string, resource: any): RefundStatus | null {
-  if (!['refund.created', 'refund.updated', 'refund.failed', 'refund.canceled', 'refund.cancelled', 'charge.refunded'].includes(eventType)) return null;
+  if (!['refund.succeeded', 'refund.processing', 'refund.created', 'refund.updated', 'refund.failed', 'refund.canceled', 'refund.cancelled', 'charge.refunded'].includes(eventType)) return null;
   const providerStatus = String(resource?.status || '').toLowerCase();
   if (providerStatus === 'canceled' || providerStatus === 'cancelled' || eventType === 'refund.canceled' || eventType === 'refund.cancelled') return 'canceled';
   if (providerStatus === 'failed' || eventType === 'refund.failed') return 'failed';
-  if (providerStatus === 'succeeded' || providerStatus === 'paid' || eventType === 'charge.refunded') return 'succeeded';
-  if (providerStatus === 'pending' || providerStatus === 'processing' || eventType === 'refund.created' || eventType === 'refund.updated') return 'processing';
+  if (providerStatus === 'succeeded' || providerStatus === 'paid' || eventType === 'refund.succeeded' || eventType === 'charge.refunded') return 'succeeded';
+  if (providerStatus === 'pending' || providerStatus === 'processing' || eventType === 'refund.processing' || eventType === 'refund.created' || eventType === 'refund.updated') return 'processing';
   return null;
 }
 
@@ -50,25 +73,32 @@ export async function processPaymentProviderWebhook(
 ) {
   if (!rawBody) throw new Error('Payment webhook raw body is required');
 
-  // Static adapter selection and cryptographic verification happen before any
-  // privileged database access.
-  const verified = await verifyPaymentWebhook({
-    providerCode,
-    rawBody,
-    headers: headers || {},
-  });
-  const eventType = verified.type;
-  const providerEventId = verified.eventId;
+  // Resolve only the deployment-owned provider configuration needed to select
+  // its admitted verifier. No event mutation occurs until verification passes.
+  const provider = requirePrismaSuccess(await context.prisma.paymentProvider.findUnique({
+    where: { code: providerCode },
+    select: { id: true, code: true, isInstalled: true, publicCheckout: true, supportsIdempotentCapture: true,
+      captureIdempotencyEvidence: true, credentials: true, metadata: true, createPaymentFunction: true,
+      capturePaymentFunction: true, refundPaymentFunction: true, getPaymentStatusFunction: true,
+      getRefundStatusFunction: true, cancelPaymentFunction: true, generatePaymentLinkFunction: true, handleWebhookFunction: true },
+  }), 'payment provider configuration lookup');
+  if (!provider?.isInstalled) throw new Error(`Payment provider ${providerCode} not found or not installed`);
+  const verified = await verifyPaymentWebhook({ provider, rawBody, headers: headers || {} });
+  if (verified.isValid !== true) throw new Error('Payment webhook signature is invalid');
   const createdSeconds = Number((verified.event as any)?.created || 0);
   if (createdSeconds && Math.abs(Date.now() - createdSeconds * 1000) > 7 * 24 * 60 * 60 * 1000) throw new Error('Payment webhook event is outside the replay window');
-  if (!providerEventId) throw new Error('Payment webhook event id is required');
+  return processVerifiedPaymentEvent(providerCode, verified, createHash('sha256').update(rawBody).digest('hex'), context);
+}
 
+async function processVerifiedPaymentEvent(providerCode: string, verified: any, payloadHash: string, context: Context, expectedStoreId?: string) {
+  const eventType = verified.type;
+  const providerEventId = verified.eventId;
+  if (!providerEventId) throw new Error('Payment webhook event id is required');
   const paymentId = normalizePaymentId(verified.resource);
-  const status = normalizePaymentStatus(eventType);
+  const status = eventType === 'charge.succeeded' && verified.resource?.captured === false ? null : normalizePaymentStatus(eventType);
   const refundStatus = normalizeRefundStatus(eventType, verified.resource);
   const replayKey = `${providerCode}:${providerEventId}`;
   const claimToken = randomUUID();
-  const payloadHash = createHash('sha256').update(rawBody).digest('hex');
   const refundEventOrder = providerEventOrder(verified.event, verified.resource, providerEventId);
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
@@ -88,10 +118,13 @@ export async function processPaymentProviderWebhook(
     }) : null;
     if (knownPayment && knownPayment.paymentProviderId !== provider.id) throw new Error('Payment provider does not match webhook provider');
     const eventStoreId = knownPayment?.storeId || process.env.PUBLIC_STORE_ID || 'store_juniper';
-    const store = await tx.store.findUnique({ where: { id: eventStoreId }, select: { id: true } });
+    if (expectedStoreId && eventStoreId !== expectedStoreId) throw new Error('Verified event payment does not belong to the replay Store');
+    const store = await tx.store.findUnique({ where: { id: eventStoreId }, select: { id: true, currencyCode: true } });
     if (!store) throw new Error('Webhook event could not resolve a Store');
 
-    const eventRecord = await tx.paymentWebhookEvent.upsert({
+    // Source schema includes verifiedPayload; generated client is regenerated
+    // by the authorized deployment build, not by a mutation at runtime.
+    const eventRecord = await (tx.paymentWebhookEvent as any).upsert({
       where: { replayKey },
       update: {},
       create: {
@@ -102,14 +135,17 @@ export async function processPaymentProviderWebhook(
         providerVersion: refundEventOrder.version,
         eventType,
         payloadHash,
+        verifiedPayload: { event: verified.event, eventId: providerEventId, type: eventType, resource: verified.resource },
         claimToken,
         status: 'processing',
         storeId: store.id,
       },
-      select: { id: true, claimToken: true, status: true, paymentRecordId: true },
+      select: { id: true, claimToken: true, status: true, paymentRecordId: true, payloadHash: true, storeId: true, deadLetterAt: true },
     });
 
-    if (eventRecord.claimToken !== claimToken) {
+    if (eventRecord.payloadHash !== payloadHash) throw new Error('Webhook event ID was reused with a different payload');
+    if (eventRecord.storeId !== store.id) throw new Error('Verified event Store does not match its payment Store');
+    if (eventRecord.deadLetterAt || (eventRecord.claimToken !== claimToken && !(eventRecord.status === 'unmatched' && knownPayment))) {
       return {
         success: true,
         duplicate: true,
@@ -125,82 +161,107 @@ export async function processPaymentProviderWebhook(
     let eventProcessingStatus: 'processed' | 'ignored' | 'unmatched' = 'unmatched';
     if (knownPayment && status) {
       updatedPaymentId = knownPayment.id;
-      const currentPaymentOrder = paymentEventOrderFromProviderData(knownPayment.providerData);
-      const apply = shouldApplyPaymentTransition(
-        knownPayment.status as any,
-        status,
-        currentPaymentOrder,
-        refundEventOrder,
-      );
-      if (apply) {
-        await tx.payment.update({
-          where: { id: knownPayment.id },
-          data: {
-            status,
-            providerData: {
-              ...((knownPayment.providerData as Record<string, unknown> | null) || {}),
-              paymentWebhook: {
-                eventId: providerEventId,
-                eventType,
-                status,
-                createdAtMs: refundEventOrder.createdAtMs,
-                version: refundEventOrder.version,
-                payloadHash,
-                receivedAt: new Date().toISOString(),
+      if (paymentEventMatchesFinancials(eventType, verified.resource, knownPayment, store.currencyCode)) {
+        const currentPaymentOrder = paymentEventOrderFromProviderData(knownPayment.providerData);
+        const apply = shouldApplyPaymentTransition(
+          knownPayment.status as any,
+          status,
+          currentPaymentOrder,
+          refundEventOrder,
+        );
+        if (apply) {
+          await tx.payment.update({
+            where: { id: knownPayment.id },
+            data: {
+              status,
+              providerData: {
+                ...((knownPayment.providerData as Record<string, unknown> | null) || {}),
+                paymentWebhook: {
+                  eventId: providerEventId,
+                  eventType,
+                  status,
+                  amountCents: verified.resource?.amountCents ?? verified.resource?.amount_received ?? verified.resource?.amount_captured ?? verified.resource?.amount,
+                  currencyCode: verified.resource?.currencyCode ?? verified.resource?.currency,
+                  createdAtMs: refundEventOrder.createdAtMs,
+                  version: refundEventOrder.version,
+                  payloadHash,
+                  receivedAt: new Date().toISOString(),
+                },
               },
             },
-          },
-        });
-        eventProcessingStatus = 'processed';
-      } else {
-        eventProcessingStatus = 'ignored';
+          });
+          eventProcessingStatus = 'processed';
+        } else {
+          eventProcessingStatus = 'ignored';
+        }
       }
     }
     if (knownPayment && refundStatus) {
-      const resource = verified.resource || {};
-      const refundId = resource.id || null;
-      const resourceAmountCents = Number(resource.amount);
-      const resourceCurrency = String(resource.currency || 'usd').toLowerCase();
-      const candidate = refundId ? await tx.paymentRefund.findFirst({ where: { paymentId: knownPayment.id, providerRefundId: refundId } }) : null;
-      const evidenceMatches = Boolean(candidate && Number.isInteger(resourceAmountCents) && resourceAmountCents === candidate.amountCents && resourceCurrency === 'usd');
-      if (candidate && evidenceMatches) {
-        await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentRefund" WHERE "id" = $1 FOR UPDATE', candidate.id);
-        const refund = await tx.paymentRefund.findUnique({ where: { id: candidate.id } });
-        if (refund) {
+      // charge.refunded describes a Charge, not one Refund; only its actual
+      // refund objects may become ledger rows. Paginated/incomplete evidence is
+      // retained unmatched for operator reconciliation rather than invented.
+      const resources = eventType === 'charge.refunded'
+        ? (verified.resource?.refunds?.data || []) : [verified.resource];
+      let reconciled = resources.length > 0 && !verified.resource?.refunds?.has_more;
+      for (const resource of resources) {
+        const incoming = normalizeRefundStatus(eventType === 'charge.refunded' ? 'refund.updated' : eventType, resource);
+        if (!incoming) { reconciled = false; continue; }
+        const amountCents = resource?.amount;
+        const refundId = resource?.id;
+        let candidate: any = null;
+        try {
+          normalizeProviderRefund({ ...resource, paymentId: resource?.payment_intent || paymentId }, {
+            amountCents, currencyCode: store.currencyCode.toLowerCase(), providerPaymentId: paymentId!,
+          });
+          if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > knownPayment.amountCents) throw new Error('Invalid refund amount');
+          candidate = await tx.paymentRefund.findFirst({ where: { providerCode, providerRefundId: refundId } });
+          const requestKey = resource?.metadata?.groceryRefundKey;
+          if (!candidate && typeof requestKey === 'string') candidate = await tx.paymentRefund.findUnique({ where: { idempotencyKey: requestKey } });
+          if (candidate && (candidate.paymentId !== knownPayment.id || candidate.amountCents !== amountCents || candidate.providerCode !== providerCode || (candidate.providerRefundId && candidate.providerRefundId !== refundId))) throw new Error('Webhook refund does not match existing request');
+          await assertRefundBudget(tx, knownPayment.id, knownPayment.amountCents, amountCents, candidate?.id, candidate?.idempotencyKey);
+        } catch {
+          reconciled = false;
+          continue;
+        }
+          if (!candidate) {
+            // Provider-origin requests have no impersonated human actor.
+            // requestedBy is nullable in the source schema.
+            candidate = await (tx.paymentRefund as any).create({ data: {
+              idempotencyKey: `provider-refund:${providerCode}:${refundId}`,
+              amount: (amountCents / 100).toFixed(2), amountCents, status: 'processing',
+              providerCode, providerPaymentId: paymentId!, providerRefundId: refundId,
+              payment: { connect: { id: knownPayment.id } }, requestedAt: new Date(),
+              providerData: { origin: 'provider_webhook', requestReason: 'Refund initiated at payment provider', currencyCode: store.currencyCode.toLowerCase(), originEventId: providerEventId },
+            } });
+          }
+          await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentRefund" WHERE "id" = $1 FOR UPDATE', candidate.id);
+          const refund = await tx.paymentRefund.findUnique({ where: { id: candidate.id } });
+          if (!refund) throw new Error('Refund disappeared');
           const currentOrder: RefundEventOrder | null = refund.providerEventId
-            ? { createdAtMs: refund.providerEventCreatedAt?.getTime() || 0, version: refund.providerEventVersion || 0, eventId: refund.providerEventId }
-            : null;
-          const apply = shouldApplyRefundTransition(refund.status as RefundStatus, refundStatus, currentOrder, refundEventOrder);
-          if (apply) {
-            await tx.paymentRefund.update({
-              where: { id: refund.id },
-              data: {
-                status: refundStatus,
-                providerStatus: String(resource.status || eventType).toLowerCase(),
-                providerEventId: providerEventId,
-                providerEventCreatedAt: refundEventOrder.createdAtMs ? new Date(refundEventOrder.createdAtMs) : null,
-                providerEventVersion: refundEventOrder.version,
-                processedAt: refundStatus === 'processing' ? null : new Date(),
-                failureMessage: refundStatus === 'failed'
-                  ? 'Provider reported refund failure'
-                  : refundStatus === 'canceled' ? 'Provider canceled refund' : '',
-                providerData: {
-                  ...((refund.providerData as Record<string, unknown> | null) || {}),
-                  providerResponse: resource,
-                },
-              },
-            });
-            if (refundStatus === 'succeeded') {
+            ? { createdAtMs: refund.providerEventCreatedAt?.getTime() || 0, version: refund.providerEventVersion || 0, eventId: refund.providerEventId } : null;
+          if (shouldApplyRefundTransition(refund.status as RefundStatus, incoming, currentOrder, refundEventOrder)) {
+            await tx.paymentRefund.update({ where: { id: refund.id }, data: {
+              status: incoming, providerRefundId: refundId,
+              providerStatus: String(resource.status || eventType).toLowerCase(),
+              providerEventId, providerEventCreatedAt: refundEventOrder.createdAtMs ? new Date(refundEventOrder.createdAtMs) : null,
+              providerEventVersion: refundEventOrder.version,
+              processedAt: incoming === 'processing' ? null : new Date(),
+              failureMessage: incoming === 'failed' ? 'Provider reported refund failure' : incoming === 'canceled' ? 'Provider canceled refund' : '',
+              providerData: refundProviderData(refund.providerData, resource),
+              reconciliationOwner: null, reconciliationToken: null, reconciliationLeaseExpiresAt: null,
+              reconciliationDeadLetterAt: null, reconciliationNextAttemptAt: incoming === 'processing' ? new Date(Date.now() + 10_000) : null,
+            } });
+            await reconcileOrderLineRefundRows(tx, await tx.paymentRefund.findUnique({ where: { id: refund.id } }));
+            if (incoming === 'succeeded') {
               const aggregate = await tx.paymentRefund.aggregate({ where: { paymentId: knownPayment.id, status: 'succeeded' }, _sum: { amountCents: true } });
               const refundedCents = Number(aggregate._sum.amountCents || 0);
-              await tx.payment.update({ where: { id: knownPayment.id }, data: { status: refundedCents >= knownPayment.amountCents ? 'refunded' : refundedCents > 0 ? 'partially_refunded' : knownPayment.status } });
+              await tx.payment.update({ where: { id: knownPayment.id }, data: { status: refundedCents >= knownPayment.amountCents ? 'refunded' : 'partially_refunded', providerData: { ...((knownPayment.providerData as any) || {}), refundedAmountCents: refundedCents } } });
+              await enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `payment-refund:${refund.id}:completed:v1`, eventType: 'payment.refunded', aggregateType: 'payment', aggregateId: knownPayment.id, occurredAt: new Date().toISOString(), payload: { paymentId: knownPayment.id, refundId: refund.id, amountCents, cumulativeRefundedCents: refundedCents, providerCode, providerPaymentId: paymentId, providerRefundId: refundId } });
             }
           }
-          // A matched but stale event is still an accepted, processed webhook.
           updatedPaymentId = knownPayment.id;
-          eventProcessingStatus = 'processed';
-        }
       }
+      eventProcessingStatus = reconciled ? 'processed' : 'unmatched';
     }
 
     await tx.paymentWebhookEvent.update({
@@ -220,11 +281,77 @@ export async function processPaymentProviderWebhook(
       eventType,
       paymentId,
       updatedPaymentId,
-      message: updatedPaymentId
+      message: eventProcessingStatus === 'processed'
         ? 'Payment webhook processed.'
-        : 'Payment webhook accepted; no matching payment was updated.',
+        : eventProcessingStatus === 'ignored'
+          ? 'Payment webhook was older than the current provider state and was ignored.'
+          : updatedPaymentId
+            ? 'Payment webhook retained for reconciliation; amount or currency did not match the local payment.'
+            : 'Payment webhook accepted; no matching payment was updated.',
     };
   }, { isolationLevel: 'Serializable' as any }));
+}
+
+const VERIFIED_REFUND_TYPES = ['refund.created', 'refund.updated', 'refund.failed', 'refund.canceled', 'refund.cancelled', 'charge.refunded'];
+const VERIFIED_EVENT_MAX_ATTEMPTS = 5;
+
+async function reconcileOneVerifiedEvent(context: Context, storeId: string, eventId: string) {
+  const token = randomUUID();
+  // A short event claim is committed before the Payment-lock transaction; never
+  // hold an event lock while acquiring a Payment lock in the opposite order.
+  const claim = await context.transaction(async tc => {
+    const tx = tc.prisma as any;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', eventId);
+    const event = await tx.paymentWebhookEvent.findUnique({ where: { id: eventId } });
+    if (!event || event.storeId !== storeId || event.status !== 'unmatched' || event.deadLetterAt || Number(event.processingAttempts || 0) >= VERIFIED_EVENT_MAX_ATTEMPTS || (event.nextAttemptAt && new Date(event.nextAttemptAt).getTime() > Date.now())) return null;
+    return tx.paymentWebhookEvent.update({ where: { id: event.id }, data: { processingAttempts: Number(event.processingAttempts || 0) + 1, claimToken: token, nextAttemptAt: new Date(Date.now() + 30_000) } });
+  });
+  if (!claim) return false;
+  let error = '';
+  try {
+    const verified = claim.verifiedPayload;
+    if (!verified?.eventId || verified.eventId !== claim.providerEventId || verified.event?.id !== claim.providerEventId || verified.type !== claim.eventType || !VERIFIED_REFUND_TYPES.includes(claim.eventType)) throw new Error('Persisted verified envelope identity is invalid');
+    await processVerifiedPaymentEvent(claim.providerCode, verified, claim.payloadHash, context, storeId);
+  } catch { error = 'Verified event reconciliation failed; raw diagnostic details are withheld.'; }
+  return context.transaction(async tc => {
+    const tx = tc.prisma as any;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', eventId);
+    const current = await tx.paymentWebhookEvent.findUnique({ where: { id: eventId } });
+    if (!current || current.storeId !== storeId || current.claimToken !== token) return false;
+    const reconciled = current.status === 'processed' || current.status === 'ignored';
+    const exhausted = !reconciled && Number(current.processingAttempts) >= VERIFIED_EVENT_MAX_ATTEMPTS;
+    await tx.paymentWebhookEvent.update({ where: { id: eventId }, data: { nextAttemptAt: reconciled || exhausted ? null : new Date(Date.now() + Math.min(300_000, 10_000 * 2 ** (Number(current.processingAttempts) - 1))), deadLetterAt: exhausted ? new Date() : null, lastProcessingError: reconciled ? '' : (error || 'Verified refund still lacks matching amount, currency, identity, or complete local payment evidence').slice(0, 2000) } });
+    return reconciled;
+  });
+}
+
+/** Replays only immutable envelopes persisted after cryptographic verification. */
+export async function reconcileVerifiedRefundEvents(context: Context, storeId: string, limit = 20) {
+  await requireFreshCapability(context, 'canManagePayments');
+  const store = await requireSessionStore(context);
+  if (store.id !== storeId) throw new Error('Verified event worker Store does not match the active Store');
+  await (context.prisma as any).paymentWebhookEvent.updateMany({ where: { storeId, status: 'unmatched', deadLetterAt: null, processingAttempts: { gte: VERIFIED_EVENT_MAX_ATTEMPTS }, nextAttemptAt: { lte: new Date() } }, data: { deadLetterAt: new Date(), nextAttemptAt: null, lastProcessingError: 'Final verification claim expired; operator replay review required' } });
+  const events = await (context.prisma as any).paymentWebhookEvent.findMany({ where: { storeId, status: 'unmatched', deadLetterAt: null, processingAttempts: { lt: VERIFIED_EVENT_MAX_ATTEMPTS }, OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }], eventType: { in: VERIFIED_REFUND_TYPES } }, orderBy: [{ nextAttemptAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }], take: Math.max(1, Math.min(50, limit)) });
+  let reconciled = 0;
+  for (const event of events) if (await reconcileOneVerifiedEvent(context, storeId, event.id)) reconciled++;
+  return { scanned: events.length, reconciled };
+}
+
+export async function replayPaymentWebhookEvent(_root: unknown, args: { eventId: string; reason: string }, context: Context) {
+  await requireFreshCapability(context, 'canManagePayments');
+  const store = await requireSessionStore(context);
+  const reason = args.reason.trim();
+  if (reason.length < 3 || reason.length > 500) throw new Error('A replay review reason of 3–500 characters is required');
+  await context.transaction(async tc => {
+    const tx = tc.prisma as any;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', args.eventId);
+    const event = await tx.paymentWebhookEvent.findUnique({ where: { id: args.eventId } });
+    if (!event || event.storeId !== store.id || event.status !== 'unmatched' || !event.deadLetterAt || !VERIFIED_REFUND_TYPES.includes(event.eventType)) throw new Error('Only dead-lettered unmatched refunds in the active Store can be replayed');
+    await tx.paymentWebhookEvent.update({ where: { id: event.id }, data: { processingAttempts: 0, nextAttemptAt: null, deadLetterAt: null, lastProcessingError: '', replayAudit: [...(Array.isArray(event.replayAudit) ? event.replayAudit : []), { actorId: context.session!.itemId, reason, replayedAt: new Date().toISOString(), previousAttempts: event.processingAttempts, previousError: event.lastProcessingError ? 'Previous reconciliation details are withheld.' : '' }] } });
+  });
+  const reconciled = await reconcileOneVerifiedEvent(context, store.id, args.eventId);
+  const event = await (context.prisma as any).paymentWebhookEvent.findUnique({ where: { id: args.eventId }, select: { status: true, processingAttempts: true, nextAttemptAt: true, deadLetterAt: true, lastProcessingError: true } });
+  return { success: reconciled, eventId: args.eventId, ...event };
 }
 
 export async function handlePaymentProviderWebhook(

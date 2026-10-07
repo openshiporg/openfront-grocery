@@ -1,3 +1,45 @@
+import { convertInventoryCases } from "./convertInventoryCases";
+import recoverGroceryPaymentCreation from './recoverGroceryPaymentCreation';
+import { rescheduleReturnedGroceryDelivery, groceryDeliveryRescheduleSlots } from "./rescheduleReturnedGroceryDelivery";
+import { groceryRecurringOverview } from "./groceryRecurringOverview";
+import { groceryPaymentWebhookRecovery } from "./groceryPaymentWebhookRecovery";
+import { importGroceryCatalog } from "./importGroceryCatalog";
+import { replayPaymentWebhookEvent } from "./handlePaymentProviderWebhook";
+import { reviewGroceryCustomerErasure } from "./manageCustomerPrivacy";
+import { exportGroceryCustomerData } from "./manageCustomerPrivacy";
+import { requestGroceryCustomerPrivacy } from "./manageCustomerPrivacy";
+import { groceryCustomerPrivacy } from "./manageCustomerPrivacy";
+import { revokeGroceryStaffInvitation } from "./manageGroceryStaff";
+import { updateGroceryStaffAccess } from "./manageGroceryStaff";
+import { acceptGroceryStaffInvitation } from "./manageGroceryStaff";
+import { inviteGroceryStaff } from "./manageGroceryStaff";
+import { groceryStaffDirectory } from "./manageGroceryStaff";
+import { voidGroceryPaymentAuthorization } from "./voidGroceryPaymentAuthorization";
+import { getGroceryOrderRefundLines } from "./refundGroceryOrderLines";
+import { refundGroceryOrderLines } from "./refundGroceryOrderLines";
+import { updateGroceryNotificationPreferences } from "./updateGroceryNotificationPreferences";
+import { getGroceryLoyalty } from "./manageGroceryLoyalty";
+import { groceryFinancialCloseExport } from "./groceryFinancialClose";
+import { groceryFinancialCloses } from "./groceryFinancialClose";
+import { processDueGrocerySubscriptions } from "./manageGrocerySubscriptions";
+import { manageGrocerySubscription } from "./manageGrocerySubscriptions";
+import { redeemGroceryLoyalty } from "./manageGroceryLoyalty";
+import { configureGroceryLoyalty } from "./manageGroceryLoyalty";
+import { resolveGrocerySettlementMatch } from "./groceryFinancialClose";
+import { importGrocerySettlementStatement } from "./groceryFinancialClose";
+import { createGroceryFinancialClose } from "./groceryFinancialClose";
+import { manageSupplierSettlement } from "./manageSupplierSettlement";
+import { resolveDeliveryStop } from "./manageDeliveryRoutes";
+import { updateProductInformation } from "./updateProductInformation";
+import { authorizeOrderAdjustment } from "./authorizeOrderAdjustment";
+import { requestGuestOrderAccess } from "./requestGuestOrderAccess";
+import { resumeGroceryCheckout } from "./resumeGroceryCheckout";
+import restartGroceryCheckout from './restartGroceryCheckout';
+import { updateGroceryDeliveryPolicy } from "./updateGroceryDeliveryPolicy";
+import { manageInventoryCount } from "./manageInventoryCounts";
+import { manageInventorySafety } from "./manageInventorySafety";
+import { finalizeGroceryOrderActuals } from "./finalizeGroceryOrderActuals";
+import { resolveOrderLineFulfillment } from "./resolveOrderLineFulfillment";
 import { mergeSchemas } from "@graphql-tools/schema";
 import { GraphQLScalarType, Kind, type GraphQLSchema, type ValueNode } from 'graphql';
 import redirectToInit from "./redirectToInit";
@@ -53,7 +95,7 @@ import {
   getPublicGroceryProducts,
   requestGroceryBackInStockAlert,
 } from './getPublicGroceryCatalog';
-import { STRIPE_PROVIDER_CODE } from '../../integrations/payment';
+import { assertPublicPaymentProvider } from '../../integrations/payment';
 import { runGroceryOnboarding } from './runGroceryOnboarding';
 import {
   receivePurchaseOrder,
@@ -74,6 +116,7 @@ import {
   completeGroceryOutboxEvent,
   groceryOutboxStatus,
   replayGroceryOutboxEvent,
+  reconcileGroceryCustomerDelivery,
 } from './manageGroceryOutbox';
 import { configureDeliverySlot, configureParkingSpot, configurePickupSlot } from './manageStoreCapacity';
 import { provisionGroceryCustomer } from './provisionCustomer';
@@ -85,6 +128,7 @@ import {
   groceryPlatformInventory,
   groceryPlatformSuppliers,
   groceryPlatformPurchasing,
+  groceryPurchasingOptions,
   groceryPlatformMerchandising,
   groceryPlatformCustomers,
   groceryPlatformPayments,
@@ -139,7 +183,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         unit: String
         imageUrl: String
         inStock: Boolean
-        stockQuantity: Int
+        stockQuantity: Float
       }
 
       type GroceryCartItem {
@@ -230,7 +274,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         price: Float
         imageUrl: String
         inStock: Boolean
-        stockQuantity: Int
+        stockQuantity: Float
       }
 
       type ScaledIngredient {
@@ -356,6 +400,11 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
       }
 
       type PublicGroceryProduct {
+        nutrition: JSON
+        variantLabel: String
+        variantOf: JSON
+        packBaseUnitsMilli: Int
+        informationSource: String
         id: ID!
         title: String!
         handle: String!
@@ -373,7 +422,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         allergens: [String!]!
         department: PublicGroceryDepartment
         inStock: Boolean!
-        stockQuantity: Int!
+        stockQuantity: Float!
         backInStockRequested: Boolean!
       }
 
@@ -541,6 +590,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         processing: Int!
         delivered: Int!
         failed: Int!
+        unknown: Int!
+        reconciled: Int!
       }
 
       type StoreCapacityResult {
@@ -557,8 +608,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         adjustmentId: ID!
         inventoryLotId: ID!
         productId: ID!
-        quantityDelta: Int!
-        quantityRemaining: Int!
+        quantityDelta: Float!
+        quantityRemaining: Float!
         productStock: Int!
         reused: Boolean!
       }
@@ -589,8 +640,12 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
       }
 
       input PurchaseOrderReceiptInput {
+        receiptKey: String
+        deliveryReference: String
+        conditionStatus: String
+        inspectionNote: String
         poItemId: ID!
-        targetQuantityReceived: Int!
+        targetQuantityReceived: Float!
         lotNumber: String!
         expirationDate: String!
         location: String
@@ -600,7 +655,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         success: Boolean!
         purchaseOrderId: ID!
         status: String!
-        receivedUnits: Int!
+        receivedUnits: Float!
         message: String!
       }
 
@@ -634,6 +689,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
       }
 
       type GroceryPlatformOrderLineItem {
+        product: JSON
+        fulfillment: JSON
         id: ID!
         title: String!
         sku: String!
@@ -724,7 +781,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         approvedAt: String
       }
 
-      type GroceryPlatformFulfillmentProjection {
+      type GroceryPlatformFulfillmentProjection { pagination: JSON!
         pending: [GroceryPlatformOrder!]!
         picking: [GroceryPlatformOrder!]!
         packed: [GroceryPlatformOrder!]!
@@ -745,6 +802,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
       }
 
       type GroceryPlatformRoute {
+        stops: JSON
         id: ID!
         date: String!
         timeWindow: String!
@@ -766,7 +824,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         deliveryFee: Int!
       }
 
-      type GroceryPlatformDeliveryProjection {
+      type GroceryPlatformDeliveryProjection { pagination: JSON!
         deliveryRoutes: [GroceryPlatformRoute!]!
         readyOrders: [GroceryPlatformOrder!]!
         drivers: [GroceryPlatformDriver!]!
@@ -799,7 +857,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         metadata: JSON
       }
 
-      type GroceryPlatformPickupProjection {
+      type GroceryPlatformPickupProjection { pagination: JSON!
         pickupSlots: [GroceryPlatformPickupSlot!]!
         parkingSpots: [GroceryPlatformParkingSpot!]!
         pickupOrders: [GroceryPlatformPickupOrder!]!
@@ -809,8 +867,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         id: ID!
         title: String!
         sku: String!
-        stockQuantity: Int
-        recordedStockQuantity: Int!
+        stockQuantity: Float
+        recordedStockQuantity: Float!
         lowStockThreshold: Int
         inStock: Boolean!
         activeBackInStockAlerts: Int!
@@ -819,11 +877,13 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
       }
 
       type GroceryPlatformInventoryLot {
+        safetyStatus: String
+        conditionStatus: String
         id: ID!
         lotNumber: String!
         expirationDate: String!
-        quantity: Int!
-        quantityRemaining: Int!
+        quantity: Float!
+        quantityRemaining: Float!
         location: String
         isExpired: Boolean!
         isExpiringSoon: Boolean!
@@ -833,12 +893,15 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
 
       type GroceryPlatformInventoryProductRef { id: ID!, title: String! }
       type GroceryPlatformSupplier { id: ID!, name: String! }
-      type GroceryPlatformInventoryProjection {
+      type GroceryPlatformInventoryProjection { pagination: JSON!
         products: [GroceryPlatformInventoryProduct!]!
         inventoryLots: [GroceryPlatformInventoryLot!]!
       }
 
       type GroceryPlatformSupplierRow {
+        productCount: Int!
+        purchaseOrderCount: Int!
+        openPurchaseOrderCount: Int!
         id: ID!
         name: String!
         contactName: String
@@ -852,7 +915,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         purchaseOrders: [GroceryPlatformPurchaseOrderRef!]!
       }
       type GroceryPlatformPurchaseOrderRef { id: ID!, status: String }
-      type GroceryPlatformSuppliersProjection { currencyCode: String!, suppliers: [GroceryPlatformSupplierRow!]! }
+      type GroceryPlatformSuppliersProjection { pagination: JSON!  currencyCode: String!, suppliers: [GroceryPlatformSupplierRow!]! }
 
       type GroceryPlatformPurchaseOrder {
         id: ID!
@@ -867,10 +930,12 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         supplier: GroceryPlatformSupplier
         items: [GroceryPlatformPurchaseItem!]!
       }
-      type GroceryPlatformPurchaseItem { id: ID!, productTitle: String!, productSku: String!, quantity: Int!, quantityReceived: Int!, unitCost: Float!, unitCostCents: Int! }
-      type GroceryPlatformPurchasingProjection { currencyCode: String!, purchaseOrders: [GroceryPlatformPurchaseOrder!]! }
+      type GroceryPlatformPurchaseItem { id: ID!, productTitle: String!, productSku: String!, quantity: Float!, quantityReceived: Float!, unitCost: Float!, unitCostCents: Int! }
+      type GroceryPlatformPurchasingProjection { pagination: JSON!  currencyCode: String!, purchaseOrders: [GroceryPlatformPurchaseOrder!]! }
+      type GroceryPurchasingOption { id: ID!, name: String, title: String }
 
       type GroceryPlatformDepartment {
+        productCount: Int!
         id: ID!
         name: String!
         handle: String!
@@ -894,7 +959,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         validFrom: String
         validTo: String
       }
-      type GroceryPlatformMerchandisingProjection {
+      type GroceryPlatformMerchandisingProjection { pagination: JSON!
         currencyCode: String!
         departments: [GroceryPlatformDepartment!]!
         coupons: [GroceryPlatformCoupon!]!
@@ -911,7 +976,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         lastOrder: GroceryPlatformCustomerLastOrder
       }
       type GroceryPlatformCustomerLastOrder { displayId: Int!, status: String!, createdAt: String! }
-      type GroceryPlatformCustomersProjection {
+      type GroceryPlatformCustomersProjection { pagination: JSON!
         users: [GroceryPlatformCustomer!]!
         totalCustomers: Int!
         savedCarts: Int!
@@ -948,7 +1013,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         netCents: Int!
         recovery: JSON!
       }
-      type GroceryPlatformPaymentsProjection {
+      type GroceryPlatformPaymentsProjection { pagination: JSON!
         currencyCode: String!
         payments: [GroceryPlatformPaymentRow!]!
         providers: [GroceryPlatformPaymentProviderTruth!]!
@@ -973,22 +1038,33 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         timezone: String!
         countryCode: String!
         hours: JSON!
+        deliveryPolicy: JSON
         isActive: Boolean!
       }
       type GroceryPlatformSettingsCounts { products: Int!, suppliers: Int!, deliverySlots: Int!, pickupSlots: Int!, parkingSpots: Int! }
       type GroceryPlatformSettingsProjection { store: GroceryPlatformStoreTruth!, settings: GroceryPlatformSettingsTruth!, counts: GroceryPlatformSettingsCounts! }
 
       type Query {
+        groceryDeliveryRescheduleSlots(orderId: ID!): JSON!
+        groceryRecurringOverview(page: Int, customerOnly: Boolean): JSON!
+        groceryPaymentWebhookRecovery(page: Int): JSON!
+        groceryCustomerPrivacy(page: Int, pageSize: Int): JSON!
+        groceryStaffDirectory(page: Int, pageSize: Int): JSON!
+        getGroceryOrderRefundLines(orderId: ID!): JSON!
+        getGroceryLoyalty: JSON!
+        groceryFinancialCloseExport(closeId: ID!): JSON!
+        groceryFinancialCloses(page: Int, pageSize: Int): JSON!
         groceryPlatformOrders(page: Int, pageSize: Int): GroceryPlatformOrdersProjection!
-        groceryPlatformFulfillment: GroceryPlatformFulfillmentProjection!
-        groceryPlatformDelivery: GroceryPlatformDeliveryProjection!
-        groceryPlatformPickup: GroceryPlatformPickupProjection!
-        groceryPlatformInventory: GroceryPlatformInventoryProjection!
-        groceryPlatformSuppliers: GroceryPlatformSuppliersProjection!
-        groceryPlatformPurchasing: GroceryPlatformPurchasingProjection!
-        groceryPlatformMerchandising: GroceryPlatformMerchandisingProjection!
-        groceryPlatformCustomers: GroceryPlatformCustomersProjection!
-        groceryPlatformPayments: GroceryPlatformPaymentsProjection!
+        groceryPlatformFulfillment(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformFulfillmentProjection!
+        groceryPlatformDelivery(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformDeliveryProjection!
+        groceryPlatformPickup(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformPickupProjection!
+        groceryPlatformInventory(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformInventoryProjection!
+        groceryPlatformSuppliers(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformSuppliersProjection!
+        groceryPlatformPurchasing(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformPurchasingProjection!
+        groceryPurchasingOptions(kind: String!, search: String!): [GroceryPurchasingOption!]!
+        groceryPlatformMerchandising(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformMerchandisingProjection!
+        groceryPlatformCustomers(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformCustomersProjection!
+        groceryPlatformPayments(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformPaymentsProjection!
         groceryPlatformSettings: GroceryPlatformSettingsProjection!
         redirectToInit: Boolean
         groceryCart(sessionId: String): GroceryCart
@@ -1010,7 +1086,49 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         availableParkingSpots(accessibleOnly: Boolean): [ParkingSpotResult!]!
       }
 
+      type GroceryVoidResult { success: Boolean!, paymentId: ID!, status: String!, reused: Boolean! }
+      type GroceryLineRefundResult { success: Boolean!, status: String!, paymentRefundId: ID, amountCents: Int!, allocations: JSON!, reused: Boolean!, message: String! }
+      type GroceryLoyaltyConfigurationResult { success: Boolean!, programId: ID! }
+      type GroceryLoyaltyRedemptionResult { success: Boolean!, redemptionId: ID!, couponCode: String!, points: Int!, discountCents: Int!, balance: Int!, reused: Boolean! }
+      type GrocerySubscriptionResult { success: Boolean!, subscriptionId: ID!, status: String!, runId: ID, reused: Boolean! }
+      type GrocerySubscriptionProcessingResult { processed: Int!, results: JSON! }
+      type GroceryFulfillmentActualResult { success: Boolean! fulfillmentId: ID! lineItemId: ID! resolution: String! quantityMilli: Int! subtotalCents: Int! reused: Boolean! }
+
       type Mutation {
+        recoverGroceryPaymentCreation(paymentSessionId: ID!, providerPaymentId: String!, reason: String!): JSON!
+        convertInventoryCases(mode: String!, sourceInventoryLotId: ID!, quantityCases: Int!, reason: String!, conditionNote: String!, destinationLocation: String, idempotencyKey: String!, expectedReviewHash: String): JSON!
+        rescheduleReturnedGroceryDelivery(orderId: ID!, deliverySlotId: ID!, customerApproval: String!, conditionEvidence: String!, idempotencyKey: String!): JSON!
+        importGroceryCatalog(mode: String!, schemaVersion: Int!, sourceSystem: String!, sourceBatchId: String!, idempotencyKey: String!, csv: String!, expectedPayloadHash: String, expectedReviewHash: String): JSON!
+        replayPaymentWebhookEvent(eventId: ID!, reason: String!): JSON!
+        exportGroceryCustomerData(requestId: ID!, afterOrderId: ID, collection: String, afterId: ID): JSON!
+        reviewGroceryCustomerErasure(requestId: ID!, approve: Boolean!, reason: String!): JSON!
+        requestGroceryCustomerPrivacy(kind: String!): JSON!
+        revokeGroceryStaffInvitation(invitationId: ID!, reason: String!): JSON!
+        updateGroceryStaffAccess(userId: ID!, capabilities: JSON!, reason: String!): JSON!
+        acceptGroceryStaffInvitation(token: String!, password: String!): JSON!
+        inviteGroceryStaff(name: String!, email: String!, capabilities: JSON!): JSON!
+        voidGroceryPaymentAuthorization(paymentId: ID!, reason: String!, idempotencyKey: String!): GroceryVoidResult!
+        refundGroceryOrderLines(orderId: ID!, paymentId: ID!, idempotencyKey: String!, reason: String!, lines: JSON!): GroceryLineRefundResult!
+        updateGroceryNotificationPreferences(orderUpdates: Boolean!, deliveryAlerts: Boolean!, backInStock: Boolean!): Boolean!
+        processDueGrocerySubscriptions(limit: Int): GrocerySubscriptionProcessingResult!
+        manageGrocerySubscription(action: String!, subscriptionId: ID, productId: ID, quantity: Int, frequency: String, firstRunAt: String, pausedUntil: String, idempotencyKey: String!, approveEachOrder: Boolean): GrocerySubscriptionResult!
+        redeemGroceryLoyalty(points: Int!, idempotencyKey: String!): GroceryLoyaltyRedemptionResult!
+        configureGroceryLoyalty(name: String!, earnPointsPer100Cents: Int!, redeemPointsPer100Cents: Int!, minimumRedemptionPoints: Int!, isActive: Boolean!): GroceryLoyaltyConfigurationResult!
+        resolveGrocerySettlementMatch(matchId: ID!, reason: String!, idempotencyKey: String!): JSON!
+        importGrocerySettlementStatement(providerCode: String!, statementReference: String!, csv: String!, idempotencyKey: String!): JSON!
+        createGroceryFinancialClose(startDate: String!, endDate: String!, timezone: String!, idempotencyKey: String!, note: String): JSON!
+        manageSupplierSettlement(action: String!, idempotencyKey: String!, invoiceId: ID, creditId: ID, input: JSON!): JSON!
+        resolveDeliveryStop(routeId: ID!, orderId: ID!, status: String!, recipient: String, proofReference: String, reason: String, custody: String!, conditionEvidence: String!, retryAt: String, idempotencyKey: String!, approvalEvidence: String): JSON!
+        updateProductInformation(productId: ID!, input: JSON!, idempotencyKey: String!): JSON!
+        authorizeOrderAdjustment(orderId: ID!, sessionId: String, token: String): JSON!
+        requestGuestOrderAccess(orderId: ID!, email: String!): Boolean!
+        resumeGroceryCheckout(paymentSessionId: ID!, sessionId: String): SubmitGroceryOrderResult!
+        restartGroceryCheckout(paymentSessionId: ID!, sessionId: String): PaymentSession
+        updateGroceryDeliveryPolicy(policy: JSON!): JSON!
+        manageInventoryCount(action: String!, inventoryLotId: ID, countId: ID, quantity: Float, reason: String!, idempotencyKey: String!): JSON!
+        manageInventorySafety(action: String!, inventoryLotIds: [ID!], productId: ID, recallId: ID, reason: String!, idempotencyKey: String!, evidence: JSON): JSON!
+        finalizeGroceryOrderActuals(orderId: ID!): JSON!
+        resolveOrderLineFulfillment(orderId: ID!, lineItemId: ID!, resolution: String!, productId: ID, quantity: String!, tare: String, unitOfMeasure: String!, reason: String, consentChannel: String, consentCustomer: String, consentEvidence: String, idempotencyKey: String!): GroceryFulfillmentActualResult!
         updateActiveUser(data: UserUpdateProfileInput!): User
         provisionGroceryCustomer(name: String!, email: String!, temporaryPassword: String!): ProvisionGroceryCustomerResult!
         initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String, couponCode: String, recovery: CheckoutRecoveryInput!): PaymentSession
@@ -1039,7 +1157,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         createDeliveryRouteFromOrders(deliveryDate: String!, deliveryTimeWindow: String!, orderIds: [ID!]!, driverId: ID!): DeliveryRouteWorkflowResult!
         updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
         submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
-        cancelGroceryOrder(orderId: ID!, reason: String!, idempotencyKey: String!): OrderCancellationResult!
+        cancelGroceryOrder(orderId: ID!, reason: String!, idempotencyKey: String!, disposition: String, conditionNote: String): OrderCancellationResult!
         reconcileCheckoutAttempts(limit: Int): CheckoutReconciliationResult!
         reconcilePaymentRefunds(limit: Int): RefundReconciliationResult!
         updateSupplierMinimumOrder(supplierId: ID!, minimumOrderCents: Int!): SupplierMinimumOrderResult!
@@ -1050,12 +1168,13 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         advanceOrderFulfillment(orderId: ID!, target: String!): OrderFulfillmentWorkflowResult!
         recordOrderItemSubstitution(orderItemId: ID!, substitutedProduct: String!, reason: String, customerApproved: Boolean, idempotencyKey: String!): OrderItemSubstitutionWorkflowResult!
         claimGroceryOutboxEvents(workerId: String!, limit: Int): [GroceryOutboxEventResult!]!
-        completeGroceryOutboxEvent(eventId: ID!, claimToken: String!, succeeded: Boolean!, error: String): GroceryOutboxEventResult!
+        completeGroceryOutboxEvent(eventId: ID!, claimToken: String!, succeeded: Boolean!, unknown: Boolean, error: String): GroceryOutboxEventResult!
         replayGroceryOutboxEvent(eventId: ID!): GroceryOutboxEventResult!
+        reconcileGroceryCustomerDelivery(eventId: ID!, action: String!, reason: String!, confirmDuplicateRisk: Boolean): GroceryOutboxEventResult!
         configureDeliverySlot(slotId: ID!, capacity: Int, deliveryFee: Int, isActive: Boolean, idempotencyKey: String!): StoreCapacityResult!
         configurePickupSlot(slotId: ID!, maxOrders: Int, isAvailable: Boolean, idempotencyKey: String!): StoreCapacityResult!
         configureParkingSpot(spotId: ID!, isAvailable: Boolean!, idempotencyKey: String!): StoreCapacityResult!
-        adjustInventoryLot(inventoryLotId: ID!, targetQuantityRemaining: Int!, reason: String!, idempotencyKey: String!, note: String): InventoryAdjustmentResult!
+        adjustInventoryLot(inventoryLotId: ID!, targetQuantityRemaining: Float!, reason: String!, idempotencyKey: String!, note: String): InventoryAdjustmentResult!
         createPurchaseOrderDraft(idempotencyKey: String!, supplierId: ID!, expectedDeliveryDate: String, notes: String, items: [PurchaseOrderDraftItemInput!]!): PurchaseOrderDraftResult!
         removePurchaseOrderDraftItem(purchaseOrderId: ID!, poItemId: ID!): PurchaseOrderDraftItemRemovalResult!
         transitionPurchaseOrder(purchaseOrderId: ID!, status: String!): PurchaseOrderWorkflowResult!
@@ -1109,6 +1228,15 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
     resolvers: {
       JSON: JSONScalar,
       Query: {
+        groceryDeliveryRescheduleSlots,
+        groceryRecurringOverview,
+        groceryPaymentWebhookRecovery,
+        groceryCustomerPrivacy,
+        groceryStaffDirectory,
+        getGroceryOrderRefundLines,
+        getGroceryLoyalty,
+        groceryFinancialCloseExport,
+        groceryFinancialCloses,
         groceryPlatformOrders,
         groceryPlatformFulfillment,
         groceryPlatformDelivery,
@@ -1116,6 +1244,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         groceryPlatformInventory,
         groceryPlatformSuppliers,
         groceryPlatformPurchasing,
+        groceryPurchasingOptions,
         groceryPlatformMerchandising,
         groceryPlatformCustomers,
         groceryPlatformPayments,
@@ -1124,13 +1253,14 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         groceryCart: getCart,
         clippedCoupons: getClippedCoupons,
         activeCartPaymentProviders: async (_root: unknown, _args: unknown, context: any) => {
-          return context.sudo().query.PaymentProvider.findMany({
-            where: {
-              code: { equals: STRIPE_PROVIDER_CODE },
-              isInstalled: { equals: true },
-            },
-            query: 'id name code isInstalled',
+          const providers = await context.sudo().query.PaymentProvider.findMany({
+            where: { isInstalled: { equals: true } },
+            query: 'id name code isInstalled publicCheckout supportsIdempotentCapture captureIdempotencyEvidence credentials metadata createPaymentFunction capturePaymentFunction refundPaymentFunction getPaymentStatusFunction getRefundStatusFunction cancelPaymentFunction generatePaymentLinkFunction handleWebhookFunction',
           });
+          return providers.filter((provider: any) => {
+            try { assertPublicPaymentProvider(provider); return true; }
+            catch { return false; }
+          }).map(({ id, name, code, isInstalled }: any) => ({ id, name, code, isInstalled }));
         },
         guestGroceryOrder: getGuestGroceryOrder,
         publicGroceryCoupons: getPublicGroceryCoupons,
@@ -1144,6 +1274,40 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         availableParkingSpots: getAvailableParkingSpots,
       },
       Mutation: {
+        recoverGroceryPaymentCreation,
+        convertInventoryCases,
+        rescheduleReturnedGroceryDelivery,
+        importGroceryCatalog,
+        replayPaymentWebhookEvent,
+        exportGroceryCustomerData,
+        reviewGroceryCustomerErasure,
+        requestGroceryCustomerPrivacy,
+        revokeGroceryStaffInvitation,
+        updateGroceryStaffAccess,
+        acceptGroceryStaffInvitation,
+        inviteGroceryStaff,
+        voidGroceryPaymentAuthorization,
+        refundGroceryOrderLines,
+        updateGroceryNotificationPreferences,
+        processDueGrocerySubscriptions,
+        manageGrocerySubscription,
+        redeemGroceryLoyalty,
+        configureGroceryLoyalty,
+        resolveGrocerySettlementMatch,
+        importGrocerySettlementStatement,
+        createGroceryFinancialClose,
+        manageSupplierSettlement,
+        resolveDeliveryStop,
+        updateProductInformation,
+        authorizeOrderAdjustment,
+        requestGuestOrderAccess,
+        resumeGroceryCheckout,
+        restartGroceryCheckout,
+        updateGroceryDeliveryPolicy,
+        manageInventoryCount,
+        manageInventorySafety,
+        finalizeGroceryOrderActuals,
+        resolveOrderLineFulfillment,
         updateActiveUser,
         provisionGroceryCustomer,
         initiatePaymentSession,
@@ -1187,6 +1351,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         claimGroceryOutboxEvents,
         completeGroceryOutboxEvent,
         replayGroceryOutboxEvent,
+        reconcileGroceryCustomerDelivery,
         configureDeliverySlot,
         configurePickupSlot,
         configureParkingSpot,

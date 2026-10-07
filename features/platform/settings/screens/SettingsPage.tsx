@@ -1,3 +1,4 @@
+import { DeliveryPolicyForm } from '../components/DeliveryPolicyForm';
 import Link from 'next/link';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
 import { PlatformErrorState, PlatformMetricGrid, PlatformStatusBadge, PlatformSurface, PlatformTruthNotice } from '@/features/platform/components/PlatformPrimitives';
@@ -21,7 +22,7 @@ export async function SettingsPage() {
 
   return <PageContainer title="Settings" header={header} breadcrumbs={breadcrumbs}><div className="space-y-5 px-4 pb-8 md:px-6">
     {loadError || !data || !settings ? <PlatformErrorState description={loadError || 'No Store Settings record is available for the active Store.'} /> : <>
-      <PlatformMetricGrid metrics={[{ label: 'Store state', value: <PlatformStatusBadge status={data.store.isActive && settings.isActive ? 'active' : 'failed'} label={data.store.isActive && settings.isActive ? 'Active' : 'Inactive'} />, note: data.store.name }, { label: 'Business profile', value: `${configuredFacts}/${requiredFacts.length}`, note: 'Core public facts configured' }, { label: 'Tax policy', value: percentFromBps(settings.taxRateBps), note: 'Store-wide bounded launch rate' }, { label: 'Operational records', value: data.counts.products + data.counts.suppliers, note: `${data.counts.products} products · ${data.counts.suppliers} suppliers` }]} />
+      <PlatformMetricGrid metrics={[{ label: 'Store state', value: <PlatformStatusBadge status={data.store.isActive && settings.isActive ? 'active' : 'failed'} label={data.store.isActive && settings.isActive ? 'Active' : 'Inactive'} />, note: data.store.name }, { label: 'Business profile', value: `${configuredFacts}/${requiredFacts.length}`, note: 'Core public facts configured' }, { label: 'Tax policy', value: percentFromBps(settings.taxRateBps), note: 'Default rate; products may override' }, { label: 'Operational records', value: data.counts.products + data.counts.suppliers, note: `${data.counts.products} products · ${data.counts.suppliers} suppliers` }]} />
       <PlatformTruthNotice title="Policy boundary">These values are configuration facts, not legal or regulatory certification. The Store-wide tax rate is not a tax engine; hours/capacity are not labor, cold-chain, or multidimensional fulfillment planning.</PlatformTruthNotice>
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(18rem,.9fr)]">
         <div className="space-y-5">
@@ -31,6 +32,7 @@ export async function SettingsPage() {
           <PlatformSurface title="Storefront brand" description="Choose a constrained hue preset for storefront accents and installed-app theme color. Unset uses the explicit 35° default without persisting an invented value.">
             <StorefrontBrandHueControl brandHue={settings.brandHue} />
           </PlatformSurface>
+          <PlatformSurface title="Delivery area and order minimums"><DeliveryPolicyForm policy={(settings as any).deliveryPolicy} /></PlatformSurface>
           <PlatformSurface title="Commerce policy" description="Server-owned locale, currency, timezone, and tax facts.">
             <dl className="grid gap-px bg-border sm:grid-cols-2"><Setting label="Currency" value={settings.currencyCode} /><Setting label="Locale" value={settings.locale} /><Setting label="Timezone" value={settings.timezone} /><Setting label="Tax rate" value={`${settings.taxRateBps} bps · ${percentFromBps(settings.taxRateBps)}`} /></dl>
           </PlatformSurface>

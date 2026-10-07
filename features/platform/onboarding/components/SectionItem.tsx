@@ -70,8 +70,8 @@ export const SectionItem: React.FC<SectionItemProps> = ({
                   Failed to create {item}
                 </div>
                 <div className="text-sm text-left mb-3">
-                  This item already exists or conflicts with existing data in
-                  your installation.
+                  The grocery setup could not be applied. Review the error
+                  details before retrying.
                 </div>
                 <div className="font-mono text-xs text-left whitespace-pre-wrap break-words max-h-[150px] overflow-y-auto text-muted-foreground border-t pt-3 mt-1">
                   <span className="font-semibold block mb-1">

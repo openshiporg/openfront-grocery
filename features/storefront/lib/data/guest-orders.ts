@@ -12,9 +12,11 @@ const GUEST_ORDER_MAX_AGE = Number.parseInt(
   10
 ) || 60 * 60 * 24 * 30;
 
-export async function rememberGuestOrder(orderId: string, token: string) {
+export async function rememberGuestOrder(orderId: string, token: string, originalSessionId?: string) {
   const cookieStore = await cookies();
   const secure = process.env.NODE_ENV === 'production';
+  const sessionId=originalSessionId || cookieStore.get(GUEST_CART_COOKIE)?.value;
+  if(sessionId) cookieStore.set(`grocery_order_session_${orderId}`,sessionId,{httpOnly:true,sameSite:'lax',secure,path:'/',maxAge:GUEST_ORDER_MAX_AGE});
   cookieStore.set(`${GUEST_ORDER_COOKIE_PREFIX}${orderId}`, token, {
     httpOnly: true,
     sameSite: 'lax',
@@ -30,7 +32,7 @@ export async function checkInOwnedPickupOrder(input: {
   vehicleDescription?: string;
 }): Promise<{ success: boolean; message: string; estimatedWaitMinutes?: number; parkingSpotNumber?: string }> {
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(GUEST_CART_COOKIE)?.value;
+  const sessionId = cookieStore.get(`grocery_order_session_${input.orderId}`)?.value || cookieStore.get(GUEST_CART_COOKIE)?.value;
   const token = cookieStore.get(`${GUEST_ORDER_COOKIE_PREFIX}${input.orderId}`)?.value;
   const guest = Boolean(sessionId && token);
   const operation = guest ? 'guestCustomerCheckIn' : 'customerCheckIn';
@@ -61,7 +63,7 @@ export async function checkInOwnedPickupOrder(input: {
 
 export async function getGuestOrderById(orderId: string): Promise<GroceryOrder | null> {
   const cookieStore = await cookies();
-  const sessionId = cookieStore.get(GUEST_CART_COOKIE)?.value;
+  const sessionId = cookieStore.get(`grocery_order_session_${orderId}`)?.value || cookieStore.get(GUEST_CART_COOKIE)?.value;
   const token = cookieStore.get(`${GUEST_ORDER_COOKIE_PREFIX}${orderId}`)?.value;
   if (!sessionId || !token) return null;
 

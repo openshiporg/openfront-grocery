@@ -1,3 +1,4 @@
+import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import Link from 'next/link';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
 import {
@@ -26,7 +27,7 @@ export async function CustomersPage({ searchParams }: { searchParams?: Promise<P
   const sort = queryValue(params, 'sort') || 'newest';
   let data: Awaited<ReturnType<typeof platformProjections.customers>> = null;
   let loadError: string | null = null;
-  try { data = await platformProjections.customers(); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load customers.'; }
+  try { data = await platformProjections.customers(Number(params.page || 1), Number(params.pageSize || 50), String(params.search || params.q || ""), String(params.status || "")); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load customers.'; }
   const customers = [...(data?.users || [])]
     .filter((customer) => !q || customer.name.toLowerCase().includes(q) || customer.email.toLowerCase().includes(q))
     .filter((customer) => filter === 'all' || (filter === 'initialized' ? customer.onboardingStatus === 'completed' : customer.onboardingStatus !== 'completed'))
@@ -40,15 +41,16 @@ export async function CustomersPage({ searchParams }: { searchParams?: Promise<P
 
   return <PageContainer title="Customers" header={header} breadcrumbs={breadcrumbs}>
     <div className="space-y-5 px-4 pb-8 md:px-6">
-      <PlatformMetricGrid metrics={[
-        { label: 'Customer accounts', value: data?.totalCustomers || 0, note: 'Store-scoped shoppers' },
+      <PlatformPageLinks pagination={data?.pagination} path="/dashboard/platform/customers" searchParams={params} />
+    {data ? <PlatformMetricGrid metrics={[
+        { label: 'Customer accounts', value: data.totalCustomers, note: 'Store-scoped shoppers' },
         { label: 'Customers with orders', value: orderingCustomers, note: 'At least one retained order' },
-        { label: 'Open carts', value: data?.savedCarts || 0, note: 'Carts with at least one item' },
+        { label: 'Open carts', value: data.savedCarts, note: 'Carts with at least one item' },
         { label: 'Shopping lists', value: shoppingLists, note: `${initialized} initialized profiles` },
-      ]} />
+      ]} /> : null}
       <PlatformTruthNotice title="Account boundary">Public signup is closed. Provisioning creates a shopper without a staff role; the temporary password must be shared through an approved private channel.</PlatformTruthNotice>
 
-      <PlatformDetails
+      {data ? <PlatformDetails
         className="rounded-xl border bg-background"
         summary={<div className="flex items-center justify-between gap-4 px-4 py-4 md:px-5"><div><p className="font-semibold">Provision a customer</p><p className="mt-1 text-sm text-muted-foreground">Create a real Store-owned shopper account.</p></div><span className="text-xs font-medium text-muted-foreground">Open form</span></div>}
       >
@@ -58,9 +60,9 @@ export async function CustomersPage({ searchParams }: { searchParams?: Promise<P
           <label className="grid gap-1 text-xs font-medium text-muted-foreground">Temporary password<input name="temporaryPassword" required type="password" minLength={12} maxLength={200} autoComplete="new-password" className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" /></label>
           <button type="submit" className="mt-auto h-10 rounded-md bg-foreground px-4 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">Provision customer</button>
         </form>
-      </PlatformDetails>
+      </PlatformDetails> : null}
 
-      <PlatformToolbar search={q} searchPlaceholder="Name or email" filter={filter} filterLabel="Profile" filterOptions={[{ value: 'all', label: 'All customers' }, { value: 'initialized', label: 'Initialized' }, { value: 'incomplete', label: 'Needs profile completion' }]} sort={sort} sortOptions={[{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'name', label: 'Name A–Z' }]} resultCount={customers.length} />
+      {data ? <PlatformToolbar search={q} searchPlaceholder="Name or email" filter={filter} filterLabel="Profile" filterOptions={[{ value: 'all', label: 'All customers' }, { value: 'initialized', label: 'Initialized' }, { value: 'incomplete', label: 'Needs profile completion' }]} sort={sort} sortOptions={[{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'name', label: 'Name A–Z' }]} resultCount={customers.length} /> : null}
 
       {loadError ? <PlatformErrorState description={loadError} /> : <PlatformSurface title="Customer directory" description="This bounded view contains account identity and profile readiness; order/payment evidence remains in Orders.">
         {customers.length === 0 ? <PlatformEmptyState title="No matching customers" description="Reset the filters or provision the first customer account." /> : <div className="divide-y">{customers.map((customer) => <PlatformDetails key={customer.id} summary={<div className="grid gap-2 px-4 py-4 hover:bg-muted/30 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center md:px-5"><div className="min-w-0"><p className="truncate font-medium">{customer.name}</p><p className="truncate text-sm text-muted-foreground">{customer.email}</p></div><PlatformStatusBadge status={customer.onboardingStatus === 'completed' ? 'completed' : 'pending'} label={customer.onboardingStatus === 'completed' ? 'Profile ready' : 'Profile incomplete'} /><span className="text-xs text-muted-foreground">{customer.orderCount} orders · {customer.shoppingListCount} lists</span></div>}>

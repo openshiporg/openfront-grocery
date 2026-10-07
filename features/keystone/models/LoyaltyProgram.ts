@@ -2,6 +2,8 @@ import { list } from "@keystone-6/core";
 import {
   text,
   float,
+  integer,
+  select,
   checkbox,
   json,
   relationship,
@@ -9,18 +11,20 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { permissions } from "../access";
-import { publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
 
 export const LoyaltyProgram = list({
   access: {
     operation: {
       query: () => true,
-      create: permissions.canManageUsers,
-      update: permissions.canManageUsers,
-      delete: permissions.canManageUsers,
+      create: () => false,
+      update: () => false,
+      delete: () => false,
     },
     filter: {
-      query: ({ session }) => session?.itemId ? storeScopedFilter({ session }) : publicStoreScopedFilter(),
+      query: async ({ session, context }) => session?.itemId
+        ? storeScopedFilter({ session, context })
+        : publicStoreScopedFilter(),
       update: storeScopedFilter,
       delete: storeScopedFilter,
     },
@@ -28,7 +32,7 @@ export const LoyaltyProgram = list({
   hooks: {
     resolveInput: async ({ operation, resolvedData, context }) => {
       if (operation !== 'create') return resolvedData;
-      const storeId = context.session?.data.store?.id;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
       if (!storeId) throw new Error('An active store is required');
       return { ...resolvedData, store: { connect: { id: storeId } } };
     },
@@ -40,6 +44,10 @@ export const LoyaltyProgram = list({
     },
   },
   fields: {
+    earnPointsPer100Cents: integer({ defaultValue: 1, validation: { isRequired: true, min: 0 } }),
+    redeemPointsPer100Cents: integer({ defaultValue: 100, validation: { isRequired: true, min: 1 } }),
+    minimumRedemptionPoints: integer({ defaultValue: 100, validation: { isRequired: true, min: 1 } }),
+    refundDebtPolicy: select({ options: ["offset_future_earnings"], defaultValue: "offset_future_earnings", validation: { isRequired: true } }),
     store: relationship({
       ref: 'Store.loyaltyPrograms',
       db: { extendPrismaSchema: requiredRelationshipPrisma },

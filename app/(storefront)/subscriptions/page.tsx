@@ -1,5 +1,2 @@
-import { redirect } from 'next/navigation';
-
-export default function SubscriptionsRoute() {
-  redirect('/products');
-}
+import {SubscriptionsPage} from '@/features/storefront/screens/SubscriptionsPage';
+export default SubscriptionsPage;

@@ -1,13 +1,16 @@
+import { cache } from 'react';
 import type { GroceryDepartment, GroceryProduct } from '../../types';
 import { getProductsList, type ProductSortOption } from './products';
-import { storefrontGraphQL } from './graphql';
+import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
-export async function getDepartmentsList(
+// Primitive pagination arguments allow request-scoped deduplication across
+// page, nav and footer without sharing results between visitors/requests.
+export const getDepartmentsList = cache(async function getDepartmentsList(
   offset: number = 0,
   limit: number = 10
 ): Promise<{ departments: GroceryDepartment[] }> {
   try {
-    const { data } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
+    const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
       query GetDepartments($take: Int, $skip: Int) {
         departments(
           take: $take
@@ -27,18 +30,20 @@ export async function getDepartmentsList(
         }
       }
     `, { take: limit, skip: offset }, { next: { revalidate: 3600 } });
-    return { departments: data?.departments || [] };
+    throwGraphQLErrors(errors);
+    if (!data?.departments) throw new Error('Aisles could not be loaded.');
+    return { departments: data.departments };
   } catch (error) {
     console.error('Error fetching departments:', error);
-    return { departments: [] };
+    throw error;
   }
-}
+});
 
-export async function getDepartmentByHandle(
+export const getDepartmentByHandle = cache(async function getDepartmentByHandle(
   handle: string
 ): Promise<GroceryDepartment | null> {
   try {
-    const { data } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
+    const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
       query GetDepartment($handle: String!) {
         departments(where: { handle: { equals: $handle } }) {
           id
@@ -51,12 +56,14 @@ export async function getDepartmentByHandle(
         }
       }
     `, { handle }, { next: { revalidate: 3600 } });
-    return data?.departments?.[0] || null;
+    throwGraphQLErrors(errors);
+    if (!data?.departments) throw new Error('This aisle could not be loaded.');
+    return data.departments[0] || null;
   } catch (error) {
     console.error('Error fetching department:', error);
-    return null;
+    throw error;
   }
-}
+});
 
 export async function getProductsByDepartment(
   departmentHandle: string,
@@ -69,6 +76,7 @@ export async function getProductsByDepartment(
     const { products, count } = await getProductsList({
       department: departmentHandle,
       sort: sortBy as ProductSortOption,
+      availability: 'all',
       limit,
       offset,
     });
@@ -76,6 +84,6 @@ export async function getProductsByDepartment(
     return { products, totalCount: count };
   } catch (error) {
     console.error('Error fetching products by department:', error);
-    return { products: [], totalCount: 0 };
+    throw error;
   }
 }

@@ -1,12 +1,11 @@
 import { Metadata } from 'next';
 import Link from 'next/link';
-import { ShoppingBasket } from 'lucide-react';
 
 import { retrieveCart } from '@/features/storefront/lib/data/cart';
 import { getUser } from '@/features/storefront/lib/data/user';
 import { storefrontMetadata } from '@/features/storefront/lib/metadata';
 import UrbanCart from '@/features/storefront/modules/urban/UrbanCart';
-import { UrbanContainer, UrbanMetric, UrbanPageHeader, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { UrbanContainer, UrbanPageHeader, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 export const metadata: Metadata = storefrontMetadata({
   title: 'Basket',
@@ -14,8 +13,7 @@ export const metadata: Metadata = storefrontMetadata({
 });
 
 export async function CartPage() {
-  const [cart, user] = await Promise.all([retrieveCart(), getUser()]);
-  const lineCount = cart?.items?.length ?? 0;
+  const [cart, user] = await Promise.all([retrieveCart({ throwOnError: true }), getUser()]);
 
   return (
     <UrbanPageShell>
@@ -24,7 +22,6 @@ export async function CartPage() {
           breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Basket' }]}
           title="Your basket"
           description="Confirm quantities and substitution preferences before checkout."
-          aside={<UrbanMetric label="Line items" value={lineCount} icon={ShoppingBasket} />}
         />
         <UrbanCart cart={cart} user={user} />
       </UrbanContainer>

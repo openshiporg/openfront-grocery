@@ -1,9 +1,11 @@
+import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import { PageContainer } from '@/features/dashboard/components/PageContainer';
 import { PlatformDetails, PlatformEmptyState, PlatformErrorState, PlatformMetricGrid, PlatformSearchParams, PlatformStatusBadge, PlatformSurface, PlatformToolbar, PlatformTruthNotice, queryValue } from '@/features/platform/components/PlatformPrimitives';
 import { TaskButton } from '@/features/platform/components/TaskButton';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 import { transitionPurchaseOrderTask } from '@/features/platform/lib/taskActions';
 import { ReceivePurchaseOrderForm } from '../components/ReceivePurchaseOrderForm';
+import { SupplierSettlementPanel } from '../components/SupplierSettlementPanel';
 import { CreatePurchaseOrderForm } from '../components/CreatePurchaseOrderForm';
 
 function dateLabel(value?: string | null) { return value ? new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' }).format(new Date(value)) : '—'; }
@@ -15,10 +17,20 @@ export async function PurchasingPage({ searchParams }: { searchParams?: Promise<
   const filter = queryValue(params, 'filter') || 'open';
   const sort = queryValue(params, 'sort') || 'newest';
   let data: Awaited<ReturnType<typeof platformProjections.purchasing>> = null;
-  let suppliersData: Awaited<ReturnType<typeof platformProjections.suppliers>> = null;
+  let supplierOptions: Array<{ id: string; name: string }> | null = null;
   let inventoryData: Awaited<ReturnType<typeof platformProjections.inventory>> = null;
   let loadError: string | null = null;
-  try { [data, suppliersData, inventoryData] = await Promise.all([platformProjections.purchasing(), platformProjections.suppliers(), platformProjections.inventory()]); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load purchasing.'; }
+  const [purchasingResult, supplierOptionsResult, inventoryResult] = await Promise.allSettled([
+    platformProjections.purchasing(Number(params.page || 1), Number(params.pageSize || 50), String(params.search || params.q || ''), String(params.status || '')),
+    platformProjections.purchasingOptions('supplier'),
+    platformProjections.inventory(),
+  ]);
+  if (purchasingResult.status === 'fulfilled' && purchasingResult.value) data = purchasingResult.value;
+  else loadError = purchasingResult.status === 'rejected' && purchasingResult.reason instanceof Error ? purchasingResult.reason.message : 'Unable to load purchasing.';
+  if (supplierOptionsResult.status === 'fulfilled' && supplierOptionsResult.value) {
+    supplierOptions = supplierOptionsResult.value.flatMap(({ id, name }) => name ? [{ id, name }] : []);
+  }
+  if (inventoryResult.status === 'fulfilled') inventoryData = inventoryResult.value;
   const currencyCode = data?.currencyCode || 'USD';
   const all = data?.purchaseOrders || [];
   const orders = [...all]
@@ -32,10 +44,15 @@ export async function PurchasingPage({ searchParams }: { searchParams?: Promise<
   const header = <div><h1 className="text-2xl font-semibold tracking-tight">Purchasing & receiving</h1><p className="mt-1 text-sm text-muted-foreground">Create cent-exact drafts, move purchase orders through bounded states, and receive future-dated lots.</p></div>;
 
   return <PageContainer title="Purchasing" header={header} breadcrumbs={breadcrumbs}><div className="space-y-5 px-4 pb-8 md:px-6">
-    <PlatformMetricGrid metrics={[{ label: 'Open purchase orders', value: open.length, note: 'Draft through confirmed' }, { label: 'Expected within 3 days', value: due.length, note: 'Includes overdue ETA', tone: due.length ? 'warning' : 'default' }, { label: 'Units still expected', value: unitsOpen, note: 'Ordered less cumulatively received' }, { label: 'Open committed value', value: money(open.reduce((sum, order) => sum + Number(order.totalAmountCents || 0), 0), currencyCode), note: 'PO line snapshots in cents' }]} />
-    <PlatformTruthNotice title="Receiving boundary">Receiving creates inventory lots and updates stock. This workflow does not record temperature, quality quarantine, invoice match, receiving discrepancy, supplier credit, or AP export.</PlatformTruthNotice>
-    <PlatformDetails className="rounded-xl border bg-background" summary={<div className="flex items-center justify-between gap-4 px-4 py-4 md:px-5"><div><p className="font-semibold">Create purchase order draft</p><p className="mt-1 text-sm text-muted-foreground">Start one real supplier/product line with an operator-entered unit cost.</p></div><span className="text-xs font-medium text-muted-foreground">Open form</span></div>}><CreatePurchaseOrderForm suppliers={(suppliersData?.suppliers || []).map((supplier) => ({ id: supplier.id, name: supplier.name }))} products={(inventoryData?.products || []).map((product) => ({ id: product.id, title: product.title }))} /></PlatformDetails>
-    <PlatformToolbar search={q} searchPlaceholder="PO number, supplier, product, or SKU" filter={filter} filterLabel="PO state" filterOptions={[{ value: 'open', label: 'Open workflow' }, { value: 'all', label: 'All purchase orders' }, { value: 'draft', label: 'Draft' }, { value: 'sent', label: 'Sent' }, { value: 'confirmed', label: 'Confirmed / receiving' }, { value: 'received', label: 'Received' }, { value: 'cancelled', label: 'Cancelled' }]} sort={sort} sortOptions={[{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'eta', label: 'ETA soonest' }, { value: 'value', label: 'Highest value' }]} resultCount={orders.length} />
+    <PlatformPageLinks pagination={data?.pagination} path="/dashboard/platform/purchasing" searchParams={params} />
+    {data ? <PlatformMetricGrid metrics={[{ label: 'Open purchase orders (shown)', value: open.length, note: 'Draft through confirmed among shown POs' }, { label: 'Expected within 3 days (shown)', value: due.length, note: 'Shown open POs; includes overdue ETA', tone: due.length ? 'warning' : 'default' }, { label: 'Units still expected (shown)', value: unitsOpen, note: 'Outstanding quantity among shown open POs' }, { label: 'Open committed value (shown)', value: money(open.reduce((sum, order) => sum + Number(order.totalAmountCents || 0), 0), currencyCode), note: 'Shown open PO line snapshots in cents' }]} /> : null}
+    <PlatformTruthNotice title="Manual replenishment boundary">Purchase orders are operator-created. Product search selects catalog items but does not calculate a reorder quantity; draft quantities and unit costs are entered by the operator. Inventory low-stock signals cover only products shown on that page, and this screen provides no store-wide replenishment recommendation.</PlatformTruthNotice>
+    <PlatformTruthNotice title="Receiving boundary">Receiving retains supplier batch, inspection and purchase-order provenance. Supplier invoices match these receipts; discrepancies, claims, credits and external settlement retain separate evidence.</PlatformTruthNotice>
+    {data && (supplierOptions === null || inventoryData === null) ? <PlatformErrorState title="Draft options unavailable" description="The purchase-order list remains available, but draft creation is disabled because supplier or inventory options could not be loaded." /> : null}
+    {data && supplierOptions && inventoryData && (supplierOptions.length === 0 || inventoryData.products.length === 0) ? <p role="status" className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">A purchase-order draft requires at least one supplier and one product in this store.</p> : null}
+    {data && supplierOptions && inventoryData && supplierOptions.length > 0 && inventoryData.products.length > 0 ? <PlatformDetails className="rounded-xl border bg-background" summary={<div className="flex items-center justify-between gap-4 px-4 py-4 md:px-5"><div><p className="font-semibold">Create purchase order draft</p><p className="mt-1 text-sm text-muted-foreground">Start one real supplier/product line with an operator-entered unit cost.</p></div><span className="text-xs font-medium text-muted-foreground">Open form</span></div>}><CreatePurchaseOrderForm suppliers={supplierOptions} products={inventoryData.products.map((product) => ({ id: product.id, title: product.title }))} /></PlatformDetails> : null}
+    <SupplierSettlementPanel currencyCode={currencyCode} />
+    {data ? <PlatformToolbar search={q} searchPlaceholder="PO number, supplier, product, or SKU" filter={filter} filterLabel="PO state" filterOptions={[{ value: 'open', label: 'Open workflow' }, { value: 'all', label: 'All purchase orders' }, { value: 'draft', label: 'Draft' }, { value: 'sent', label: 'Sent' }, { value: 'confirmed', label: 'Confirmed / receiving' }, { value: 'received', label: 'Received' }, { value: 'cancelled', label: 'Cancelled' }]} sort={sort} sortOptions={[{ value: 'newest', label: 'Newest first' }, { value: 'oldest', label: 'Oldest first' }, { value: 'eta', label: 'ETA soonest' }, { value: 'value', label: 'Highest value' }]} resultCount={orders.length} /> : null}
     {loadError ? <PlatformErrorState description={loadError} /> : <PlatformSurface title="Purchase orders" description="Expand a PO for immutable supplier/product snapshots, cumulative receiving progress, and valid next steps.">
       {orders.length === 0 ? <PlatformEmptyState title="No matching purchase orders" description="Reset filters or create the first draft." /> : <div className="divide-y">{orders.map((order) => {
         const ordered = order.items.reduce((sum, item) => sum + item.quantity, 0);

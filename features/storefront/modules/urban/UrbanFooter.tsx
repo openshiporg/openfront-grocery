@@ -3,7 +3,7 @@ import { getDepartmentsList } from '@/features/storefront/lib/data/departments';
 import { getStore } from '@/features/storefront/lib/data/store';
 
 export default async function UrbanFooter() {
-  const [store, { departments }] = await Promise.all([getStore(), getDepartmentsList(0, 8)]);
+  const [store, { departments }] = await Promise.all([getStore(), getDepartmentsList(0, 8).catch(() => ({ departments: [] }))]);
   const storeName = store.name;
   const year = new Date().getFullYear();
 
@@ -31,9 +31,9 @@ export default async function UrbanFooter() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Shop</p>
               <ul className="mt-3 space-y-2 text-sm">
-                <li><Link href="/products" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">All products</Link></li>
-                <li><Link href="/departments" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Departments</Link></li>
-                <li><Link href="/deals" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Specials</Link></li>
+                <li><Link prefetch={false} href="/products" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">All products</Link></li>
+                <li><Link prefetch={false} href="/departments" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Departments</Link></li>
+                <li><Link prefetch={false} href="/deals" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Specials</Link></li>
               </ul>
             </div>
             <div>
@@ -41,7 +41,7 @@ export default async function UrbanFooter() {
               <ul className="mt-3 space-y-2 text-sm">
                 {departments.slice(0, 4).map((dept) => (
                   <li key={dept.id}>
-                    <Link href={`/departments/${dept.handle}`} className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">
+                    <Link prefetch={false} href={`/departments/${dept.handle}`} className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">
                       {dept.name}
                     </Link>
                   </li>
@@ -51,8 +51,10 @@ export default async function UrbanFooter() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Account</p>
               <ul className="mt-3 space-y-2 text-sm">
-                <li><Link href="/account" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Orders</Link></li>
-                <li><Link href="/lists" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Lists</Link></li>
+                <li><Link prefetch={false} href="/account/orders" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Orders</Link></li>
+                <li><Link prefetch={false} href="/subscriptions" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Recurring baskets & rewards</Link></li>
+                <li><Link prefetch={false} href="/order-access" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Recover an order</Link></li>
+                <li><Link prefetch={false} href="/lists" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Lists</Link></li>
               </ul>
             </div>
           </div>
@@ -60,7 +62,7 @@ export default async function UrbanFooter() {
 
         <div className="mt-10 flex flex-col gap-2 border-t border-[var(--sf-rule)] pt-6 text-xs text-[var(--sf-ink-faint)] sm:flex-row sm:items-center sm:justify-between">
           <p>© {year} {storeName}</p>
-          <p>Prices and availability reflect the live catalog.</p>
+          <nav aria-label="Store information" className="flex flex-wrap gap-x-5 gap-y-2"><Link prefetch={false} href="/fulfillment" className="inline-flex min-h-11 items-center">Delivery & pickup</Link><Link prefetch={false} href="/support" className="inline-flex min-h-11 items-center">Help & contact</Link><Link prefetch={false} href="/policies" className="inline-flex min-h-11 items-center">Order information</Link><Link prefetch={false} href="/account/privacy" className="inline-flex min-h-11 items-center">Privacy</Link></nav>
         </div>
       </div>
     </footer>

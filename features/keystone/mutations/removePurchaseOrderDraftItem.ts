@@ -54,7 +54,7 @@ export async function removePurchaseOrderDraftItem(
 
     const remainingItems = items.filter((candidate) => candidate.id !== poItemId);
     const totalAmountCents = remainingItems.reduce(
-      (sum, candidate) => sum + candidate.quantity * candidate.unitCostCents,
+      (sum, candidate) => sum + Number(candidate.quantity) * candidate.unitCostCents,
       0,
     );
     const totalAmount = totalAmountCents / 100;

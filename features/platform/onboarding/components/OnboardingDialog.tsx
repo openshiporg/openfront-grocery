@@ -1,15 +1,15 @@
 'use client';
 
 import React from 'react';
+import { useRouter } from 'next/navigation';
 import {
   AlertCircle,
   AppWindowIcon as Apps,
-  ArrowUpRight,
-  Building2,
-  CircleCheck,
   Loader2,
   Package,
-  SlidersHorizontal,
+  Building2,
+  CircleCheck,
+  ArrowUpRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -32,23 +32,24 @@ import {
 import { Badge } from '@/components/ui/badge-button';
 import { CustomSetupSteps } from './CustomSetupSteps';
 import { SectionRenderer } from './SectionRenderer';
-import { STORE_TEMPLATES, SECTION_DEFINITIONS, type TemplateType } from '../config/templates';
 import { useOnboardingState } from '../hooks/useOnboardingState';
 import { useOnboardingApi } from '../hooks/useOnboardingApi';
-import { getItemsFromJsonData } from '../utils/dataUtils';
+import { STORE_TEMPLATES, SECTION_DEFINITIONS } from '../config/templates';
+
+
+
+
 
 interface OnboardingDialogProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-const templateIconMap = {
-  minimal: Package,
-  full: Building2,
-  custom: SlidersHorizontal,
-} as const;
-
-const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) => {
+const OnboardingDialog: React.FC<OnboardingDialogProps> = ({
+  isOpen,
+  onClose,
+}) => {
+  const router = useRouter();
   const onboardingState = useOnboardingState();
   const {
     step,
@@ -61,10 +62,10 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
     error,
     itemErrors,
     isLoading,
+    setStep,
     setSelectedTemplate,
     setCurrentJsonData,
     setCustomJsonApplied,
-    setStep,
     setProgress,
     setItemLoading,
     setItemCompleted,
@@ -72,6 +73,9 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
     setError,
     setIsLoading,
     resetOnboardingState,
+    resetDialog,
+    result,
+    setResult,
   } = onboardingState;
 
   const { runOnboarding } = useOnboardingApi({
@@ -86,61 +90,78 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
     setError,
     setIsLoading,
     resetOnboardingState,
+    setResult,
+    onCompleted: () => router.refresh(),
   });
+
+
+
+  const changeTemplate = (next: 'minimal' | 'full' | 'custom') => {
+    if (next !== selectedTemplate) setSelectedTemplate(next);
+  };
+  const customNeedsApplication = selectedTemplate === 'custom' && !customJsonApplied;
+  const closeDialog = () => {
+    if (isLoading) return;
+    resetDialog();
+    onClose();
+  };
 
   if (!isOpen) return null;
 
-  const displayNames = SECTION_DEFINITIONS.reduce((acc, section) => {
-    acc[section.type] = getItemsFromJsonData(currentJsonData, section.type);
-    return acc;
-  }, {} as Record<string, string[]>);
-
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-[95vw] flex-col overflow-hidden p-0 gap-0 sm:max-w-5xl">
+    <Dialog open={isOpen} onOpenChange={(open) => !open && closeDialog()}>
+      <DialogContent aria-describedby={undefined} className="flex max-h-[calc(100dvh-2rem)] max-w-[95vw] flex-col overflow-hidden p-0 gap-0 sm:max-w-4xl">
         <DialogHeader className="border-b px-4 sm:px-6 py-4 mb-0 shrink-0">
-          <DialogTitle>Grocery onboarding</DialogTitle>
+          <DialogTitle>Onboarding</DialogTitle>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+          {/* Mobile-first layout: Store Setup header and Setup Type appear first */}
           <div className="order-1 flex shrink-0 flex-col lg:order-none lg:w-80 lg:justify-between lg:border-r">
             <div className="flex-1">
               <div className="p-4 sm:p-6">
+                {/* Store Setup Header - Always visible first on mobile */}
                 <div className="flex items-center space-x-3">
                   <div className="inline-flex shrink-0 items-center justify-center rounded-sm bg-muted p-3">
-                    <Apps className="size-5 text-foreground" aria-hidden={true} />
+                    <Apps
+                      className="size-5 text-foreground"
+                      aria-hidden={true}
+                    />
                   </div>
                   <div className="space-y-0.5">
-                    <h3 className="text-sm font-medium text-foreground">Grocery launch baseline</h3>
+                    <h3 className="text-sm font-medium text-foreground">
+                      Store Setup
+                    </h3>
                     <p className="text-sm text-muted-foreground">
                       {step === 'done'
-                        ? 'Your connected grocery baseline is ready'
+                        ? 'Your grocery setup is complete'
                         : selectedTemplate === 'custom'
-                        ? 'Customize the launch data JSON'
-                        : 'Choose a launch template'}
+                        ? 'Copy JSON templates for custom setup'
+                        : 'Configure your grocery store'}
                     </p>
                   </div>
                 </div>
-
                 <Separator className="my-4" />
 
                 {step === 'done' ? (
                   <>
-                    <h4 className="text-sm font-medium text-foreground mb-2">Setup complete</h4>
+                    <h4 className="text-sm font-medium text-foreground mb-2">
+                      Setup Complete
+                    </h4>
                     <p className="text-sm text-muted-foreground mb-4">
-                      Your {selectedTemplate === 'minimal' ? 'basic' : selectedTemplate === 'full' ? 'complete' : 'custom'} Store-owned launch dataset is ready. Customer, order, payment, revenue, and loyalty history are never fabricated.
+                      {result?.reused ? 'Your existing grocery setup was verified.' : 'Your grocery setup is saved.'} Verify fulfillment, payments, and a first order before opening sales.
                     </p>
                     <div className="flex items-center space-x-2 text-sm text-emerald-600 dark:text-emerald-500 mb-4">
                       <CircleCheck className="h-4 w-4 fill-emerald-500 text-background" />
-                      <span>Onboarding complete</span>
+                      <span>Catalog setup complete</span>
                     </div>
 
                     <div className="space-y-3 text-sm">
-                      {SECTION_DEFINITIONS.map((section) => (
+                      {SECTION_DEFINITIONS.filter((section) => result?.counts[section.type] !== undefined).map((section) => (
                         <div key={section.type} className="flex items-center space-x-2 text-muted-foreground">
                           <CircleCheck className="h-4 w-4 fill-muted-foreground text-background" />
                           <span className="font-medium">
-                            {displayNames[section.type]?.length || 0} {section.label.toLowerCase()}
+                            {result?.counts[section.type]} {section.label.toLowerCase()} {result?.reused ? 'verified' : 'saved'}
                           </span>
                         </div>
                       ))}
@@ -148,83 +169,196 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                   </>
                 ) : !isLoading ? (
                   <>
-                    <h4 className="text-sm font-medium text-foreground mb-4">Template</h4>
+                    <h4 className="text-sm font-medium text-foreground mb-4">
+                      Setup Type
+                    </h4>
 
+                    {/* Mobile: Dropdown selector */}
                     <div className="block lg:hidden">
                       <Select
                         value={selectedTemplate}
-                        onValueChange={(value) => setSelectedTemplate(value as TemplateType)}
+                        onValueChange={(value) => changeTemplate(value as 'minimal' | 'full' | 'custom')}
                       >
-                        <SelectTrigger className="w-full h-auto py-3">
-                          <SelectValue />
+                        <SelectTrigger aria-label="Setup type" className="w-full h-auto py-3">
+                          <SelectValue>{STORE_TEMPLATES[selectedTemplate].name}</SelectValue>
                         </SelectTrigger>
                         <SelectContent>
-                          {Object.entries(STORE_TEMPLATES).map(([key, template]) => (
-                            <SelectItem key={key} value={key}>
-                              <div className="flex flex-col items-start text-left">
-                                <span className="font-medium">{template.name}</span>
-                                <span className="text-xs text-muted-foreground">{template.description}</span>
-                              </div>
-                            </SelectItem>
-                          ))}
+                          <SelectItem value="minimal">
+                            <div className="flex flex-col items-start text-left">
+                              <span className="font-medium">Basic Setup</span>
+                              <span className="text-xs text-muted-foreground">Essential grocery catalog and fulfillment</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="full">
+                            <div className="flex flex-col items-start text-left">
+                              <span className="font-medium">Complete Setup</span>
+                              <span className="text-xs text-muted-foreground">Full grocery catalog and fulfillment</span>
+                            </div>
+                          </SelectItem>
+                          <SelectItem value="custom">
+                            <div className="flex flex-col items-start text-left">
+                              <span className="font-medium">Custom Setup</span>
+                              <span className="text-xs text-muted-foreground">Customize your grocery setup with JSON</span>
+                            </div>
+                          </SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
 
+                    {/* Desktop: Radio Group */}
                     <div className="hidden lg:block">
                       <RadioGroup
                         value={selectedTemplate}
-                        onValueChange={(value) => setSelectedTemplate(value as TemplateType)}
+                        onValueChange={(value) =>
+                          changeTemplate(value as 'minimal' | 'full' | 'custom')
+                        }
                         className="space-y-4"
                       >
-                        {(Object.keys(STORE_TEMPLATES) as TemplateType[]).map((key) => {
-                          const template = STORE_TEMPLATES[key];
-                          const Icon = templateIconMap[key];
-                          const active = selectedTemplate === key;
-
-                          return (
-                            <div
-                              key={key}
-                              className={`border p-4 rounded-md transition-colors cursor-pointer ${
-                                active ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'hover:border-blue-200'
-                              }`}
-                              onClick={() => setSelectedTemplate(key)}
-                            >
-                              <div className="flex gap-4">
-                                <div className="flex-shrink-0 mt-[3px]">
-                                  <Icon className={`h-5 w-5 ${active ? 'text-blue-600 dark:text-blue-400' : 'text-muted-foreground'}`} />
-                                </div>
-                                <div className="flex-1">
-                                  <RadioGroupItem value={key} id={key} className="sr-only" />
-                                  <Label htmlFor={key} className="flex-1 cursor-pointer">
-                                    <div className="font-medium text-base mb-1">{template.name}</div>
-                                    <div className="text-sm text-muted-foreground">{template.description}</div>
-                                  </Label>
-                                </div>
-                              </div>
+                        <div
+                          className={`border p-4 rounded-md transition-colors cursor-pointer ${
+                            selectedTemplate === 'minimal'
+                              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                              : 'hover:border-blue-200'
+                          }`}
+                          onClick={() => changeTemplate('minimal')}
+                        >
+                          <div className="flex gap-4">
+                            <div className="flex-shrink-0 mt-[3px]">
+                              <Package
+                                className={`h-5 w-5 ${
+                                  selectedTemplate === 'minimal'
+                                    ? 'text-blue-600 dark:text-blue-400'
+                                    : 'text-muted-foreground'
+                                }`}
+                              />
                             </div>
-                          );
-                        })}
+                            <div className="flex-1">
+                              <RadioGroupItem
+                                value="minimal"
+                                id="minimal"
+                                className="sr-only"
+                              />
+                              <Label
+                                htmlFor="minimal"
+                                className="flex-1 cursor-pointer"
+                              >
+                                <div className="font-medium text-base mb-1">
+                                  Basic Setup
+                                </div>
+                                <div className="text-sm text-muted-foreground">
+                                  Essential grocery catalog and fulfillment
+                                </div>
+                              </Label>
+                            </div>
+                          </div>
+                        </div>
+                        <div
+                          className={`border p-4 rounded-md transition-colors cursor-pointer ${
+                            selectedTemplate === 'full'
+                              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                              : 'hover:border-blue-200'
+                          }`}
+                          onClick={() => changeTemplate('full')}
+                        >
+                          <div className="flex gap-4">
+                            <div className="flex-shrink-0 mt-[3px]">
+                              <Building2
+                                className={`h-5 w-5 ${
+                                  selectedTemplate === 'full'
+                                    ? 'text-blue-600 dark:text-blue-400'
+                                    : 'text-muted-foreground'
+                                }`}
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <RadioGroupItem
+                                value="full"
+                                id="full"
+                                className="sr-only"
+                              />
+                              <Label
+                                htmlFor="full"
+                                className="flex-1 cursor-pointer"
+                              >
+                                <div className="font-medium text-base mb-1">
+                                  Complete Setup
+                                </div>
+                                <div className="text-sm text-muted-foreground">
+                                  Full grocery catalog and fulfillment
+                                </div>
+                              </Label>
+                            </div>
+                          </div>
+                        </div>
+                        <div
+                          className={`border p-4 rounded-md transition-colors cursor-pointer ${
+                            selectedTemplate === 'custom'
+                              ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                              : 'hover:border-blue-200'
+                          }`}
+                          onClick={() => changeTemplate('custom')}
+                        >
+                          <div className="flex gap-4">
+                            <div className="flex-shrink-0 mt-[3px]">
+                              <CircleCheck
+                                className={`h-5 w-5 ${
+                                  selectedTemplate === 'custom'
+                                    ? 'text-blue-600 dark:text-blue-400'
+                                    : 'text-muted-foreground'
+                                }`}
+                              />
+                            </div>
+                            <div className="flex-1">
+                              <RadioGroupItem
+                                value="custom"
+                                id="custom"
+                                className="sr-only"
+                              />
+                              <Label
+                                htmlFor="custom"
+                                className="flex-1 cursor-pointer"
+                              >
+                                <div className="font-medium text-base mb-1">
+                                  Custom Setup
+                                </div>
+                                <div className="text-sm text-muted-foreground">
+                                  Customize your grocery setup with JSON
+                                </div>
+                              </Label>
+                            </div>
+                          </div>
+                        </div>
                       </RadioGroup>
                     </div>
                   </>
                 ) : (
                   <>
-                    <h4 className="text-sm font-medium text-foreground">Creating connected grocery data</h4>
-                    <p className="mt-1 text-sm leading-6 text-muted-foreground">{progressMessage}</p>
+                    <h4 className="text-sm font-medium text-foreground">
+                      Creating {STORE_TEMPLATES[selectedTemplate].name}
+                    </h4>
+                    <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                      {progressMessage}
+                    </p>
                   </>
                 )}
               </div>
             </div>
-
+            {/* Desktop buttons - hidden on mobile */}
             <div className="hidden lg:flex flex-col border-t mt-auto">
+              {/* Error message above buttons */}
               {error && !isLoading && step !== 'done' && (
-                <Badge color="rose" className="rounded-none gap-3 text-sm border-b">
+                <Badge
+                  color="rose"
+                  className="rounded-none gap-3 text-sm border-b"
+                >
                   <AlertCircle className="size-4 sm:size-7" />
-                  <span className="text-xs sm:text-sm">{error}</span>
+                  <span className="text-xs sm:text-sm">
+                    {error} No partial setup is applied. You can retry the same configuration.
+                  </span>
                 </Badge>
               )}
 
+              {/* Desktop Buttons */}
               <div className="flex items-center justify-between p-4">
                 {step === 'done' ? (
                   <div className="flex flex-col sm:flex-row gap-2 w-full">
@@ -235,7 +369,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                     </DialogClose>
                     <Button asChild className="w-full sm:w-auto">
                       <a href="/" target="_blank" rel="noopener noreferrer">
-                        View storefront
+                        View your storefront
                         <ArrowUpRight className="ml-1.5 h-4 w-4" />
                       </a>
                     </Button>
@@ -243,18 +377,23 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                 ) : (
                   <div className="flex flex-col sm:flex-row gap-2 w-full">
                     <DialogClose asChild>
-                      <Button type="button" variant="ghost" disabled={isLoading} className="w-full sm:w-auto">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={isLoading}
+                        className="w-full sm:w-auto"
+                      >
                         Cancel
                       </Button>
                     </DialogClose>
                     {isLoading ? (
                       <Button disabled className="w-full sm:w-auto">
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Initializing…
+                        Creating...
                       </Button>
                     ) : (
-                      <Button onClick={runOnboarding} className="w-full sm:w-auto">
-                        Initialize Store
+                      <Button disabled={customNeedsApplication} onClick={runOnboarding} className="w-full sm:w-auto">
+                        Confirm
                       </Button>
                     )}
                   </div>
@@ -264,19 +403,18 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
           </div>
 
           <div className="order-2 min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 lg:order-none">
-            {selectedTemplate === 'custom' && !customJsonApplied ? (
+            {selectedTemplate === 'custom' && step === 'template' && !customJsonApplied ? (
+              /* Custom Setup Steps */
               <CustomSetupSteps
                 currentJson={currentJsonData}
                 onJsonUpdate={(newJsonData) => {
                   setCurrentJsonData(newJsonData);
                   setCustomJsonApplied(true);
                 }}
-                onBack={() => {
-                  setSelectedTemplate('minimal');
-                  setStep('template');
-                }}
+                onBack={() => setCustomJsonApplied(false)}
               />
             ) : (
+              /* Unified Section Renderer Component */
               <SectionRenderer
                 sections={SECTION_DEFINITIONS}
                 selectedTemplate={selectedTemplate}
@@ -292,14 +430,22 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
           </div>
         </div>
 
+        {/* Mobile buttons - attached to bottom */}
         <div className="flex shrink-0 flex-col border-t lg:hidden">
+          {/* Mobile Error message above buttons */}
           {error && !isLoading && step !== 'done' && (
-            <Badge color="rose" className="rounded-none gap-3 text-sm border-b">
+            <Badge
+              color="rose"
+              className="rounded-none gap-3 text-sm border-b"
+            >
               <AlertCircle className="size-4 sm:size-7" />
-              <span className="text-xs sm:text-sm">{error}</span>
+              <span className="text-xs sm:text-sm">
+                {error} No partial setup is applied. You can retry the same configuration.
+              </span>
             </Badge>
           )}
 
+          {/* Mobile Buttons */}
           <div className="flex items-center justify-between p-4">
             {step === 'done' ? (
               <div className="flex flex-col sm:flex-row gap-2 w-full">
@@ -310,7 +456,7 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
                 </DialogClose>
                 <Button asChild className="flex-1">
                   <a href="/" target="_blank" rel="noopener noreferrer">
-                    View storefront
+                    View your storefront
                     <ArrowUpRight className="ml-1.5 h-4 w-4" />
                   </a>
                 </Button>
@@ -318,18 +464,23 @@ const OnboardingDialog: React.FC<OnboardingDialogProps> = ({ isOpen, onClose }) 
             ) : (
               <div className="flex flex-col sm:flex-row gap-2 w-full">
                 <DialogClose asChild>
-                  <Button type="button" variant="ghost" disabled={isLoading} className="flex-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={isLoading}
+                    className="flex-1"
+                  >
                     Cancel
                   </Button>
                 </DialogClose>
                 {isLoading ? (
                   <Button disabled className="flex-1">
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Initializing…
+                    Creating...
                   </Button>
                 ) : (
-                  <Button onClick={runOnboarding} className="flex-1">
-                    Initialize Store
+                  <Button disabled={customNeedsApplication} onClick={runOnboarding} className="flex-1">
+                    Confirm
                   </Button>
                 )}
               </div>

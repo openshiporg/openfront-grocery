@@ -4,16 +4,7 @@ import { ArrowRight, Search } from 'lucide-react';
 
 import type { GroceryCart, GroceryDepartment, GroceryProduct } from '@/features/storefront/types';
 
-export function formatMoney(value?: number | null) {
-  if (typeof value !== 'number' || Number.isNaN(value)) return '$0.00';
-  const amount = Math.abs(value) > 1000 ? value / 100 : value;
-  return `$${amount.toFixed(2)}`;
-}
-
-export function formatCents(value?: number | null) {
-  if (typeof value !== 'number' || Number.isNaN(value)) return '$0.00';
-  return `$${(value / 100).toFixed(2)}`;
-}
+export { formatMoney, formatCents } from '../../lib/marketFormatting';
 
 export function formatUnit(unit?: string | null) {
   if (!unit) return 'each';
@@ -38,7 +29,7 @@ export function totalCartLines(cart?: GroceryCart | null) {
 
 export function UrbanPageShell({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <main className={`min-h-screen bg-[var(--sf-paper)] text-[var(--sf-ink)] ${className}`}>
+    <main id="storefront-main" tabIndex={-1} className={`flex-1 min-w-0 bg-[var(--sf-paper)] text-[var(--sf-ink)] ${className}`}>
       {children}
     </main>
   );
@@ -77,7 +68,7 @@ export function UrbanBreadcrumb({ items }: { items: Array<{ label: string; href?
         <span key={`${item.label}-${index}`}>
           {index > 0 ? <span className="mx-2 text-[var(--sf-rule-strong)]">/</span> : null}
           {item.href ? (
-            <Link href={item.href} className="transition-colors hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]">
+            <Link prefetch={false} href={item.href} className="transition-colors hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]">
               {item.label}
             </Link>
           ) : (
@@ -113,6 +104,7 @@ export function UrbanSectionTitle({
       </div>
       {actionHref && actionLabel ? (
         <Link
+          prefetch={false}
           href={actionHref}
           className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-4 py-2.5 text-sm font-medium text-[var(--sf-ink)] transition hover:border-[var(--sf-accent)] hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]"
         >
@@ -174,7 +166,7 @@ export function UrbanBadge({
   };
 
   return (
-    <span className={`inline-flex items-center gap-1.5 border px-2 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] whitespace-nowrap ${tones[tone]} ${className}`}>
+    <span className={`inline-flex items-center gap-1.5 border px-2 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.04em] ${tones[tone]} ${className}`}>
       {children}
     </span>
   );
@@ -198,8 +190,9 @@ export function UrbanButtonLink({
 
   return (
     <Link
+      prefetch={false}
       href={href}
-      className={`inline-flex items-center justify-center gap-2 whitespace-nowrap border px-5 py-2.5 text-sm font-semibold transition duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] ${classes} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 min-h-11 rounded-md border px-4 py-2.5 text-sm font-semibold transition duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] ${classes} ${className}`}
     >
       {children}
     </Link>
@@ -220,7 +213,7 @@ export function UrbanButton({
   return (
     <button
       {...props}
-      className={`inline-flex items-center justify-center gap-2 whitespace-nowrap border px-5 py-2.5 text-sm font-semibold transition duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] disabled:cursor-not-allowed ${classes} ${className}`}
+      className={`inline-flex items-center justify-center gap-2 min-h-11 rounded-md border px-4 py-2.5 text-sm font-semibold transition duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] disabled:cursor-not-allowed ${classes} ${className}`}
     >
       {children}
     </button>
@@ -267,7 +260,7 @@ export function UrbanSearchStrip({
     <form action={action} method="get" role="search" className="flex min-w-0 items-stretch gap-0 border border-[var(--sf-rule-strong)]">
       <div className="relative min-w-0 flex-1">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--sf-ink-faint)]" />
-        <UrbanTextInput type="search" name="search" aria-label="Search products" defaultValue={defaultValue} placeholder={placeholder} className="h-12 border-0 pl-10 focus-visible:outline-none" />
+        <UrbanTextInput type="search" name="search" aria-label="Search products" defaultValue={defaultValue} placeholder={placeholder} className="h-12 border-0 pl-10 focus-visible:outline-2" />
       </div>
       <UrbanButton type="submit" className="shrink-0 rounded-none border-0 border-l border-[var(--sf-rule-strong)]">
         Search
@@ -310,7 +303,7 @@ export function UrbanProductArtwork({
   const image = productImage(product);
 
   if (image) {
-    return <img src={image} alt={product?.name || 'Product image'} className={`h-full w-full object-cover ${className}`} />;
+    return <img loading="lazy" decoding="async" src={image} alt={product?.name || 'Product image'} className={`h-full w-full object-cover ${className}`} />;
   }
 
   const name = product?.name || 'Grocery item';
@@ -318,14 +311,14 @@ export function UrbanProductArtwork({
 
   return (
     <div
-      className={`flex h-full w-full flex-col justify-between bg-[linear-gradient(160deg,var(--sf-paper-2),var(--sf-paper-3))] p-4 text-[var(--sf-ink)] ${className}`}
+      className={`flex h-full w-full flex-col justify-between bg-[var(--sf-paper-2)] p-4 text-[var(--sf-ink)] ${className}`}
     >
       <UrbanBadge tone="muted" className="self-start">
         {department}
       </UrbanBadge>
       <div>
         <p className="max-w-[12ch] font-[family-name:var(--sf-font-display)] text-xl font-semibold leading-[1.05] tracking-[-0.02em]">{name}</p>
-        <p className="mt-1 text-xs text-[var(--sf-ink-muted)]">From today&apos;s catalog</p>
+        <p className="mt-1 text-xs text-[var(--sf-ink-muted)]">Image unavailable</p>
       </div>
     </div>
   );

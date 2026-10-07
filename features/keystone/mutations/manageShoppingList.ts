@@ -24,6 +24,7 @@ async function getShoppingListForUser(
       items {
         id
         product
+        productRef { id }
         quantity
         unit
         checked
@@ -283,23 +284,22 @@ export async function addListToCart(
   const skippedItems: string[] = [];
 
   for (const item of uncheckedItems) {
-    // Try to find product by title match
+    // A saved identity is never replaced by a coincidentally similar title.
     const products = await sudoContext.query.Product.findMany({
       where: {
         AND: [
           { store: { id: { equals: store.id } } },
           { status: { equals: 'published' } },
-          { OR: [
-            { title: { contains: item.product, mode: 'insensitive' } },
-            { title: { equals: item.product, mode: 'insensitive' } },
-          ] },
+          item.productRef?.id
+            ? { id: { equals: item.productRef.id } }
+            : { title: { equals: item.product, mode: 'insensitive' } },
         ],
       },
       query: 'id title store { id }',
-      take: 1,
+      take: 2,
     });
 
-    if (products.length === 0) {
+    if (products.length !== 1) {
       skippedItems.push(item.product);
       continue;
     }

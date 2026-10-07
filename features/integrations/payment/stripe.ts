@@ -11,19 +11,22 @@ const getStripeClient = () => {
   });
 };
 
-export async function createPaymentFunction({ cart, amount, currency, idempotencyKey }: { cart?: any; amount: number; currency: string; idempotencyKey?: string }) {
+export function stripeCheckoutMetadata(cart?: any) {
+  return { cartId: cart?.id || '', sessionId: cart?.sessionId || '', ...(cart?.checkoutPaymentSessionId ? {
+    paymentSessionId: cart.checkoutPaymentSessionId, checkoutFingerprint: cart.checkoutFingerprint || '', cartFingerprint: cart.cartFingerprint || '' } : {}) };
+}
+
+export async function createPaymentFunction({ cart, amount, currency, idempotencyKey, captureMethod = 'automatic' }: { cart?: any; amount: number; currency: string; idempotencyKey?: string; captureMethod?: 'automatic' | 'manual' }) {
   const stripe = getStripeClient();
 
   const paymentIntent = await stripe.paymentIntents.create({
     amount,
     currency: currency.toLowerCase(),
+    capture_method: captureMethod,
     automatic_payment_methods: {
       enabled: true,
     },
-    metadata: {
-      cartId: cart?.id || '',
-      sessionId: cart?.sessionId || '',
-    },
+    metadata: stripeCheckoutMetadata(cart),
   }, idempotencyKey ? { idempotencyKey } : undefined);
 
   return {
@@ -32,16 +35,18 @@ export async function createPaymentFunction({ cart, amount, currency, idempotenc
   };
 }
 
-export async function capturePaymentFunction({ paymentId, amount }: { paymentId: string; amount?: number }) {
+export async function capturePaymentFunction({ paymentId, amount, amountCents, idempotencyKey }: { paymentId: string; amount?: number; amountCents?: number; idempotencyKey: string }) {
   const stripe = getStripeClient();
 
   const paymentIntent = await stripe.paymentIntents.capture(paymentId, {
-    amount_to_capture: amount,
-  });
+    amount_to_capture: amountCents ?? amount,
+  }, { idempotencyKey });
 
   return {
     status: paymentIntent.status,
-    amount: (paymentIntent as any).amount_captured,
+    amount: paymentIntent.amount_received,
+    amountCents: paymentIntent.amount_received,
+    currency: paymentIntent.currency,
     data: paymentIntent,
   };
 }
@@ -53,6 +58,7 @@ export async function refundPaymentFunction({ paymentId, amount, idempotencyKey 
     {
       payment_intent: paymentId,
       amount,
+      metadata: idempotencyKey ? { groceryRefundKey: idempotencyKey } : undefined,
     },
     idempotencyKey ? { idempotencyKey } : undefined,
   );
@@ -60,6 +66,8 @@ export async function refundPaymentFunction({ paymentId, amount, idempotencyKey 
   return {
     status: refund.status,
     amount: refund.amount,
+    currency: refund.currency,
+    paymentId: typeof refund.payment_intent === 'string' ? refund.payment_intent : refund.payment_intent?.id,
     data: refund,
   };
 }
@@ -71,9 +79,26 @@ export async function getPaymentStatusFunction({ paymentId }: { paymentId: strin
 
   return {
     status: paymentIntent.status,
-    amount: paymentIntent.amount,
+    amount: paymentIntent.status === 'succeeded' ? paymentIntent.amount_received : paymentIntent.amount,
+    amountCents: paymentIntent.status === 'succeeded' ? paymentIntent.amount_received : paymentIntent.amount,
+    currency: paymentIntent.currency,
+    authorizedAmountCents: paymentIntent.amount,
+    capturedAmountCents: paymentIntent.amount_received,
+    capturableAmountCents: paymentIntent.amount_capturable,
+    captureMethod: paymentIntent.capture_method,
     data: paymentIntent,
   };
+}
+
+export async function getRefundStatusFunction({ refundId }: { refundId: string }) {
+  const refund = await getStripeClient().refunds.retrieve(refundId);
+  return { id: refund.id, status: refund.status, amount: refund.amount, currency: refund.currency,
+    paymentId: typeof refund.payment_intent === 'string' ? refund.payment_intent : refund.payment_intent?.id, data: refund };
+}
+
+export async function cancelPaymentFunction({ paymentId, idempotencyKey }: { paymentId: string; idempotencyKey?: string }) {
+  const intent = await getStripeClient().paymentIntents.cancel(paymentId, {}, idempotencyKey ? { idempotencyKey } : undefined);
+  return { status: intent.status, amount: intent.amount_received, amountCents: intent.amount_received, currency: intent.currency, data: intent };
 }
 
 export async function generatePaymentLinkFunction({ paymentId }: { paymentId: string }) {

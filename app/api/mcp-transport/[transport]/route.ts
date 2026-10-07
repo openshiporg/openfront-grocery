@@ -5,14 +5,14 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { 
-  getIntrospectionQuery, 
-  buildClientSchema, 
-  GraphQLSchema,
   isNonNullType,
   isListType,
   isInputObjectType,
 } from 'graphql';
 import { getBaseUrl } from '@/features/dashboard/lib/getBaseUrl';
+import { keystoneContext } from '@/features/keystone/context';
+import { trustedClientIp } from '@/features/keystone/lib/clientIp';
+import { getMcpDisabledResponse } from '@/features/keystone/lib/mcpFeatureGate';
 
 // Get simple type name for display
 function getSimpleTypeName(type: any): string {
@@ -27,12 +27,16 @@ function getSimpleTypeName(type: any): string {
 
 // Execute GraphQL query with authentication
 async function executeGraphQL(query: string, graphqlEndpoint: string, cookie: string): Promise<any> {
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  if (cookie) headers.set('Cookie', cookie);
+  const { headers: requestContextHeaders } = await import('next/headers');
+  const clientIp = trustedClientIp(await requestContextHeaders());
+  if (clientIp) headers.set('X-Real-IP', clientIp);
   const response = await fetch(graphqlEndpoint, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Cookie': cookie,
-    },
+    redirect: 'error',
+    cache: 'no-store',
+    headers,
     body: JSON.stringify({ query }),
   });
 
@@ -43,38 +47,9 @@ async function executeGraphQL(query: string, graphqlEndpoint: string, cookie: st
   return result;
 }
 
-// Get GraphQL schema from introspection
-async function getGraphQLSchema(graphqlEndpoint: string, cookie: string): Promise<GraphQLSchema> {
-  const response = await fetch(graphqlEndpoint, {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Cookie': cookie,
-    },
-    body: JSON.stringify({ query: getIntrospectionQuery() }),
-  });
-  
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-  }
-  
-  const result = await response.json();
-  if (result.errors) {
-    throw new Error(`GraphQL introspection failed: ${JSON.stringify(result.errors)}`);
-  }
-  
-  return buildClientSchema(result.data);
-}
-
 export async function POST(request: Request, { params }: { params: Promise<{ transport: string }> }) {
-  if (process.env.NODE_ENV === 'production' && process.env.MCP_ENABLED !== 'true') {
-    return new Response('Not found', { status: 404 });
-  }
-  if (process.env.NODE_ENV === 'production') {
-    const expected = process.env.MCP_SHARED_SECRET;
-    const provided = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
-    if (!expected || !provided || provided !== expected) return new Response('Unauthorized', { status: 401 });
-  }
+  const disabledResponse = getMcpDisabledResponse();
+  if (disabledResponse) return disabledResponse;
   // Track if any CRUD operations occurred during this request
   let dataHasChanged = false;
   
@@ -88,8 +63,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ tra
     // Extract cookie from request
     const cookie = request.headers.get('cookie') || ''
   
-    // Get the GraphQL schema
-    const schema = await getGraphQLSchema(graphqlEndpoint, cookie);
+    // Use Keystone's in-process schema. Public GraphQL introspection remains
+    // disabled in production; MCP operations still execute through that same
+    // session-aware GraphQL endpoint below.
+    const schema = keystoneContext.graphql.schema;
     
     // Parse the JSON-RPC request
     const body = await request.json();
@@ -924,6 +901,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tra
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ transport: string }> }) {
+  const disabledResponse = getMcpDisabledResponse();
+  if (disabledResponse) return disabledResponse;
+
   const { transport } = await params;
   
   const baseUrl = await getBaseUrl();

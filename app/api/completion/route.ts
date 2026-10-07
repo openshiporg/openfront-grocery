@@ -3,10 +3,13 @@ import { createMCPClient } from '@ai-sdk/mcp';
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { getBaseUrl } from '@/features/dashboard/lib/getBaseUrl';
 import { createExactOriginFetch } from '@/features/ai/exactOriginFetch';
+import { trustedClientIp } from '@/features/keystone/lib/clientIp';
+import { getMcpDisabledResponse } from '@/features/keystone/lib/mcpFeatureGate';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 export async function POST(req: Request) {
-  if (process.env.MCP_ENABLED !== 'true') return new Response('Not found', { status: 404 });
+  const disabledResponse = getMcpDisabledResponse();
+  if (disabledResponse) return disabledResponse;
   let mcpClient: any = null;
   let dataHasChanged = false;
 
@@ -91,7 +94,7 @@ export async function POST(req: Request) {
 
     const endpoint = new URL(mcpEndpoint);
     const transport = new StreamableHTTPClientTransport(endpoint, {
-      fetch: createExactOriginFetch({ endpoint, cookie }),
+      fetch: createExactOriginFetch({ endpoint, cookie, clientIp: trustedClientIp(req.headers) }),
     });
     mcpClient = await createMCPClient({ transport });
     const aiTools = await mcpClient.tools();

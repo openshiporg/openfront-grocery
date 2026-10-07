@@ -16,6 +16,7 @@ export interface OnboardingState {
   error: string | null;
   itemErrors: Record<SeedSectionKey, Record<string, string>>;
   isLoading: boolean;
+  result: { reused: boolean; counts: Record<string, number> } | null;
 }
 
 function createItemsState<T>(factory: () => T): Record<SeedSectionKey, T> {
@@ -40,6 +41,7 @@ export function useOnboardingState() {
     error: null,
     itemErrors: createItemsState(() => ({} as Record<string, string>)),
     isLoading: false,
+    result: null,
   });
 
   const getDisplayNamesFromData = useMemo(
@@ -66,6 +68,7 @@ export function useOnboardingState() {
   const setIsLoading = (isLoading: boolean) => setState((prev) => ({ ...prev, isLoading }));
   const setError = (error: string | null) => setState((prev) => ({ ...prev, error }));
   const setProgress = (progressMessage: string) => setState((prev) => ({ ...prev, progressMessage }));
+  const setResult = (result: OnboardingState['result']) => setState((prev) => ({ ...prev, result }));
 
   const setItemLoading = (type: SeedSectionKey, item: string) => {
     setState((prev) => ({
@@ -128,11 +131,28 @@ export function useOnboardingState() {
     setState((prev) => ({
       ...prev,
       error: null,
+      result: null,
       progressMessage: '',
       loadingItems: createItemsState(() => [] as string[]),
       completedItems: createItemsState(() => [] as string[]),
       itemErrors: createItemsState(() => ({} as Record<string, string>)),
     }));
+  };
+
+  const resetDialog = () => {
+    setState({
+      step: 'template',
+      selectedTemplate: 'minimal',
+      currentJsonData: getSeedForTemplate('minimal', seedData),
+      customJsonApplied: false,
+      progressMessage: '',
+      loadingItems: createItemsState(() => [] as string[]),
+      completedItems: createItemsState(() => [] as string[]),
+      error: null,
+      itemErrors: createItemsState(() => ({} as Record<string, string>)),
+      isLoading: false,
+      result: null,
+    });
   };
 
   return {
@@ -144,10 +164,12 @@ export function useOnboardingState() {
     setIsLoading,
     setError,
     setProgress,
+    setResult,
     setItemLoading,
     setItemCompleted,
     setItemError,
     resetOnboardingState,
+    resetDialog,
     getDisplayNamesFromData,
   };
 }

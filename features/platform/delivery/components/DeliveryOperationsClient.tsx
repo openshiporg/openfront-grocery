@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from 'react';
 import { createDeliveryRouteFromReadyOrders, updateDeliveryRouteStatus, updateDeliverySlotState } from '@/features/platform/delivery/actions';
+import { DeliveryStopForm, type DeliveryStopRecord } from './DeliveryStopForm';
 
 interface DeliverySlotRecord {
   id: string;
@@ -30,6 +31,7 @@ interface DeliveryRouteRecord {
   date: string;
   timeWindow: string;
   status: string;
+  stops?: DeliveryStopRecord[] | null;
   startedAt?: string | null;
   completedAt?: string | null;
   driver?: { id: string; name?: string | null; email?: string | null } | null;
@@ -368,13 +370,16 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
                   {route.status === 'in_progress' && (
                     <button
                       type="button"
-                      disabled={isPending || route.orders.length === 0}
+                      disabled={isPending || !route.stops?.length || route.stops.some(stop => !['delivered', 'returned'].includes(stop.status))}
                       onClick={() => updateRoute(route, 'completed')}
                       className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
                     >
                       Complete route
                     </button>
                   )}
+                </div>
+                <div className="space-y-3 xl:col-span-3">
+                  {(route.stops || []).map(stop => <DeliveryStopForm key={`${route.id}:${stop.orderId}:${stop.status}`} routeId={route.id} stop={stop} active={route.status === 'in_progress'} />)}
                 </div>
               </div>
             ))}

@@ -1,14 +1,41 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Check, Copy } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { DataCard } from './DataCard';
+import React, { useState } from "react";
+import { Copy, Check, Clipboard, ArrowLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { DataCard } from "./DataCard";
+import { groceryOnboardingSeedSchema, type GroceryOnboardingSeed } from "../lib/groceryOnboardingSeed";
 
 interface CustomSetupStepsProps {
-  currentJson?: any;
-  onJsonUpdate?: (newJson: any) => void;
+  currentJson?: unknown;
+  onJsonUpdate?: (newJson: GroceryOnboardingSeed) => void;
   onBack?: () => void;
+}
+
+function useCopyToClipboard(): [
+  string | null,
+  (text: string) => Promise<boolean>
+] {
+  const [copiedText, setCopiedText] = useState<string | null>(null);
+
+  const copy = React.useCallback(async (text: string) => {
+    if (!navigator?.clipboard) {
+      console.warn("Clipboard not supported");
+      return false;
+    }
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedText(text);
+      return true;
+    } catch (error) {
+      console.warn("Copy failed", error);
+      setCopiedText(null);
+      return false;
+    }
+  }, []);
+
+  return [copiedText, copy];
 }
 
 export function CustomSetupSteps({
@@ -16,98 +43,233 @@ export function CustomSetupSteps({
   onJsonUpdate = () => {},
   onBack,
 }: CustomSetupStepsProps) {
-  const [copied, setCopied] = useState(false);
-  const [jsonError, setJsonError] = useState('');
-  const baseJson = useMemo(() => JSON.stringify(currentJson || {}, null, 2), [currentJson]);
-  const [customJson, setCustomJson] = useState(baseJson);
+  const [, copy] = useCopyToClipboard();
+  const [copiedItems, setCopiedItems] = useState<Record<string, boolean>>({});
+  const [customJson, setCustomJson] = useState("");
+  const [jsonError, setJsonError] = useState("");
 
-  useEffect(() => {
-    setCustomJson(baseJson);
-  }, [baseJson]);
+  // Use complete setup JSON as the base
+  const completeJson = currentJson;
 
-  const copyToClipboard = async (text: string) => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+  const copyToClipboard = async (text: string, itemKey: string) => {
+    try {
+      const success = await copy(text);
+      if (success) {
+        setCopiedItems((prev) => ({ ...prev, [itemKey]: true }));
+        setTimeout(() => {
+          setCopiedItems((prev) => ({ ...prev, [itemKey]: false }));
+        }, 2000);
+      } else {
+        setJsonError("Clipboard access is unavailable. Select and copy the text manually.");
+      }
+    } catch {
+      setJsonError("Clipboard access is unavailable. Select and copy the text manually.");
+    }
   };
+
+  // Generate the AI prompt focused on user questions rather than editing existing JSON
+  const generateAIPrompt = () => {
+    return `Help me customize an Openfront Grocery onboarding configuration.
+
+First summarize the supplied JSON: the Store profile, departments, suppliers, catalog products, inventory lots, rolling delivery and pickup windows, curbside parking, coupons, and the static Stripe adapter registry. Then ask what I want to change.
+
+Preserve every top-level section and every field. Keep product handles, supplier emails, department handles, and inventory-lot references connected. Do not add customers, orders, payment history, loyalty balances, subscription revenue, stock movements, or unsupported business claims. Keep currencyCode as USD, the Store active, the timezone as a valid IANA timezone, and paymentProviders as exactly the pp_stripe_default registry entry. Return only the complete JSON when I say I am finished.`;
+  };
+
+  const [jsonApplied, setJsonApplied] = useState(false);
 
   const validateAndApplyJson = () => {
     try {
       const parsed = JSON.parse(customJson);
-      const requiredKeys = ['departments', 'suppliers', 'products', 'inventoryLots', 'deliverySlots', 'pickupSlots', 'parkingSpots', 'coupons', 'paymentProviders'];
-      const missingKeys = requiredKeys.filter((key) => !Array.isArray(parsed[key]));
 
-      if (missingKeys.length > 0) {
-        setJsonError(`Missing array sections: ${missingKeys.join(', ')}`);
-        return;
-      }
-      if (!parsed.storeSettings || parsed.storeSettings.isActive !== true || parsed.storeSettings.currencyCode !== 'USD') {
-        setJsonError('Store settings must initialize one active USD Store.');
-        return;
-      }
-      try {
-        new Intl.DateTimeFormat('en-US', { timeZone: parsed.storeSettings.timezone }).format();
-      } catch {
-        setJsonError('Store settings must include a valid IANA timezone.');
-        return;
-      }
-      if (parsed.paymentProviders.length !== 1 || parsed.paymentProviders[0]?.code !== 'pp_stripe_default') {
-        setJsonError('Payment providers must contain exactly the static Stripe registry entry.');
+      const result = groceryOnboardingSeedSchema.safeParse(parsed);
+      if (!result.success) {
+        const issue = result.error.issues[0];
+        const path = issue.path.length ? ` (${issue.path.join('.')})` : '';
+        setJsonError(`${issue.message}${path}`);
         return;
       }
 
-      onJsonUpdate(parsed);
-      setJsonError('');
+      onJsonUpdate(result.data);
+      setJsonApplied(true);
+      setJsonError("");
     } catch {
-      setJsonError('Invalid JSON format. Please check your syntax and try again.');
+      setJsonError("Invalid JSON format. Please check your syntax.");
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-lg font-semibold text-foreground">Custom grocery seed JSON</h3>
-          <p className="text-sm text-muted-foreground mt-1">
-            Start from the minimal grocery template, edit it, then apply your custom seed plan.
+  const steps = [
+    {
+      number: 1,
+      title: "Copy Base Configuration",
+      description: "Start with the connected grocery template JSON configuration",
+      content: (
+        <DataCard
+          title="Onboarding Data"
+          content={JSON.stringify(completeJson, null, 2)}
+          onCopy={copyToClipboard}
+          copied={copiedItems.json || false}
+          copyKey="json"
+        />
+      ),
+    },
+    {
+      number: 2,
+      title: "Copy AI Customization Prompt",
+      description:
+        "Use this prompt with any AI assistant to get your custom configuration",
+      content: (
+        <DataCard
+          title="AI Prompt"
+          content={generateAIPrompt()}
+          onCopy={copyToClipboard}
+          copied={copiedItems.prompt || false}
+          copyKey="prompt"
+        />
+      ),
+    },
+    {
+      number: 3,
+      title: "Chat with AI",
+      description:
+        "The AI will ask you questions about your business and products, what fulfillment windows you offer, and help you customize your setup",
+      content: (
+        <div className="space-y-2">
+          <p className="text-sm text-muted-foreground">
+            The AI will ask you questions about your business such as:
+          </p>
+          <ul className="text-sm text-muted-foreground space-y-1 ml-4">
+            <li>• What products do you want to sell?</li>
+            <li>• Which delivery and pickup windows do you offer?</li>
+            <li>• What grocery departments do you need?</li>
+            <li>• What inventory and suppliers do you need?</li>
+          </ul>
+          <p className="text-sm text-muted-foreground">
+            Answer the AI&apos;s questions to get your custom JSON configuration.
           </p>
         </div>
-        {onBack && (
-          <Button variant="outline" size="sm" onClick={onBack}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
-        )}
-      </div>
+      ),
+    },
+    {
+      number: 4,
+      title: "Paste Your Custom JSON",
+      description: "Paste the AI-generated configuration here",
+      content: (
+        <div className="rounded-lg border overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 bg-muted border-b">
+            <span className="text-sm font-medium text-muted-foreground">
+              Custom Onboarding Data
+            </span>
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label="Paste custom grocery JSON"
+              onClick={async () => {
+                try {
+                  const text = await navigator.clipboard.readText();
+                  setCustomJson(text);
+                  setJsonError("");
+                } catch {
+                  setJsonError("Clipboard access is unavailable. Paste into the editor manually.");
+                }
+              }}
+              className="h-6 w-6 p-0 hover:bg-background/80"
+            >
+              <Clipboard className="h-3 w-3 text-muted-foreground" />
+            </Button>
+          </div>
+          <div className="bg-background">
+            <Textarea
+              aria-label="Custom grocery onboarding JSON"
+              aria-invalid={Boolean(jsonError)}
+              placeholder="Paste your customized JSON configuration here..."
+              value={customJson}
+              onChange={(e) => {
+                setCustomJson(e.target.value);
+                setJsonError("");
+              }}
+              className="min-h-[200px] font-mono text-xs resize-none border-0 bg-transparent focus:outline-none p-4 rounded-none"
+            />
+          </div>
+          {jsonError && (
+            <div className="px-4 pb-4">
+              <div className="bg-destructive/10 border border-destructive/20 rounded-md p-2">
+                <p role="alert" className="text-xs text-destructive">{jsonError}</p>
+              </div>
+            </div>
+          )}
+          <div className="flex items-center justify-end px-4 py-2 bg-muted border-t">
+            <Button
+              size="sm"
+              onClick={validateAndApplyJson}
+              disabled={!customJson.trim()}
+            >
+              Apply Configuration
+            </Button>
+          </div>
+        </div>
+      ),
+    },
+  ];
 
-      <DataCard
-        title="Base Grocery Seed"
-        content={baseJson}
-        onCopy={async (text) => copyToClipboard(text)}
-        copied={copied}
-        copyKey="base-seed"
-      />
-
-      <div className="space-y-3">
-        <Label htmlFor="custom-seed-json">Paste your edited grocery JSON</Label>
-        <Textarea
-          id="custom-seed-json"
-          value={customJson}
-          onChange={(event) => setCustomJson(event.target.value)}
-          className="min-h-[320px] font-mono text-xs"
-          placeholder="Paste your custom grocery seed JSON here"
-        />
-        {jsonError && <p className="text-sm text-red-600">{jsonError}</p>}
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={validateAndApplyJson}>
-            <Check className="mr-2 h-4 w-4" />
-            Apply custom JSON
-          </Button>
-          <Button variant="outline" onClick={() => copyToClipboard(customJson)}>
-            <Copy className="mr-2 h-4 w-4" />
-            Copy edited JSON
+  return (
+    <div className="space-y-6">
+      {jsonApplied && onBack && (
+        <div className="flex items-center space-x-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setJsonApplied(false);
+              onBack();
+            }}
+            className="h-8 px-2"
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Back to Custom Setup
           </Button>
         </div>
+      )}
+
+      <div className="space-y-2">
+        <Label className="text-sm font-medium">
+          Custom Setup Configuration
+        </Label>
+        <p className="text-xs text-muted-foreground">
+          Follow these steps to create a personalized store setup using AI
+          assistance.
+        </p>
+      </div>
+
+      <div className="space-y-0">
+        {steps.map((step, index) => (
+          <div key={step.number} className="relative">
+            {/* Connecting line between sections */}
+            {index < steps.length - 1 && (
+              <div className="absolute left-3 top-3 bottom-0 w-[1px] bg-border"></div>
+            )}
+
+            {/* Section header with number badge */}
+            <div className="flex items-center space-x-3 mb-2 relative">
+              <div className="inline-flex size-6 items-center justify-center rounded-sm border border-border bg-background text-sm text-foreground shadow-sm z-10">
+                {step.number}
+              </div>
+              <Label className="text-sm font-medium text-foreground">
+                {step.title}
+              </Label>
+            </div>
+
+            {/* Section items */}
+            <div className="pl-9">
+              <div className="pb-6">
+                <p className="text-xs text-muted-foreground mb-3">
+                  {step.description}
+                </p>
+                {step.content}
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

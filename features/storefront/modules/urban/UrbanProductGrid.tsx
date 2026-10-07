@@ -1,23 +1,8 @@
-import type { GroceryProduct } from '@/features/storefront/types';
+import type { GroceryProduct } from '../../types';
 import UrbanProductCard from './UrbanProductCard';
 import { UrbanEmptyState } from './UrbanPrimitives';
 
-export default function UrbanProductGrid({ products, featuredFirst = false }: { products: GroceryProduct[]; featuredFirst?: boolean }) {
-  if (!products?.length) {
-    return (
-      <UrbanEmptyState title="No products match this search">
-        Try another aisle, search phrase, or browse the full catalog.
-      </UrbanEmptyState>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 gap-4 min-[480px]:grid-cols-2 xl:grid-cols-3">
-      {products.map((product, index) => (
-        <div key={product.id} className={featuredFirst && index === 0 ? 'min-[480px]:col-span-2 xl:col-span-2' : ''}>
-          <UrbanProductCard product={product} featured={featuredFirst && index === 0} />
-        </div>
-      ))}
-    </div>
-  );
+export default function UrbanProductGrid({ products }: { products: GroceryProduct[]; featuredFirst?: boolean }) {
+  if (!products?.length) return <UrbanEmptyState title="Nothing on this shelf just yet" actionHref="/products?availability=all" actionLabel="Browse all products">Try a different search or clear your filters to see more groceries.</UrbanEmptyState>;
+  return <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4 sm:gap-4">{products.map((product) => <UrbanProductCard key={product.id} product={product} />)}</div>;
 }

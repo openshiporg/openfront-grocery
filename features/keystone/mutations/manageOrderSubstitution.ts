@@ -48,12 +48,8 @@ export async function recordOrderItemSubstitution(
   const store = await requireSessionStore(context);
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
-    await transactionContext.prisma.$queryRawUnsafe(
-      'SELECT "id" FROM "OrderLineItem" WHERE "id" = $1 FOR UPDATE',
-      args.orderItemId
-    );
     const sudoContext = transactionContext.sudo();
-    const lineItem = await sudoContext.query.OrderLineItem.findOne({
+    let lineItem = await sudoContext.query.OrderLineItem.findOne({
       where: { id: args.orderItemId },
       query: 'id title order { id }',
     });
@@ -63,19 +59,35 @@ export async function recordOrderItemSubstitution(
       'SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE',
       lineItem.order.id
     );
+    lineItem = await sudoContext.query.OrderLineItem.findOne({
+      where: { id: args.orderItemId },
+      query: 'id title metadata order { id } fulfillment { resolution productTitle evidence }',
+    });
     const order = await sudoContext.query.Order.findOne({
       where: { id: lineItem.order.id },
-      query: 'id status store { id }',
+      query: 'id status substitutionPreference store { id }',
     });
     if (!order || order.store?.id !== store.id) throw new Error('Order not found in active store');
     if (order.status !== 'picking') {
       throw new Error('Substitutions can only be recorded while an order is picking');
     }
+    // Legacy evidence API may annotate an actual committed replacement, but can
+    // no longer invent goods or bypass the authoritative allocation operation.
+    if (order.substitutionPreference === 'refund' || ['remove', 'none', 'refund', 'no_substitutions'].includes(lineItem.metadata?.substitutionPreference)) {
+      throw new Error('Customer preferences prohibit substitutions');
+    }
+    const actual = lineItem.fulfillment;
+    if (actual?.resolution !== 'substituted' || actual.productTitle !== args.substitutedProduct) {
+      throw new Error('Resolve the actual replacement product and stock before recording substitution evidence');
+    }
+    if (args.customerApproved !== Boolean(actual.evidence?.consent)) {
+      throw new Error('Approval must match the recorded customer consent evidence');
+    }
 
     const settledPayment = await sudoContext.query.Payment.findMany({
       where: {
         order: { id: { equals: order.id } },
-        status: { equals: 'succeeded' },
+        status: { in: ['authorized', 'succeeded', 'partially_refunded'] },
       },
       take: 1,
       query: 'id',

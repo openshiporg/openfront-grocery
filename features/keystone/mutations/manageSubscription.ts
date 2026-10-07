@@ -92,6 +92,7 @@ export async function createSubscription(
   // Create the subscription
   const subscription = await sudoContext.query.Subscription.createOne({
     data: {
+      store: { connect: { id: store.id } },
       user: { connect: { id: context.session.itemId } },
       product: productId,
       productRef: { connect: { id: product.id } },

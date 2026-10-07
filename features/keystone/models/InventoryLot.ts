@@ -2,6 +2,8 @@ import { list } from "@keystone-6/core";
 import {
   text,
   integer,
+  decimal,
+  select,
   float,
   timestamp,
   relationship,
@@ -36,6 +38,10 @@ export const InventoryLot = list({
         description: "Unique identifier for this inventory lot",
       },
     }),
+    supplierLotNumber: text({ isIndexed: true, label: "Supplier batch number" }),
+    safetyStatus: select({ options: ["available", "held", "quarantined", "recalled"], defaultValue: "available", validation: { isRequired: true } }),
+    conditionStatus: select({ options: ["accepted", "inspection_pending", "rejected"], defaultValue: "accepted", validation: { isRequired: true } }),
+    safetyReason: text(),
     expirationDate: timestamp({
       validation: { isRequired: true },
       label: "Expiration Date",
@@ -51,15 +57,15 @@ export const InventoryLot = list({
         description: "Date this lot was received",
       },
     }),
-    quantity: integer({
-      validation: { isRequired: true, min: 0 },
+    quantity: decimal({ precision: 18, scale: 3,
+      validation: { isRequired: true, min: "0" },
       label: "Original Quantity",
       ui: {
         description: "Total units received in this lot",
       },
     }),
-    quantityRemaining: integer({
-      validation: { isRequired: true, min: 0 },
+    quantityRemaining: decimal({ precision: 18, scale: 3,
+      validation: { isRequired: true, min: "0" },
       label: "Quantity Remaining",
       ui: {
         description: "Units still available in this lot",

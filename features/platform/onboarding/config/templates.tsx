@@ -104,7 +104,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
     icon: <Package className="h-5 w-5" />,
     include: {
       storeSettings: ['Juniper Market'],
-      departments: ['produce', 'dairy', 'pantry'],
+      departments: ['produce', 'dairy', 'bakery', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com'],
       products: ['organic-bananas', 'whole-milk-gallon', 'jasmine-rice', 'sourdough-bread'],
       inventoryLots: ['LOT-BAN-001', 'LOT-MILK-001', 'LOT-RICE-001', 'LOT-BREAD-001'],
@@ -116,7 +116,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
     },
     displayNames: {
       storeSettings: ['Juniper Market'],
-      departments: ['Produce', 'Dairy & Eggs', 'Pantry'],
+      departments: ['Produce', 'Dairy & Eggs', 'Bakery', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy'],
       products: ['Organic Bananas', 'Whole Milk', 'Jasmine Rice', 'Sourdough Bread'],
       inventoryLots: ['LOT-BAN-001', 'LOT-MILK-001', 'LOT-RICE-001', 'LOT-BREAD-001'],
@@ -134,7 +134,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
     icon: <SlidersHorizontal className="h-5 w-5" />,
     include: {
       storeSettings: ['Juniper Market'],
-      departments: ['produce', 'dairy', 'pantry'],
+      departments: ['produce', 'dairy', 'bakery', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com'],
       products: ['organic-bananas', 'whole-milk-gallon', 'jasmine-rice', 'sourdough-bread'],
       inventoryLots: ['LOT-BAN-001', 'LOT-MILK-001', 'LOT-RICE-001', 'LOT-BREAD-001'],
@@ -146,7 +146,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
     },
     displayNames: {
       storeSettings: ['Juniper Market'],
-      departments: ['Produce', 'Dairy & Eggs', 'Pantry'],
+      departments: ['Produce', 'Dairy & Eggs', 'Bakery', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy'],
       products: ['Organic Bananas', 'Whole Milk', 'Jasmine Rice', 'Sourdough Bread'],
       inventoryLots: ['LOT-BAN-001', 'LOT-MILK-001', 'LOT-RICE-001', 'LOT-BREAD-001'],

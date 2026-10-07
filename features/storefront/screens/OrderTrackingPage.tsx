@@ -1,132 +1,57 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { CheckCircle2, ClipboardCheck, MapPin, PackageCheck, Truck } from 'lucide-react';
 import { notFound } from 'next/navigation';
-
-import { getGuestOrderById } from '@/features/storefront/lib/data/guest-orders';
-import { getAvailableParkingSpots, getOrderById } from '@/features/storefront/lib/data/orders';
-import { storefrontMetadata } from '@/features/storefront/lib/metadata';
-import type { GroceryOrder } from '@/features/storefront/types';
-import { PickupCheckInPanel } from '@/features/storefront/modules/urban/PickupCheckInPanel';
-import { UrbanBadge, UrbanContainer, UrbanInset, UrbanMetric, UrbanPageHeader, UrbanPageShell, formatCents, statusLabel } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { getGuestOrderById } from '../lib/data/guest-orders';
+import { getAvailableParkingSpots, getOrderById } from '../lib/data/orders';
+import { getStore } from '../lib/data/store';
+import { storefrontMetadata } from '../lib/metadata';
+import type { GroceryOrder, GroceryOrderItem } from '../types';
+import { OrderAdjustment, OrderAdjustmentReturnNotice } from '../modules/order-adjustment/OrderAdjustment';
+import { PickupCheckInPanel } from '../modules/urban/PickupCheckInPanel';
+import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanPageShell, formatCents, formatUnit, statusLabel } from '../modules/urban/UrbanPrimitives';
 
 type Props = { params: Promise<{ id: string }> };
-
-export async function generateMetadata(props: Props): Promise<Metadata> {
-  const { id } = await props.params;
-  return storefrontMetadata({
-    title: `Order #${id}`,
-    description: 'Track order status, substitutions, and fulfillment details.',
-  });
+export async function generateMetadata(): Promise<Metadata> {
+  return storefrontMetadata({ title: 'Your order', description: 'Review your grocery order, picked items, and fulfillment progress.' });
 }
 
-const deliveryStages: Array<{ key: GroceryOrder['status']; label: string; Icon: typeof ClipboardCheck }> = [
-  { key: 'confirmed', label: 'Confirmed', Icon: ClipboardCheck },
-  { key: 'picking', label: 'Picking', Icon: PackageCheck },
-  { key: 'out_for_delivery', label: 'Out for delivery', Icon: Truck },
-  { key: 'delivered', label: 'Delivered', Icon: CheckCircle2 },
-];
-
-const pickupStages: typeof deliveryStages = [
-  { key: 'confirmed', label: 'Confirmed', Icon: ClipboardCheck },
-  { key: 'picking', label: 'Picking', Icon: PackageCheck },
-  { key: 'ready_for_pickup', label: 'Ready for pickup', Icon: MapPin },
-  { key: 'delivered', label: 'Picked up', Icon: CheckCircle2 },
-];
-
-function stageIndex(status: GroceryOrder['status'], stages: typeof deliveryStages) {
-  if (status === 'pending') return 0;
-  if (status === 'processing') return 1;
-  const index = stages.findIndex((stage) => stage.key === status);
-  return index >= 0 ? index + 1 : 0;
+const progress: Record<GroceryOrder['status'], number> = { pending: -1, confirmed: 0, processing: 1, picking: 1, ready_for_pickup: 2, out_for_delivery: 2, delivered: 3, cancelled: -1, delivery_failed: -1, delivery_refused: -1, returned: -1 };
+const statusCopy: Record<GroceryOrder['status'], string> = {
+  pending: 'Your order is recorded. Confirmation and payment processing may still be in progress.',
+  confirmed: 'Your order is confirmed. Check here for updates as the shop prepares your groceries.',
+  processing: 'The shop is preparing your groceries.', picking: 'Your groceries are being picked. Any available changes appear in your item details below.',
+  ready_for_pickup: 'Your groceries are ready. Check in below when you arrive at the shop.',
+  out_for_delivery: 'Your groceries are on their way. Keep your checkout contact details handy for the handoff.',
+  delivered: 'Your grocery handoff is complete. Review your order details below.',
+  cancelled: 'This order was cancelled. Cancellation alone does not confirm a refund; contact the shop for payment help.',
+  delivery_failed: 'The delivery could not be completed. Contact the shop about the next step.',
+  delivery_refused: 'The delivery was refused. Contact the shop about your goods and any payment adjustment.',
+  returned: 'A return was recorded. A return status alone does not confirm a refund.',
+};
+function ReceiptLine({ item, requested }: { item: GroceryOrderItem; requested?: GroceryOrderItem }) {
+  return <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 py-5"><div className="min-w-0"><h3 className="font-semibold">{item.product?.handle ? <Link className="underline-offset-4 hover:underline" href={`/products/${item.product.handle}`}>{item.title}</Link> : item.title}</h3><p className="mt-1 text-sm text-[var(--sf-ink-muted)]">{item.quantity} {item.unitOfMeasure ? formatUnit(item.unitOfMeasure) : item.quantity === 1 ? 'item' : 'items'} × {formatCents(item.unit_price)}{item.unitOfMeasure ? ` / ${formatUnit(item.unitOfMeasure)}` : ''}</p>{requested ? <p className="mt-2 text-sm text-[var(--sf-ink-muted)]">Requested: {requested.quantity} × {requested.title}</p> : null}{item.resolution ? <p className="mt-2 text-sm font-medium">{statusLabel(item.resolution)}</p> : null}{item.substitutionPreference ? <p className="mt-1 text-xs text-[var(--sf-ink-muted)]">Replacement preference: {statusLabel(item.substitutionPreference)}</p> : null}{item.substitution ? <div className="mt-3 border-l-2 border-[var(--sf-sage)] pl-3 text-sm"><p>{item.substitution.customerApproved ? 'Replacement approved' : 'Replacement awaiting approval'}</p>{item.substitution.reason ? <p className="sf-copy">{item.substitution.reason}</p> : null}{!item.substitution.customerApproved ? <p className="sf-copy">Contact the shop to discuss this replacement.</p> : null}</div> : null}</div><p className="font-semibold tabular-nums">{formatCents(item.subtotalCents ?? Math.round(item.unit_price * item.quantity))}</p></li>;
 }
 
 export async function OrderTrackingPage(props: Props) {
   const { id } = await props.params;
-  const order: GroceryOrder | null = (await getOrderById(id)) || (await getGuestOrderById(id));
+  const order = (await getOrderById(id)) || (await getGuestOrderById(id));
   if (!order) notFound();
-  const stages = order.fulfillmentMethod === 'pickup' ? pickupStages : deliveryStages;
-  const activeStage = stageIndex(order.status, stages);
-  const parkingSpots = order.fulfillmentMethod === 'pickup' && order.status === 'ready_for_pickup'
-    ? await getAvailableParkingSpots()
-    : [];
-
-  return (
-    <UrbanPageShell>
-      <UrbanContainer className="space-y-8 py-8 sm:py-10">
-        <UrbanPageHeader
-          breadcrumb={[
-            { label: 'Home', href: '/' },
-            { label: 'Account', href: '/account' },
-            { label: `Order #${order.orderNumber}` },
-          ]}
-          title={`Order #${order.orderNumber}`}
-          description="Fulfillment progress, substitutions, and handoff details."
-          aside={
-            <div className="space-y-3">
-              <UrbanMetric label="Status" value={statusLabel(order.status)} icon={Truck} />
-              <UrbanMetric label="Items" value={order.items.length} icon={PackageCheck} />
-              <UrbanMetric label="Total" value={formatCents(order.total)} icon={CheckCircle2} />
-            </div>
-          }
-        />
-
-        <section>
-          <div className="grid gap-px border border-[var(--sf-rule)] bg-[var(--sf-rule)] sm:grid-cols-2 lg:grid-cols-4">
-            {stages.map((stage, index) => {
-              const complete = index + 1 <= activeStage;
-              const Icon = stage.Icon;
-              return (
-                <div key={stage.key} className={`p-4 ${complete ? 'bg-[var(--sf-sage-light)]' : 'bg-[var(--sf-paper)]'}`}>
-                  <Icon className={`h-5 w-5 ${complete ? 'text-[var(--sf-sage)]' : 'text-[var(--sf-ink-faint)]'}`} />
-                  <p className="mt-2 text-sm font-medium text-[var(--sf-ink)]">{stage.label}</p>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
-          <section>
-            <h2 className="border-b border-[var(--sf-rule)] pb-2 font-[family-name:var(--sf-font-display)] text-xl font-semibold text-[var(--sf-ink)]">Items</h2>
-            <div className="mt-4 space-y-2">
-              {order.items.map((item) => (
-                <UrbanInset key={item.id} className="grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                  <div className="min-w-0">
-                    <p className="font-medium text-[var(--sf-ink)]">{item.title}</p>
-                    <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">Qty {item.quantity}{item.substitutionPreference ? ` · ${item.substitutionPreference}` : ''}</p>
-                    {item.substitution ? <UrbanBadge tone="blue" className="mt-2">Substitution pending</UrbanBadge> : null}
-                  </div>
-                  <p className="font-[family-name:var(--sf-font-display)] text-lg font-semibold">{formatCents(item.unit_price * item.quantity)}</p>
-                </UrbanInset>
-              ))}
-            </div>
-          </section>
-
-          <aside className="lg:sticky lg:top-24 lg:self-start">
-            <div className="border border-[var(--sf-rule-strong)] p-5">
-              <h2 className="font-[family-name:var(--sf-font-display)] text-lg font-semibold text-[var(--sf-ink)]">Handoff</h2>
-              <div className="mt-4 space-y-2 text-sm leading-6 text-[var(--sf-ink-muted)]">
-                <p className="flex gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0 text-[var(--sf-sage)]" /> {order.fulfillmentMethod || 'delivery'}</p>
-                {order.deliverySlot ? <p>{new Date(order.deliverySlot.date).toLocaleDateString()} · {order.deliverySlot.startTime}–{order.deliverySlot.endTime}</p> : null}
-                {order.shippingAddress ? <p>{order.shippingAddress.address1}, {order.shippingAddress.city}, {order.shippingAddress.province} {order.shippingAddress.postalCode}</p> : null}
-                {order.deliveryInstructions ? <UrbanInset className="p-3 text-[var(--sf-ink)]">{order.deliveryInstructions}</UrbanInset> : null}
-              </div>
-              <dl className="mt-5 space-y-2 border-t border-[var(--sf-rule)] pt-4 text-sm text-[var(--sf-ink-muted)]">
-                <div className="flex justify-between"><dt>Subtotal</dt><dd>{formatCents(order.subtotal)}</dd></div>
-                <div className="flex justify-between"><dt>Tax</dt><dd>{formatCents(order.tax_total)}</dd></div>
-                <div className="flex justify-between"><dt>Delivery</dt><dd>{formatCents(order.shipping_total)}</dd></div>
-                {order.discount_total > 0 ? <div className="flex justify-between text-[var(--sf-sage)]"><dt>Discount</dt><dd>−{formatCents(order.discount_total)}</dd></div> : null}
-                <div className="flex justify-between pt-2 font-[family-name:var(--sf-font-display)] text-lg font-semibold text-[var(--sf-ink)]"><dt>Total</dt><dd>{formatCents(order.total)}</dd></div>
-              </dl>
-              {order.fulfillmentMethod === 'pickup' && (order.status === 'ready_for_pickup' || order.pickupCheckIn?.customerArrived) ? (
-                <PickupCheckInPanel orderId={order.id} parkingSpots={parkingSpots} checkIn={order.pickupCheckIn} />
-              ) : null}
-              <Link href="/account" className="mt-4 inline-block text-sm font-medium text-[var(--sf-accent)]">Back to account</Link>
-            </div>
-          </aside>
-        </div>
-      </UrbanContainer>
-    </UrbanPageShell>
-  );
+  const pickup = order.fulfillmentMethod === 'pickup';
+  const store = pickup ? await getStore().catch(() => null) : null;
+  const activeStage = progress[order.status];
+  const stages = ['Confirmed', 'Preparing', pickup ? 'Ready for pickup' : 'Out for delivery', pickup ? 'Picked up' : 'Delivered'];
+  const exception = ['cancelled', 'delivery_failed', 'delivery_refused', 'returned'].includes(order.status);
+  const parkingSpots = pickup && order.status === 'ready_for_pickup' ? await getAvailableParkingSpots() : [];
+  const settlementPending = order.finalSale?.status === 'processing';
+  const receiptTitle = order.receiptStage === 'final' ? 'Final picked receipt' : settlementPending ? 'Picked goods · settlement pending' : order.receiptStage === 'proposed' ? 'Proposed picked receipt' : 'Your requested groceries';
+  return <UrbanPageShell><UrbanContainer className="space-y-7 py-8 sm:py-10">
+    <header className="border-b border-[var(--sf-rule)] pb-6"><Link href="/account/orders" className="mb-4 inline-flex min-h-11 items-center text-sm font-semibold underline underline-offset-4">← Your orders</Link><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="sf-eyebrow">{pickup ? 'Pickup' : 'Delivery'} order</p><h1 className="sf-title mt-2">Order #{order.orderNumber}</h1><p className="sf-copy mt-3">Placed {new Date(order.createdAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p></div><UrbanBadge tone={exception ? 'danger' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : statusLabel(order.status)}</UrbanBadge></div></header>
+    <section aria-labelledby="order-progress" className="sf-panel p-5 sm:p-7"><h2 id="order-progress" className="font-[family-name:var(--sf-font-display)] text-2xl font-semibold">{exception ? 'An update on your order' : pickup && order.status === 'ready_for_pickup' ? 'See you at the shop.' : 'From our shelves to you.'}</h2><p className="sf-copy mt-3">{statusCopy[order.status]}</p>{!exception ? <ol aria-label="Order progress" className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">{stages.map((stage, index) => <li key={stage} aria-current={index === activeStage ? 'step' : undefined} className={`border-t-2 pt-3 text-sm ${index <= activeStage ? 'border-[var(--sf-sage)] text-[var(--sf-ink)]' : 'border-[var(--sf-rule)] text-[var(--sf-ink-muted)]'}`}><span className="mb-1 block text-xs">{index < activeStage ? 'Complete' : index === activeStage ? 'Current step' : 'Upcoming'}</span><span className="font-semibold">{stage}</span></li>)}</ol> : <UrbanButtonLink href="/support" variant="ghost" className="mt-4">Get help with this order</UrbanButtonLink>}{order.deliveryOutcome ? <p className="sf-copy mt-4">Delivery update: {statusLabel(order.deliveryOutcome.status)}{order.deliveryOutcome.reason ? `. ${order.deliveryOutcome.reason}` : ''}{order.deliveryOutcome.custody ? ` · Goods: ${statusLabel(order.deliveryOutcome.custody)}` : ''}</p> : null}</section>
+    {order.finalSale?.status === 'requires_customer_authorization' ? <OrderAdjustment orderId={order.id} totalCents={order.finalSale.totalCents} /> : <OrderAdjustmentReturnNotice />}
+    {settlementPending ? <section className="sf-panel space-y-3 p-5" role="status"><h2 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold">Picked total · payment reconciliation pending</h2><p className="sf-copy">Your picked goods are recorded below. The shop is still confirming the final payment settlement. This is not a finalized receipt or confirmation of a charge or refund. Contact the shop if you need an update; do not submit another payment.</p></section> : null}
+    <div className="grid items-start gap-7 lg:grid-cols-[minmax(0,1fr)_340px]"><section aria-labelledby="receipt-heading"><div className="border-b border-[var(--sf-rule)] pb-4"><p className="sf-eyebrow">Your basket, line by line</p><h2 id="receipt-heading" className="mt-2 font-[family-name:var(--sf-font-display)] text-2xl font-semibold">{receiptTitle}</h2><p className="sf-copy mt-2">{order.receiptStage === 'final' ? 'These are the goods and amounts finalized by the shop.' : settlementPending ? 'These are the recorded picked goods and proposed total. Payment processing or reconciliation is still pending; the amount has not been finalized.' : order.receiptStage === 'proposed' ? 'Review the proposed goods and total. They are awaiting payment authorization and have not been finalized.' : 'This is the order estimate. Weighed goods and replacements may change the final amount.'}</p></div><ul className="divide-y divide-[var(--sf-rule)]">{order.items.map(item => <ReceiptLine key={item.id} item={item} requested={order.receiptStage !== 'requested' ? order.requestedItems?.find(requested => requested.id === item.id) : undefined} />)}</ul>{order.receiptStage !== 'requested' && order.requestedItems?.length ? <details className="mt-4 border-t border-[var(--sf-rule)] pt-4"><summary className="min-h-11 cursor-pointer font-semibold">View the original requested basket</summary><ul className="divide-y divide-[var(--sf-rule)]">{order.requestedItems.map(item => <ReceiptLine key={item.id} item={item} />)}</ul></details> : null}</section>
+      <aside className="space-y-5 lg:sticky lg:top-[var(--sf-header-offset)]"><section className="sf-panel p-5"><h2 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold">{pickup ? 'Pickup details' : 'Delivery details'}</h2><div className="sf-copy mt-4 space-y-3">{order.deliverySlot ? <p className="font-semibold text-[var(--sf-ink)]">{new Date(order.deliverySlot.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}<br />{order.deliverySlot.startTime}–{order.deliverySlot.endTime}</p> : <p>No fulfillment window is recorded on this order.</p>}{pickup ? <div><p className="font-semibold text-[var(--sf-ink)]">{store?.name || 'Pickup at the shop'}</p>{store?.address ? <address className="mt-1 not-italic">{store.address}</address> : <p>Contact the shop to confirm your pickup location.</p>}</div> : null}{!pickup && order.shippingAddress ? <address className="not-italic">{order.shippingAddress.firstName} {order.shippingAddress.lastName}<br />{order.shippingAddress.address1}{order.shippingAddress.address2 ? <><br />{order.shippingAddress.address2}</> : null}<br />{order.shippingAddress.city}, {order.shippingAddress.province} {order.shippingAddress.postalCode}</address> : null}{order.deliveryInstructions ? <p><span className="font-semibold">Your instructions: </span>{order.deliveryInstructions}</p> : null}<p>For changes to this order’s address or time, contact the shop.</p></div>{pickup && (order.status === 'ready_for_pickup' || order.pickupCheckIn?.customerArrived) ? <PickupCheckInPanel orderId={order.id} parkingSpots={parkingSpots} checkIn={order.pickupCheckIn} /> : null}</section>
+      <section className="sf-panel p-5"><h2 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold">{order.receiptStage === 'final' ? 'Final total' : settlementPending ? 'Picked total · pending' : order.receiptStage === 'proposed' ? 'Proposed total' : 'Order estimate'}</h2><dl className="mt-4 space-y-3 text-sm"><div className="flex justify-between gap-3"><dt>Groceries</dt><dd>{formatCents(order.subtotal)}</dd></div><div className="flex justify-between gap-3"><dt>Tax</dt><dd>{formatCents(order.tax_total)}</dd></div><div className="flex justify-between gap-3"><dt>Fulfillment fee</dt><dd>{formatCents(order.shipping_total)}</dd></div>{order.discount_total > 0 ? <div className="flex justify-between gap-3"><dt>Discount</dt><dd>−{formatCents(order.discount_total)}</dd></div> : null}<div className="flex justify-between gap-3 border-t border-[var(--sf-rule)] pt-4 text-xl font-semibold"><dt>Total</dt><dd>{formatCents(order.total)}</dd></div></dl><p className="sf-copy mt-4 text-sm">Order totals do not show your current bank balance or refund status. For payment or refund questions, contact the shop with this order number.</p></section><UrbanButtonLink href="/support" variant="ghost" className="w-full">Help with this order</UrbanButtonLink></aside>
+    </div>
+  </UrbanContainer></UrbanPageShell>;
 }

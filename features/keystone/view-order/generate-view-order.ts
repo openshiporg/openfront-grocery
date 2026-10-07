@@ -165,8 +165,15 @@ ${uniqueViews.map(view => `  "${view}"`).join(',\n')}
 }
 
 function extractUniqueViews(jsonData: any) {
-  let viewsArray: string[] = [];
-  
+  const viewsArray: string[] = [];
+  const seenViewModules = new Set<string>();
+
+  const addViewModule = (modulePath: string | null | undefined, fallbackType?: string) => {
+    if (!modulePath || seenViewModules.has(modulePath)) return;
+    seenViewModules.add(modulePath);
+    viewsArray.push((viewMappings as any)[modulePath] || fallbackType || modulePath);
+  };
+
   for (const key in jsonData) {
     if (jsonData.hasOwnProperty(key)) {
       const fields = jsonData[key].fields;
@@ -174,10 +181,12 @@ function extractUniqueViews(jsonData: any) {
         for (const fieldKey in fields) {
           if (fields.hasOwnProperty(fieldKey)) {
             const field = fields[fieldKey];
-            const viewMap = (viewMappings as any)[field.views] || field.views;
-            if (viewMap && !viewsArray.includes(viewMap)) {
-              viewsArray.push(viewMap);
-            }
+            const baseType = (viewMappings as any)[field.views] || field.views;
+            addViewModule(field.views, baseType);
+            // Keystone assigns every distinct custom-view module its own global
+            // index. It still implements this field's base controller shape, so
+            // preserve the index while mapping it to the owned base registry.
+            addViewModule(field.ui?.views, baseType);
           }
         }
       }

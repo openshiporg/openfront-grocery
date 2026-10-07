@@ -1,14 +1,22 @@
+import { checkoutRequestFingerprint, checkoutCartFingerprint, assertCheckoutAttemptIdentity, noChargeCheckoutState } from '../lib/checkoutIdentity';
+import {requireSessionStore} from "../lib/storeScope";
+import { validateLoyaltyCoupon, markLoyaltyRedemptionUsed } from "../lib/loyaltyAccounting";
+import { completeSubscriptionRunForCart } from "../lib/recurringOrders";
+import { appendInventoryMovement } from '../lib/inventoryMovements';
+import { consumeOrderCoupon } from '../lib/couponRedemptions';
+import { evaluateDeliveryPolicy } from '../lib/deliveryPolicy';
+import { priceCommercialLines, isCouponLineEligible } from '../lib/commercialPricing';
 import { randomUUID } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { createGuestOrderToken } from '../utils/guestOrderToken';
-import { getPaymentStatus, refundPayment } from '../utils/paymentProviderAdapter';
+import { getPaymentStatus, refundPayment, cancelPayment } from '../utils/paymentProviderAdapter';
 import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { calculateCouponDiscount } from '../lib/couponPricing';
 import { evaluateFulfillmentWindow } from '../lib/rollingFulfillment';
 import { assertSellableQuantity, deriveSellableQuantity, planSellableLotAllocation } from '../lib/sellableInventory';
-import { calculateTaxCents, getStoreTaxRateBps } from '../lib/storeMoney';
-import { isLiveFulfillmentSlot } from '../lib/storeTime';
+import { getStoreTaxRateBps } from '../lib/storeMoney';
+import { isLiveFulfillmentSlot, zonedDateKey, zonedDateTimeForDateKey } from '../lib/storeTime';
 import {
   assertFinalizationLease,
   claimCheckoutAttempt,
@@ -73,23 +81,21 @@ export async function ensureCheckoutAttempt(context: Context, data: SubmitOrderD
          "store", "cart", "paymentSession", "createdAt", "updatedAt"
        ) VALUES ($1, $2, $3, $4, $5, 'usd', 'pending', 0, $6::jsonb, $7, $8, $9, NOW(), NOW())
        ON CONFLICT ("idempotencyKey") DO UPDATE
-         SET "requestData" = CASE
-           WHEN "CheckoutAttempt"."status" IN ('pending', 'settled_pending_finalize') AND "CheckoutAttempt"."order" IS NULL
-             THEN EXCLUDED."requestData"
-           ELSE "CheckoutAttempt"."requestData"
-         END
+         SET "idempotencyKey" = "CheckoutAttempt"."idempotencyKey"
        RETURNING "id", "status"::text AS "status", "order" AS "orderId"`,
       randomUUID(),
       idempotencyKey,
       session.paymentProvider.code,
       providerPaymentId,
-      Number(session.amountCents || Math.round(Number(session.amount || 0) * 100)),
+      Number(session.amountCents ?? Math.round(Number(session.amount || 0) * 100)),
       JSON.stringify(data),
       cart.store.id,
       cart.id,
       session.id,
     );
     if (!attempts[0]) throw new Error('Unable to establish checkout attempt');
+    const frozen = await tx.checkoutAttempt.findUnique({where:{id:attempts[0].id}});
+    assertCheckoutAttemptIdentity(frozen, data, cart, session, providerPaymentId);
     return attempts[0];
   });
 }
@@ -170,6 +176,10 @@ async function loadCart(sudoContext: Context, cartId: string) {
           sku
           price
           priceCents
+          stockQuantity
+          taxRateBasisPoints
+          pricingMethod
+          unitOfMeasure
           department
           imageUrl
           status
@@ -178,6 +188,8 @@ async function loadCart(sudoContext: Context, cartId: string) {
             id
             expirationDate
             quantityRemaining
+            safetyStatus
+            conditionStatus
             store { id }
           }
         }
@@ -230,14 +242,17 @@ export async function compensateFailedCheckout({
   const fullRefund = forceFullRefund === true || (paymentSessionBeforeRefund?.data as Record<string, unknown> | null)?.compensationFullRefund === true;
   let compensation: { status: string; providerRefundId?: string; refundedAmountCents?: number; error?: string };
   try {
-    const result = await refundPayment({
+    const noCharge = noChargeCheckoutState({id:claim.paymentSessionId,amountCents:claim.amountCents,data:paymentSessionBeforeRefund?.data});
+    const state = noCharge || await getPaymentStatus({ provider, paymentId: claim.providerPaymentId });
+    const isAuthorization = ['requires_capture', 'authorized', 'canceled', 'cancelled'].includes(state.status);
+    const result = noCharge ? {status:'succeeded',amount:0,data:{id:claim.providerPaymentId}} : isAuthorization ? await cancelPayment({ provider, paymentId: claim.providerPaymentId, idempotencyKey: eventKey }) : await refundPayment({
       provider,
       paymentId: claim.providerPaymentId,
       amount: fullRefund ? undefined : claim.amountCents,
       idempotencyKey: eventKey,
     });
     compensation = {
-      status: result.status === 'succeeded' ? 'refunded' : 'refund_required',
+      status: ['succeeded', 'canceled', 'cancelled'].includes(result.status) ? 'refunded' : 'refund_required',
       providerRefundId: result.data?.id,
       refundedAmountCents: Number.isInteger(Number(result.amount)) ? Number(result.amount) : undefined,
     };
@@ -284,14 +299,19 @@ async function loadPaymentSession(sudoContext: Context, paymentSessionId: string
       isInitiated
       reservedOrderDisplayId
       data
-      paymentProvider { id code isInstalled }
+      paymentProvider { id code isInstalled publicCheckout supportsIdempotentCapture captureIdempotencyEvidence credentials metadata createPaymentFunction capturePaymentFunction refundPaymentFunction getPaymentStatusFunction getRefundStatusFunction cancelPaymentFunction generatePaymentLinkFunction handleWebhookFunction }
       cart { id }
     `,
   });
 }
 
-async function lockCheckoutRows(transactionContext: Context, data: SubmitOrderData, finalizationLease?: CheckoutLease) {
+async function lockCheckoutRows(transactionContext: Context, data: SubmitOrderData, finalizationLease?: CheckoutLease, ownerId?: string | null) {
   const tx = transactionContext.prisma;
+  if (ownerId) {
+    await tx.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id"=$1 FOR UPDATE', ownerId);
+    const owner = await (tx as any).user.findUnique({where:{id:ownerId},select:{id:true,privacyErasedAt:true}});
+    if (!owner || owner.privacyErasedAt) throw new Error('Checkout customer is no longer active');
+  }
   // The attempt row is the fencing boundary. It must be locked before any order-side writes.
   if (finalizationLease) await assertFinalizationLease(tx, finalizationLease);
   await tx.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id" = $1 FOR UPDATE', data.cartId);
@@ -333,7 +353,7 @@ function fulfillmentWindow(startTime: string) {
   return 'time_18_20';
 }
 
-function calculateTotals(cart: any, deliverySlot: any, fulfillmentMethod: 'delivery' | 'pickup', taxRateBps: number, discount = 0) {
+function calculateTotals(cart: any, deliverySlot: any, fulfillmentMethod: 'delivery' | 'pickup', taxRateBps: number, discount = 0, coupon: any = null, feeTaxRateBasisPoints = 0) {
   const subtotalCents = cart.items.reduce(
     (sum: number, item: any) => sum + Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity,
     0,
@@ -341,10 +361,17 @@ function calculateTotals(cart: any, deliverySlot: any, fulfillmentMethod: 'deliv
   const discountCents = Math.round(discount * 100);
   // Launch coupons are retailer-funded, so tax is calculated on the
   // post-discount taxable selling price rather than the pre-coupon subtotal.
-  const taxCents = calculateTaxCents(Math.max(0, subtotalCents - discountCents), taxRateBps);
+  const feeCents = fulfillmentMethod === 'delivery' ? Number(deliverySlot?.deliveryFee || 0) : 0;
+  const commercial = priceCommercialLines(cart.items.map((item: any) => ({
+    id: item.id, subtotalCents: Number(item.product.priceCents) * item.quantity,
+    taxRateBasisPoints: item.product.taxRateBasisPoints ?? taxRateBps,
+    discountEligible: isCouponLineEligible(item.product, coupon),
+  })), discountCents, feeCents, feeTaxRateBasisPoints);
+  const taxCents = commercial.taxCents;
   const deliveryFeeCents = fulfillmentMethod === 'delivery' ? Number(deliverySlot?.deliveryFee || 0) : 0;
   const totalCents = Math.max(0, subtotalCents + taxCents + deliveryFeeCents - discountCents);
   return {
+    commercialLines: commercial.lines,
     subtotal: subtotalCents / 100,
     subtotalCents,
     taxAmount: taxCents / 100,
@@ -371,7 +398,7 @@ export async function commitGroceryOrder(
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
-    await lockCheckoutRows(transactionContext, data, finalizationLease);
+    await lockCheckoutRows(transactionContext, data, finalizationLease, sessionUserId);
     if (finalizationLease) await refreshFinalizationSettlement(tx, finalizationLease, settledPayment.amountCents, settledPayment.currency);
     const sudoContext = transactionContext.sudo();
     const cart = await loadCart(sudoContext, data.cartId);
@@ -398,7 +425,7 @@ export async function commitGroceryOrder(
     if (fulfillmentMethod === 'pickup' && (!pickupSlot || pickupSlot.store?.id !== storeId)) throw new Error('Selected pickup slot was not found in active store');
     const [store, storeSettings] = await Promise.all([
       tx.store.findUnique({ where: { id: storeId }, select: { timezone: true, isActive: true } }),
-      tx.storeSettings.findFirst({ where: { storeId, isActive: true }, select: { hours: true } }),
+      (tx as any).storeSettings.findFirst({ where: { storeId, isActive: true }, select: { hours: true, deliveryPolicy: true } }),
     ]);
     const selectedLiveSlot = deliverySlot || pickupSlot;
     if (!store?.isActive || !storeSettings || !selectedLiveSlot || !isLiveFulfillmentSlot(selectedLiveSlot as { date: string; endTime: string }, store.timezone)) {
@@ -422,7 +449,8 @@ export async function commitGroceryOrder(
       throw new Error('Selected pickup slot is fully booked');
     }
 
-    const inventoryCutoff = new Date();
+    const promiseEndsAt = zonedDateTimeForDateKey(zonedDateKey(selectedLiveSlot.date, store.timezone), selectedLiveSlot.endTime, store.timezone);
+    const inventoryCutoff = new Date(Math.max(Date.now(), promiseEndsAt.getTime()));
     for (const item of cart.items) {
       const product = item.product;
       if (!product || product.store?.id !== storeId || product.status !== 'published') throw new Error('Cart contains an unavailable product');
@@ -437,10 +465,14 @@ export async function commitGroceryOrder(
         query: 'id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts store { id }',
       });
       if (!coupon || coupon.store?.id !== storeId) throw new Error('Coupon is not available for this store');
+      await validateLoyaltyCoupon(tx, coupon.id, sessionUserId, storeId);
       discount = calculateCouponDiscount(coupon, cart.items);
     }
     const taxRateBps = await getStoreTaxRateBps(transactionContext, storeId);
-    const totals = calculateTotals(cart, deliverySlot, fulfillmentMethod, taxRateBps, discount);
+    const goodsCents = cart.items.reduce((sum: number, item: any) => sum + Number(item.product.priceCents) * item.quantity, 0);
+    const service = evaluateDeliveryPolicy(storeSettings.deliveryPolicy, fulfillmentMethod, data.deliveryAddress.postalCode, goodsCents - Math.round(discount * 100));
+    const pricedSlot = deliverySlot ? { ...deliverySlot, deliveryFee: Number(deliverySlot.deliveryFee || 0) + service.feeCents } : null;
+    const totals = calculateTotals(cart, pricedSlot, fulfillmentMethod, taxRateBps, discount, coupon, service.feeTaxRateBasisPoints);
     if (Math.round(Number(data.expectedTotal) * 100) !== totals.totalCents) {
       throw new Error('Order total changed before checkout. Please review your cart and fulfillment slot.');
     }
@@ -449,6 +481,8 @@ export async function commitGroceryOrder(
     }
 
     const selectedSession = await loadPaymentSession(sudoContext, data.paymentSessionId);
+    if (selectedSession?.data?.cartFingerprint && selectedSession.data.cartFingerprint !== checkoutCartFingerprint(cart)) throw new Error('Basket changed after payment authorization; recover the original checkout before replacing it');
+    if (selectedSession?.data?.checkoutFingerprint && selectedSession.data.checkoutFingerprint !== checkoutRequestFingerprint(data)) throw new Error('Customer instructions changed after payment authorization');
     if (!selectedSession || selectedSession.cart?.id !== cart.id || !selectedSession.isInitiated) {
       throw new Error('Selected payment session not found for this cart');
     }
@@ -476,8 +510,11 @@ export async function commitGroceryOrder(
     if (!providerPaymentId || providerPaymentId !== settledPayment.providerPaymentId) {
       throw new Error('Payment session provider id does not match the settled payment');
     }
-    if (!['succeeded', 'captured'].includes(settledPayment.status)) {
+    if (!['succeeded', 'captured', 'requires_capture', 'authorized'].includes(settledPayment.status)) {
       throw new Error(`Payment is not settled: ${settledPayment.status}`);
+    }
+    if (!Number.isSafeInteger(settledPayment.amountCents) || settledPayment.amountCents !== totals.totalCents || settledPayment.currency !== 'usd') {
+      throw new Error('Provider settlement amount or currency differs from the locked checkout');
     }
 
     const address = await sudoContext.db.Address.createOne({
@@ -527,11 +564,14 @@ export async function commitGroceryOrder(
         deliveryInstructions: data.deliveryInstructions || undefined,
         metadata: {
           fulfillmentMethod,
+          promiseEndsAt: promiseEndsAt.toISOString(),
+          deliveryPolicySnapshot: service.policy,
+          shippingAddressSnapshot: { ...data.deliveryAddress },
           guestSessionId: sessionUserId ? null : data.sessionId?.trim() || null,
           deliverySlotId: data.deliverySlotId || null,
           pickupSlotId: data.pickupSlotId || null,
           ...totals,
-          coupon: coupon ? { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discount } : null,
+          coupon: coupon ? { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discount, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents } : null,
           lineItemsSnapshot,
           selectedFulfillmentSlot: selectedSlot
             ? { date: selectedSlot.date, startTime: selectedSlot.startTime, endTime: selectedSlot.endTime }
@@ -554,11 +594,17 @@ export async function commitGroceryOrder(
         inventoryCutoff,
       );
       const inventoryAllocations: Array<{ lotId: string; quantity: number }> = [];
+      let physicalQuantity = Number(product.stockQuantity);
       for (const { lot, quantity } of plannedAllocations) {
         await sudoContext.db.InventoryLot.updateOne({
           where: { id: lot.id },
-          data: { quantityRemaining: Number(lot.quantityRemaining || 0) - quantity },
+          data: { quantityRemaining: String((Math.round(Number(lot.quantityRemaining || 0)*1000)-Math.round(quantity*1000))/1000) } as any,
         });
+        const physicalAfter = (Math.round(physicalQuantity * 1000) - Math.round(quantity * 1000)) / 1000;
+        if (physicalAfter < 0) throw new Error("Physical stock cache requires an inventory count before checkout");
+        await (tx as any).product.update({where:{id:product.id},data:{stockQuantity:physicalAfter}});
+        await appendInventoryMovement(tx, {storeId,productId:product.id,inventoryLotId:lot.id,orderId:order.id,sourceType:'checkout_allocation',sourceId:order.id,idempotencyKey:`checkout:${order.id}:${item.id}:${lot.id}`,actorId:sessionUserId || undefined,reason:'Reserve ordered goods',quantityBefore:Number(lot.quantityRemaining),quantityAfter:(Math.round(Number(lot.quantityRemaining)*1000)-Math.round(quantity*1000))/1000,productStockBefore:physicalQuantity,productStockAfter:physicalAfter,metadata:{cartItemId:item.id}});
+        physicalQuantity = physicalAfter;
         inventoryAllocations.push({ lotId: lot.id as string, quantity });
       }
 
@@ -577,6 +623,11 @@ export async function commitGroceryOrder(
             : undefined,
           metadata: {
             cartItemId: item.id,
+            commercial: {
+              ...totals.commercialLines.find((line: any) => line.id === item.id),
+              pricingMethod: product.pricingMethod,
+              unitOfMeasure: product.unitOfMeasure,
+            },
             substitutionPreference: item.substitutionPreference || null,
             inventoryAllocations,
           },
@@ -588,7 +639,7 @@ export async function commitGroceryOrder(
             lineItem: { connect: { id: createdLineItem.id } },
             inventoryLot: { connect: { id: allocation.lotId } },
             store: { connect: { id: storeId } },
-            quantity: allocation.quantity,
+            quantity: String(allocation.quantity) as any,
             provenance: { source: 'checkout-fefo', cartItemId: item.id },
           },
         });
@@ -597,9 +648,9 @@ export async function commitGroceryOrder(
       const nextSellableQuantity = Math.max(0, deriveSellableQuantity(product, storeId) - item.quantity);
       await sudoContext.db.Product.updateOne({
         where: { id: product.id },
-        // Product stock fields remain an operator/reporting cache only. Heal
-        // them from the lot authority after each FEFO allocation.
-        data: { stockQuantity: nextSellableQuantity, inStock: nextSellableQuantity > 0 },
+        // Physical balance changes above follow each lot journal entry; public
+        // availability remains derived from currently eligible lots.
+        data: { stockQuantity: String(physicalQuantity), inStock: nextSellableQuantity > 0 } as any,
       });
     }
 
@@ -622,12 +673,8 @@ export async function commitGroceryOrder(
       // Guest checkout has no session-backed Store for generic Coupon hooks.
       // The coupon row is already Store-validated and locked above, so update
       // the authoritative redemption counter directly inside this transaction.
-      await tx.coupon.update({ where: { id: coupon.id }, data: { currentUses: { increment: 1 } } });
-      if (sessionUserId) {
-        const clippedRows = await sudoContext.query.UserCoupon.findMany({ where: { user: { id: { equals: sessionUserId } }, coupon: { id: { equals: coupon.id } }, used: { equals: false } }, take: 1, query: 'id' });
-        const clipped = clippedRows[0];
-        if (clipped) await sudoContext.db.UserCoupon.updateOne({ where: { id: clipped.id }, data: { used: true, usedAt: new Date().toISOString() } });
-      }
+      await consumeOrderCoupon(tx, { couponId: coupon.id, orderId: order.id, storeId, userId: sessionUserId });
+      await markLoyaltyRedemptionUsed(tx, coupon.id, order.id, storeId);
     }
 
     const { clientSecret: _discardedClientSecret, ...paymentSessionEvidence } = (selectedSession.data as Record<string, unknown> | null) || {};
@@ -637,12 +684,14 @@ export async function commitGroceryOrder(
         amount: totals.orderTotal.toFixed(2),
         amountCents: totals.totalCents,
         deliveryTipCents: 0,
-        status: 'succeeded',
+        status: ['requires_capture', 'authorized'].includes(settledPayment.status) ? 'authorized' : 'succeeded',
         paymentMethod: 'credit_card',
         providerPaymentId,
         providerData: {
           ...paymentSessionEvidence,
           status: settledPayment.status,
+          authorizedAmountCents: settledPayment.amountCents,
+          capturedAmountCents: ["requires_capture", "authorized"].includes(settledPayment.status) ? 0 : settledPayment.amountCents,
           providerCode: paymentProvider.code,
         },
         processedAt: new Date().toISOString(),
@@ -656,6 +705,7 @@ export async function commitGroceryOrder(
       where: { id: selectedSession.id },
       data: { data: { ...paymentSessionEvidence, status: 'completed' } },
     });
+    if (sessionUserId) await completeSubscriptionRunForCart(tx, cart.id, order.id, storeId, sessionUserId);
     for (const item of cart.items) {
       await sudoContext.db.CartItem.deleteOne({ where: { id: item.id } });
     }
@@ -675,6 +725,8 @@ export async function commitGroceryOrder(
       throw new Error('Checkout attempt finalization requires an exclusive reconciliation lease');
     }
 
+    await enqueueGroceryOutboxEvent(tx, {storeId,eventKey:`order.confirmed:${order.id}`,eventType:'order.confirmed',aggregateType:'Order',aggregateId:order.id,occurredAt:new Date().toISOString(),payload:{orderId:order.id}});
+
     return {
       orderId: order.id,
       displayId: order.displayId,
@@ -692,6 +744,7 @@ export default async function submitGroceryOrder(
   { data }: SubmitOrderArgs,
   context: Context
 ) {
+  if (context.session?.itemId) await requireSessionStore(context);
   assertFulfillmentInput(data);
   const sessionUserId = context.session?.itemId || null;
   data.checkoutOwnerId = sessionUserId;
@@ -701,6 +754,7 @@ export default async function submitGroceryOrder(
     loadPaymentSession(sudoContext, data.paymentSessionId),
   ]);
   if (!cart) throw new Error('Cart not found');
+  if(selectedSession?.data?.checkoutFingerprint && selectedSession.data.checkoutFingerprint!==checkoutRequestFingerprint(data))throw new Error('Checkout request differs from authorized customer instructions');
   if (!selectedSession || selectedSession.cart?.id !== cart.id) {
     throw new Error('Selected payment session not found for this cart');
   }
@@ -716,6 +770,8 @@ export default async function submitGroceryOrder(
     if (!ownsReplay) throw new Error('You do not have access to this checkout attempt');
     return {
       success: true,
+      message: "Order submitted successfully",
+      displayId: (await context.prisma.order.findUnique({ where: { id: existingAttempt.orderId }, select: { displayId: true } }))?.displayId,
       orderId: existingAttempt.orderId,
       guestOrderToken: !sessionUserId && data.sessionId?.trim()
         ? createGuestOrderToken(existingAttempt.orderId, data.sessionId.trim())
@@ -728,17 +784,17 @@ export default async function submitGroceryOrder(
   const providerPaymentId = selectedSession.data?.paymentIntentId || data.paymentIntentId;
   if (!providerPaymentId) throw new Error('Payment session is missing provider payment id');
   const attempt = await ensureCheckoutAttempt(context, data, cart, selectedSession, providerPaymentId) as CheckoutAttemptRecord;
-  if (attempt.status === 'finalized' && attempt.orderId) return { success: true, orderId: attempt.orderId, guestOrderToken: !sessionUserId && data.sessionId?.trim() ? createGuestOrderToken(attempt.orderId, data.sessionId.trim()) : null };
+  if (attempt.status === 'finalized' && attempt.orderId) return { success: true, message: 'Order submitted successfully', displayId: (await context.prisma.order.findUnique({ where: { id: attempt.orderId }, select: { displayId: true } }))?.displayId, orderId: attempt.orderId, guestOrderToken: !sessionUserId && data.sessionId?.trim() ? createGuestOrderToken(attempt.orderId, data.sessionId.trim()) : null };
   if (['compensation_required', 'compensation_processing', 'compensated', 'failed'].includes(attempt.status)) {
     throw new Error(`Checkout attempt cannot be finalized from ${attempt.status}`);
   }
 
-  const paymentStatus = await getPaymentStatus({
+  const paymentStatus = noChargeCheckoutState(selectedSession) || await getPaymentStatus({
     provider: paymentProvider as any,
     paymentId: providerPaymentId,
   });
   const normalizedStatus = paymentStatus?.status || 'unknown';
-  if (!['succeeded', 'captured'].includes(normalizedStatus)) {
+  if (!['succeeded', 'captured', 'requires_capture', 'authorized'].includes(normalizedStatus)) {
     throw new Error(`Payment is not settled: ${normalizedStatus}`);
   }
   const expectedAmountCents = Number(selectedSession.amountCents || Math.round(Number(selectedSession.amount || 0) * 100));

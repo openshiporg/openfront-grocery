@@ -1,4 +1,6 @@
 export type CheckoutPaymentSnapshot = {
+  noCharge?: {version:number;amountCents:number;reason:string};
+  customerRequest?: unknown;
   cartId: string;
   id: string;
   clientSecret: string;
@@ -26,6 +28,7 @@ export function createCheckoutPaymentSnapshot(input: {
   windowId: string;
   fulfillmentMethod: 'delivery' | 'pickup';
   couponCode?: string;
+  customerRequest?: unknown;
   payment: {
     id?: string | null;
     amount?: number | string | null;
@@ -36,10 +39,13 @@ export function createCheckoutPaymentSnapshot(input: {
   const id = input.payment.id?.trim();
   const clientSecret = String(data.clientSecret || '').trim();
   const paymentIntentId = String(data.paymentIntentId || '').trim();
-  if (!id || !clientSecret || !paymentIntentId) {
+  const noCharge=data.noCharge as CheckoutPaymentSnapshot['noCharge'];
+  if (!id || (!clientSecret && !(noCharge?.version===1 && noCharge.amountCents===0)) || !paymentIntentId) {
     throw new Error('Payment session did not return the Stripe payment identity');
   }
   return {
+    noCharge,
+    customerRequest:input.customerRequest,
     cartId: input.cartId,
     id,
     clientSecret,

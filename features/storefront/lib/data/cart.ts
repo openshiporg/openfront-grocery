@@ -45,12 +45,14 @@ function guestSessionEntropy() {
 export function getSessionId(): string {
   if (typeof window === 'undefined') return '';
 
-  let sessionId = localStorage.getItem(GUEST_CART_STORAGE_KEY) || getClientCookie(GUEST_CART_COOKIE);
+  let stored: string | null = null;
+  try { stored = localStorage.getItem(GUEST_CART_STORAGE_KEY); } catch { /* Use the cookie when storage is disabled. */ }
+  let sessionId = stored || getClientCookie(GUEST_CART_COOKIE);
   if (!sessionId) {
     sessionId = `guest_${guestSessionEntropy()}`;
   }
 
-  localStorage.setItem(GUEST_CART_STORAGE_KEY, sessionId);
+  try { localStorage.setItem(GUEST_CART_STORAGE_KEY, sessionId); } catch { /* Cookie continuity remains available. */ }
   setClientCookie(GUEST_CART_COOKIE, sessionId);
   return sessionId;
 }
@@ -62,7 +64,7 @@ function dispatchCartUpdate(cart: GroceryCart | null) {
   }
 }
 
-export async function retrieveCart(): Promise<GroceryCart | null> {
+export async function retrieveCart(options: { throwOnError?: boolean } = {}): Promise<GroceryCart | null> {
   try {
     const sessionId = typeof window === 'undefined' ? await getServerSessionId() : getSessionId();
     if (!sessionId) return null;
@@ -100,6 +102,7 @@ export async function retrieveCart(): Promise<GroceryCart | null> {
     return data?.groceryCart || null;
   } catch (error) {
     console.error('Error retrieving cart:', error);
+    if (options.throwOnError) throw error;
     return null;
   }
 }
@@ -120,10 +123,17 @@ export async function addToCart(
             id
             quantity
             subtotal
+            substitutionPreference
             product {
               id
               name
+              handle
               price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
           subtotal
@@ -251,10 +261,17 @@ export async function clearCart(options: { preserveSession?: boolean } = {}): Pr
             id
             quantity
             subtotal
+            substitutionPreference
             product {
               id
               name
+              handle
               price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
           subtotal
@@ -297,10 +314,17 @@ export async function mergeGuestCart(): Promise<GroceryCart | null> {
             id
             quantity
             subtotal
+            substitutionPreference
             product {
               id
               name
+              handle
               price
+              unitPrice
+              unit
+              imageUrl
+              inStock
+              stockQuantity
             }
           }
           subtotal

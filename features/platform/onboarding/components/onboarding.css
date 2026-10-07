@@ -1,0 +1,5 @@
+/* Retired: Ecommerce onboarding presentation is authoritative.
+ * No local geometry overrides. Shared primitives and app/globals.css provide
+ * radii, sizing, wrapping, positioning and responsive layout. This file is no
+ * longer imported; retained to account for the former Grocery-only override.
+ */

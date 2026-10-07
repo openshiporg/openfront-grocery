@@ -1,3 +1,23 @@
+import { InventoryConversion } from "./InventoryConversion";
+import { CatalogImport } from "./CatalogImport";
+import { CustomerPrivacyRequest } from "./CustomerPrivacyRequest";
+import { StaffAccessEvent } from "./StaffAccessEvent";
+import { StaffInvitation } from "./StaffInvitation";
+import { OrderLineRefund } from "./OrderLineRefund";
+import { LoyaltyRedemption } from "./LoyaltyRedemption";
+import { SubscriptionRun } from "./SubscriptionRun";
+import { SettlementMatch } from "./SettlementMatch";
+import { FinancialClose } from "./FinancialClose";
+import { SupplierCredit } from "./SupplierCredit";
+import { SupplierInvoice } from "./SupplierInvoice";
+import { ProductInformationVersion } from "./ProductInformationVersion";
+import { CustomerMessage } from "./CustomerMessage";
+import { PurchaseReceipt } from "./PurchaseReceipt";
+import { InventoryCount } from "./InventoryCount";
+import { InventoryRecall } from "./InventoryRecall";
+import { InventoryMovement } from "./InventoryMovement";
+import { OrderSettlement } from "./OrderSettlement";
+import { OrderLineFulfillment } from "./OrderLineFulfillment";
 import { Address } from "./Address";
 import { BackInStockAlert } from "./BackInStockAlert";
 import { Cart } from "./Cart";
@@ -44,6 +64,26 @@ import { User } from "./User";
 import { UserCoupon } from "./UserCoupon";
 
 export const models = {
+  InventoryConversion,
+  CatalogImport,
+  CustomerPrivacyRequest,
+  StaffAccessEvent,
+  StaffInvitation,
+  OrderLineRefund,
+  LoyaltyRedemption,
+  SubscriptionRun,
+  SettlementMatch,
+  FinancialClose,
+  SupplierCredit,
+  SupplierInvoice,
+  ProductInformationVersion,
+  CustomerMessage,
+  PurchaseReceipt,
+  InventoryCount,
+  InventoryRecall,
+  InventoryMovement,
+  OrderSettlement,
+  OrderLineFulfillment,
   Address,
   BackInStockAlert,
   Cart,

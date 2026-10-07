@@ -9,7 +9,7 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 
 export const PickupSlot = list({
   access: {
@@ -27,8 +27,10 @@ export const PickupSlot = list({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) return resolvedData;
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      if (!context.session?.itemId) return resolvedData;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
     validate: { delete: async ({ item, addValidationError }) => { if (Number(item.currentOrders || 0) > 0) addValidationError('Booked pickup slots cannot be deleted'); } },
   },
@@ -46,6 +48,7 @@ export const PickupSlot = list({
     }),
     orders: relationship({ ref: 'Order.pickupSlot', many: true, access: { update: () => false } }),
     date: timestamp({
+      access: { update: () => false },
       validation: { isRequired: true },
       label: "Date",
       ui: {
@@ -53,6 +56,7 @@ export const PickupSlot = list({
       },
     }),
     startTime: text({
+      access: { update: () => false },
       validation: { isRequired: true },
       label: "Start Time",
       ui: {
@@ -60,6 +64,7 @@ export const PickupSlot = list({
       },
     }),
     endTime: text({
+      access: { update: () => false },
       validation: { isRequired: true },
       label: "End Time",
       ui: {

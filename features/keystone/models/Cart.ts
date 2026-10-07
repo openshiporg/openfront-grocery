@@ -9,7 +9,7 @@ import {
 import { permissions } from "../access";
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma, uniqueRelationshipPrisma } from './relationshipConfig';
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 
 export const Cart = list({
   access: {
@@ -27,7 +27,10 @@ export const Cart = list({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      const storeId = context.session?.data.store?.id || process.env.PUBLIC_STORE_ID || 'store_juniper';
+      const storeId = context.session?.itemId
+        ? await currentMembershipStoreId({ session: context.session, context })
+        : process.env.PUBLIC_STORE_ID || 'store_juniper';
+      if (!storeId) throw new Error('An active store is required');
       const store = await context.prisma.store.findUnique({ where: { id: storeId }, select: { id: true, isActive: true } });
       if (!store?.isActive) throw new Error('An active store is required');
       return { ...resolvedData, store: { connect: { id: store.id } } };

@@ -1,78 +1,21 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useRef, useState } from 'react';
 import Link from 'next/link';
 import { Menu, X } from 'lucide-react';
 
 type NavLink = { href: string; label: string };
-
-/**
- * Client-side mobile navigation drawer for the storefront nav. Renders the
- * menu button and a slide-down panel of department + account links. Designed
- * to be composed inside the server-rendered UrbanNav so the link list stays
- * sourced from real department data fetched on the server.
- */
-export default function UrbanMobileMenu({
-  departments,
-}: {
-  departments: NavLink[];
-}) {
+export default function UrbanMobileMenu({ departments }: { departments: NavLink[] }) {
+  const dialog = useRef<HTMLDialogElement>(null);
   const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open]);
-
-  return (
-    <>
-      <button
-        type="button"
-        aria-label="Menu"
-        aria-expanded={open}
-        aria-controls="urban-mobile-menu"
-        onClick={() => setOpen((v) => !v)}
-        className="p-2.5 text-[var(--sf-ink)] transition hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] lg:hidden"
-      >
-        {open ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-      </button>
-
-      {open ? (
-        <div
-          id="urban-mobile-menu"
-          className="border-t border-[var(--sf-rule)] bg-[var(--sf-paper)] lg:hidden"
-        >
-          <nav className="mx-auto max-w-6xl px-4 py-4 sm:px-6" aria-label="Mobile">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Aisles</p>
-            <ul className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1">
-              {departments.map((dept) => (
-                <li key={dept.href}>
-                  <Link
-                    href={dept.href}
-                    onClick={() => setOpen(false)}
-                    className="block py-2 text-sm font-medium text-[var(--sf-ink)] transition hover:text-[var(--sf-accent)]"
-                  >
-                    {dept.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-
-            <p className="mt-4 text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Shop</p>
-            <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
-              <li><Link href="/products" onClick={() => setOpen(false)} className="py-2 text-sm text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">All products</Link></li>
-              <li><Link href="/departments" onClick={() => setOpen(false)} className="py-2 text-sm text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">All aisles</Link></li>
-              <li><Link href="/deals" onClick={() => setOpen(false)} className="py-2 text-sm text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Specials</Link></li>
-              <li><Link href="/cart" onClick={() => setOpen(false)} className="py-2 text-sm text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Basket</Link></li>
-              <li><Link href="/account" onClick={() => setOpen(false)} className="py-2 text-sm text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Account</Link></li>
-            </ul>
-          </nav>
-        </div>
-      ) : null}
-    </>
-  );
+  function close() { dialog.current?.close(); }
+  return <>
+    <button type="button" aria-label="Open shopping menu" aria-expanded={open} aria-haspopup="dialog" aria-controls="market-menu" onClick={() => { dialog.current?.showModal(); setOpen(true); }} className="inline-flex min-h-11 min-w-11 items-center justify-center lg:hidden"><Menu className="h-5 w-5" aria-hidden="true" /></button>
+    <dialog ref={dialog} id="market-menu" aria-labelledby="market-menu-title" onClose={() => setOpen(false)} className="rounded-lg">
+      <div className="flex items-center justify-between gap-4 border-b border-[var(--sf-rule)] pb-3"><h2 id="market-menu-title" className="font-[family-name:var(--sf-font-display)] text-2xl">Your neighborhood shop</h2><button type="button" onClick={close} autoFocus aria-label="Close shopping menu" className="flex min-h-11 min-w-11 items-center justify-center"><X className="h-5 w-5" /></button></div>
+      <nav aria-label="Shopping menu" className="mt-3 grid grid-cols-2 gap-x-4">
+        {[{ href: '/products', label: 'Shop all' }, { href: '/deals', label: 'Specials' }, { href: '/departments', label: 'All aisles' }, ...departments, { href: '/fulfillment', label: 'Delivery & pickup' }, { href: '/lists', label: 'Shopping lists' }, { href: '/favorites', label: 'Favorites' }, { href: '/account/orders', label: 'Your orders' }, { href: '/account', label: 'Your account' }, { href: '/order-access', label: 'Find a guest order' }, { href: '/support', label: 'Help & contact' }].map((item) => <Link prefetch={false} key={item.href} href={item.href} onClick={close} className="flex min-h-11 items-center border-b border-[var(--sf-rule)] py-2 text-sm">{item.label}</Link>)}
+      </nav>
+    </dialog>
+  </>;
 }

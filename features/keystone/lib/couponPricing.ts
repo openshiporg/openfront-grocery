@@ -40,5 +40,5 @@ export function calculateCouponDiscount(coupon: CouponCandidate, items: Array<{ 
   else if (coupon.discountType === 'fixed') discountCents = Number(coupon.discountValueCents || Math.round(Number(coupon.discountValue) * 100));
   else if (coupon.discountType === 'bogo') discountCents = eligible.reduce((sum, item) => sum + Math.floor(item.quantity / 2) * Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)), 0);
   else throw new Error(`Unsupported coupon type ${coupon.discountType}`);
-  return Math.max(0, Math.min(subtotalCents, discountCents)) / 100;
+  return Math.max(0, Math.min(eligibleSubtotalCents, discountCents)) / 100;
 }

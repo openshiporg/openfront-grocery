@@ -39,7 +39,7 @@ export async function getDeals(): Promise<GroceryDeal[]> {
       type: 'coupon' as const,
       discountCode: coupon.code,
       discountValue: coupon.discountValue,
-      discountType: coupon.discountType === 'percentage' ? 'percentage' : 'fixed',
+      discountType: coupon.discountType,
       description:
         coupon.productCategories.length > 0
           ? `Valid on ${coupon.productCategories.join(', ')}`
@@ -49,7 +49,7 @@ export async function getDeals(): Promise<GroceryDeal[]> {
     }));
   } catch (error) {
     console.error('Error fetching grocery coupons:', error);
-    return [];
+    throw error;
   }
 }
 

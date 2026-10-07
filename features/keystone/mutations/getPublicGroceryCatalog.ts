@@ -1,12 +1,13 @@
+import { catalogPageQuery } from '../lib/catalogPage';
 import type { Context } from '.keystone/types';
 
 import { deriveSellableQuantity } from '../lib/sellableInventory';
 import { publicStore, requireSessionStore } from '../lib/storeScope';
 
-const PUBLIC_CATALOG_BOUND = 500;
 const MAX_PAGE_SIZE = 100;
 
 type CatalogArgs = {
+  handle?: string;
   department?: string | null;
   search?: string | null;
   availability?: string | null;
@@ -25,8 +26,9 @@ function boundedPage(args: CatalogArgs) {
 }
 
 function mapCatalogProduct(product: any, storeId: string, requestedAlerts: Set<string>, now: Date) {
-  const sellableQuantity = deriveSellableQuantity(product, storeId, now);
+  const sellableQuantity = product.sellableQuantity ?? deriveSellableQuantity(product, storeId, now);
   return {
+    nutrition:product.nutrition,variantLabel:product.variantLabel,variantOf:product.variantOf,packBaseUnitsMilli:product.packBaseUnitsMilli,informationSource:product.informationSource,
     id: product.id,
     title: product.title,
     handle: product.handle,
@@ -64,24 +66,16 @@ function compareProducts(sort: string | null | undefined) {
 
 async function loadCatalog(context: Context, args: CatalogArgs, now: Date) {
   const store = await publicStore(context);
-  const where: any = { storeId: store.id, status: 'published' };
-  if (args.ids?.length) where.id = { in: Array.from(new Set(args.ids)).slice(0, MAX_PAGE_SIZE) };
-  if (args.department?.trim()) where.departmentRef = { handle: args.department.trim() };
-  if (args.search?.trim()) {
-    const query = args.search.trim();
-    where.OR = [
-      { title: { contains: query, mode: 'insensitive' } },
-      { sku: { contains: query, mode: 'insensitive' } },
-      { handle: { contains: query, mode: 'insensitive' } },
-    ];
-  }
-  if (args.organic === true) where.organicCertified = true;
-
-  const rows = await context.prisma.product.findMany({
-    where,
-    orderBy: [{ title: 'asc' }, { id: 'asc' }],
-    take: PUBLIC_CATALOG_BOUND + 1,
+  const page=catalogPageQuery({...args,storeId:store.id,now});
+  const [identities,counts]=await Promise.all([
+    context.prisma.$queryRawUnsafe<Array<{id:string;quantity:unknown}>>(page.pageSql,...page.params),
+    context.prisma.$queryRawUnsafe<Array<{count:number}>>(page.countSql,...page.countParams),
+  ]);
+  const quantityById=new Map(identities.map(row=>[row.id,Number(row.quantity)]));
+  const rows:any[] = await (context.prisma as any).product.findMany({
+    where: {id:{in:identities.map(row=>row.id)},storeId:store.id,status:'published'},
     select: {
+      nutrition:true,variantLabel:true,variantOf:{select:{id:true,handle:true,title:true}},packBaseUnitsMilli:true,informationSource:true,
       id: true,
       title: true,
       handle: true,
@@ -100,13 +94,10 @@ async function loadCatalog(context: Context, args: CatalogArgs, now: Date) {
       createdAt: true,
       store: { select: { id: true } },
       departmentRef: { select: { id: true, name: true, handle: true, isActive: true } },
-      inventoryLots: {
-        where: { storeId: store.id, quantityRemaining: { gt: 0 }, expirationDate: { gt: now } },
-        select: { expirationDate: true, quantityRemaining: true, store: { select: { id: true } } },
-      },
     },
   });
-  if (rows.length > PUBLIC_CATALOG_BOUND) throw new Error('Public grocery catalog exceeds the bounded launch projection');
+  const rowsById=new Map(rows.map(row=>[row.id,row]));
+  const ordered=identities.flatMap(row=>rowsById.has(row.id)?[{...rowsById.get(row.id),sellableQuantity:quantityById.get(row.id)}]:[]);
 
   const requestedAlerts = new Set<string>();
   if (context.session?.itemId && rows.length) {
@@ -124,7 +115,8 @@ async function loadCatalog(context: Context, args: CatalogArgs, now: Date) {
 
   return {
     store,
-    products: rows.map((row) => mapCatalogProduct(row, store.id, requestedAlerts, now)),
+    products: ordered.map((row) => mapCatalogProduct(row, store.id, requestedAlerts, now)),
+    totalCount: counts[0]?.count || 0,
   };
 }
 
@@ -134,16 +126,7 @@ export async function getPublicGroceryProducts(
   context: Context,
 ) {
   const now = new Date();
-  const { products } = await loadCatalog(context, args, now);
-  const availability = args.availability || 'in-stock';
-  if (!['in-stock', 'all', 'low-stock'].includes(availability)) throw new Error('Unsupported catalog availability filter');
-  const filtered = products.filter((product) => {
-    if (availability === 'all') return true;
-    if (availability === 'low-stock') return product.stockQuantity > 0 && product.stockQuantity < 10;
-    return product.inStock;
-  }).sort(compareProducts(args.sort));
-  const { take, skip } = boundedPage(args);
-  return { products: filtered.slice(skip, skip + take), totalCount: filtered.length };
+  return loadCatalog(context,args,now).then(({products,totalCount})=>({products,totalCount}));
 }
 
 export async function getPublicGroceryProduct(
@@ -153,7 +136,7 @@ export async function getPublicGroceryProduct(
 ) {
   const normalized = handle.trim();
   if (!normalized) return null;
-  const { products } = await loadCatalog(context, { search: normalized, availability: 'all' }, new Date());
+  const { products } = await loadCatalog(context, { handle: normalized, availability: 'all', take: 1 }, new Date());
   return products.find((product) => product.handle === normalized) || null;
 }
 
@@ -164,7 +147,7 @@ export async function requestGroceryBackInStockAlert(
 ) {
   if (!context.session?.itemId) throw new Error('Sign in to request a back-in-stock alert');
   const store = await requireSessionStore(context);
-  const product = await context.prisma.product.findFirst({
+  const product = await (context.prisma as any).product.findFirst({
     where: { id: productId, storeId: store.id, status: 'published' },
     select: {
       id: true,
@@ -172,7 +155,7 @@ export async function requestGroceryBackInStockAlert(
       store: { select: { id: true } },
       inventoryLots: {
         where: { storeId: store.id, quantityRemaining: { gt: 0 }, expirationDate: { gt: new Date() } },
-        select: { expirationDate: true, quantityRemaining: true, store: { select: { id: true } } },
+        select: { safetyStatus: true, conditionStatus: true, expirationDate: true, quantityRemaining: true, store: { select: { id: true } } },
       },
     },
   });

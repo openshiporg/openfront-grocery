@@ -2,6 +2,7 @@ import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
 import { getPaymentStatus } from '../utils/paymentProviderAdapter';
+import { noChargeCheckoutState } from '../lib/checkoutIdentity';
 import {
   claimCheckoutAttempt,
   releaseCheckoutAttemptLease,
@@ -10,7 +11,16 @@ import {
 import { compensateFailedCheckout, commitGroceryOrder, type SubmitOrderData } from './submitGroceryOrder';
 
 function isSettled(status: string) {
-  return status === 'succeeded' || status === 'captured';
+  return ['succeeded', 'captured', 'requires_capture', 'authorized'].includes(status);
+}
+
+export async function checkoutRecoveryPaymentState(context: any, lease: Pick<CheckoutLease, 'paymentSessionId' | 'providerPaymentId' | 'amountCents'>, provider: any, retrieve = getPaymentStatus) {
+  const session = await context.prisma.paymentSession.findUnique({ where: { id: lease.paymentSessionId } });
+  const noCharge = noChargeCheckoutState(session);
+  if (noCharge && (lease.amountCents !== 0 || lease.providerPaymentId !== session?.data?.paymentIntentId)) {
+    throw new Error('No-charge recovery does not match its immutable attempt');
+  }
+  return noCharge || retrieve({ provider, paymentId: lease.providerPaymentId });
 }
 
 export async function reconcileCheckoutAttempts(_root: unknown, { limit = 20 }: { limit?: number }, context: Context) {
@@ -32,7 +42,10 @@ export async function reconcileCheckoutAttempts(_root: unknown, { limit = 20 }: 
   for (const attempt of attempts) {
     const provider = await context.prisma.paymentProvider.findUnique({
       where: { code: attempt.providerCode },
-      select: { id: true, code: true, isInstalled: true, metadata: true },
+      select: { id: true, code: true, isInstalled: true, publicCheckout: true, supportsIdempotentCapture: true,
+        captureIdempotencyEvidence: true, credentials: true, metadata: true, createPaymentFunction: true,
+        capturePaymentFunction: true, refundPaymentFunction: true, getPaymentStatusFunction: true,
+        getRefundStatusFunction: true, cancelPaymentFunction: true, generatePaymentLinkFunction: true, handleWebhookFunction: true },
     });
     if (!provider?.isInstalled) continue;
 
@@ -52,7 +65,7 @@ export async function reconcileCheckoutAttempts(_root: unknown, { limit = 20 }: 
       continue;
     }
 
-    const paymentStatus = await getPaymentStatus({ provider: provider as any, paymentId: lease.providerPaymentId });
+    const paymentStatus = await checkoutRecoveryPaymentState(context, lease, provider);
     if (!isSettled(String(paymentStatus?.status || ''))) {
       await context.transaction(async (transactionContext) => releaseCheckoutAttemptLease(
         transactionContext.prisma,
@@ -62,7 +75,7 @@ export async function reconcileCheckoutAttempts(_root: unknown, { limit = 20 }: 
       continue;
     }
 
-    const amountCents = Number(paymentStatus?.amount || lease.amountCents);
+    const amountCents = Number(paymentStatus?.amountCents ?? paymentStatus?.amount ?? lease.amountCents);
     const currency = String(paymentStatus?.currency || lease.currencyCode).toLowerCase();
     if (!Number.isInteger(amountCents) || amountCents !== lease.amountCents || currency !== lease.currencyCode.toLowerCase()) {
       await context.transaction(async (transactionContext) => {

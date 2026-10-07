@@ -1,7 +1,11 @@
+import { enqueueGroceryOutboxEvent } from "../lib/groceryOutbox";
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
 import { withSerializableRetry } from '../utils/serializableTransaction';
+import { assertOrderHandoffPayment } from '../lib/fulfillmentPayment';
+import { assertOrderInventoryEligible } from '../lib/inventorySafety';
+import { assertDeliveryRouteComplete, resolveDeliveryStopInTransaction, type DeliveryStopInput } from '../lib/deliveryStops';
 
 type CreateDeliveryRouteArgs = {
   deliveryDate: string;
@@ -42,6 +46,7 @@ function assertValidRouteInput(deliveryDate: string, deliveryTimeWindow: string,
   if (!DELIVERY_TIME_WINDOWS.has(deliveryTimeWindow)) {
     throw new Error('A valid delivery time window is required');
   }
+  if (orderIds.length > 200) throw new Error('Routes support at most 200 orders');
   if (!orderIds.length) {
     throw new Error('Select at least one order for the route');
   }
@@ -121,7 +126,7 @@ export async function createDeliveryRouteFromOrders(
     const sudoContext = transactionContext.sudo();
     await lockOrders(transactionContext, orderIds);
     await assertEligibleDriver(transactionContext, sudoContext, driverId, store.id);
-    const orders = [];
+    const orders: Array<Awaited<ReturnType<typeof getOrderOrThrow>>> = [];
     const existingRouteIds = new Set<string>();
 
     for (const orderId of orderIds) {
@@ -284,16 +289,29 @@ export async function updateDeliveryRouteWorkflow(
       throw new Error('Only in-progress routes can be completed');
     }
 
+    const assignedIds = (route.orders || []).map((order: any) => order.id);
+    if (!assignedIds.length && status === 'in_progress') throw new Error('A route must contain orders before dispatch');
+    if (assignedIds.length) await lockOrders(transactionContext, assignedIds);
+    const orders: Array<Awaited<ReturnType<typeof getOrderOrThrow>>> = [];
+    for (const orderId of assignedIds) orders.push(await getOrderOrThrow(sudoContext, orderId, store.id));
+    const stops = Array.isArray(route.stops) ? route.stops : [];
+
     if (status === 'in_progress') {
       if (!route.driver?.id) throw new Error('Routes require an eligible driver before dispatch');
       await assertEligibleDriver(transactionContext, sudoContext, route.driver.id, store.id);
-    }
-
-    for (const order of route.orders || []) {
-      const allowedStatuses = status === 'in_progress' ? ['packed', 'out_for_delivery'] : ['out_for_delivery', 'delivered'];
-      if (!allowedStatuses.includes(order.status)) {
-        throw new Error(`Order #${order.displayId} is not ready for this route transition`);
+      if (stops.length !== orders.length || stops.some((stop: any) => stop.status !== 'planned' || !orders.some(order => order.id === stop.orderId))) {
+        throw new Error('Planned route stops must match the assigned orders');
       }
+      for (const order of orders) {
+        if (order.status !== 'packed') throw new Error(`Order #${order.displayId} must be packed before dispatch`);
+        await assertOrderHandoffPayment(transactionContext.prisma, order);
+        await assertOrderInventoryEligible(transactionContext.prisma, order.id, store.id,
+          new Date(Math.max(Date.now(), new Date(order.metadata?.promiseEndsAt || Date.now()).getTime())));
+      }
+    } else {
+      // Returned stops retain their route evidence even after the order is
+      // detached for refund and stock disposition. No failed stop is delivered.
+      assertDeliveryRouteComplete(stops, orders);
     }
 
     const now = new Date().toISOString();
@@ -303,35 +321,34 @@ export async function updateDeliveryRouteWorkflow(
         status,
         ...(status === 'in_progress' ? { startedAt: route.startedAt || now } : {}),
         ...(status === 'completed' ? { completedAt: route.completedAt || now } : {}),
-        stops: (route.stops || []).map((stop: any) => ({
-          ...stop,
-          status: status === 'in_progress' ? 'out_for_delivery' : 'delivered',
-        })),
+        stops: status === 'in_progress' ? stops.map((stop: any) => ({ ...stop, status: 'out_for_delivery', custody: 'driver', dispatchedAt: now })) : stops,
       },
     });
 
-    const nextOrderStatus = status === 'in_progress' ? 'out_for_delivery' : 'delivered';
-    for (const order of route.orders || []) {
-      await sudoContext.query.Order.updateOne({
-        where: { id: order.id },
-        data: {
-          status: nextOrderStatus,
-          metadata: {
-            ...(order.metadata || {}),
-            deliveryRouteId: routeId,
-            ...(status === 'in_progress' ? { dispatchedAt: order.metadata?.dispatchedAt || now } : {}),
-            ...(status === 'completed' ? { deliveredAt: order.metadata?.deliveredAt || now } : {}),
+    if (status === 'in_progress') {
+      for (const order of orders) {
+        await enqueueGroceryOutboxEvent(transactionContext.prisma,{storeId:store.id,eventKey:`order.dispatched:${order.id}:${routeId}`,eventType:'order.dispatched',aggregateType:'Order',aggregateId:order.id,occurredAt:now,payload:{orderId:order.id,routeId}});
+        await sudoContext.query.Order.updateOne({
+          where: { id: order.id },
+          data: {
+            status: 'out_for_delivery',
+            metadata: { ...(order.metadata || {}), deliveryRouteId: routeId, dispatchedAt: order.metadata?.dispatchedAt || now },
           },
-        },
-      });
+        });
+      }
     }
 
     return {
-      success: true,
-      routeId,
-      status,
-      orderCount: route.orders?.length || 0,
-      message: status === 'in_progress' ? 'Route dispatched.' : 'Route completed.',
+      success: true, routeId, status, orderCount: stops.length,
+      message: status === 'in_progress' ? 'Route dispatched.' : 'Route completed with each individual delivery or return outcome retained.',
     };
   }, { isolationLevel: 'ReadCommitted' as any }));
+}
+
+export async function resolveDeliveryStop(_root: unknown, input: DeliveryStopInput, context: Context) {
+  await assertCanManageDelivery(context);
+  const store = await requireSessionStore(context);
+  return withSerializableRetry(() => context.transaction(tx =>
+    resolveDeliveryStopInTransaction(tx, { storeId: store.id, userId: context.session!.itemId }, input),
+  { isolationLevel: 'ReadCommitted' as any }));
 }

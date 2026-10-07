@@ -11,6 +11,7 @@ export async function MainLayout({ children }: { children: React.ReactNode }) {
   return (
     <StorefrontServer prefetchUser prefetchCart prefetchDepartments>
       <div className="flex min-h-screen flex-col">
+        <a href="#storefront-main" className="sf-skip-link">Skip to shopping content</a>
         <UrbanNav />
         {children}
         <UrbanFooter />

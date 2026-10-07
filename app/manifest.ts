@@ -5,7 +5,14 @@ import { storefrontAccentColor } from '@/features/storefront/lib/branding';
 export const dynamic = 'force-dynamic';
 
 export default async function manifest(): Promise<MetadataRoute.Manifest> {
-  const store = await getStore();
+  // Public metadata must remain valid before owner setup (or if settings are
+  // unavailable). This fallback does not make storefront/auth requests succeed.
+  const store = await getStore().catch(() => ({
+    name: 'Openfront Grocery',
+    homepageDescription: undefined,
+    effectiveBrandHue: undefined,
+    logoUrl: undefined,
+  }));
   return {
     name: store.name,
     short_name: store.name.slice(0, 20),

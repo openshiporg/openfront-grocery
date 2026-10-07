@@ -10,7 +10,7 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
-import { publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
 
 export const Department = list({
   access: {
@@ -21,15 +21,18 @@ export const Department = list({
       delete: permissions.canManageProducts,
     },
     filter: {
-      query: async ({ session, context }) => await permissions.canManageProducts({ session, context }) ? storeScopedFilter({ session }) : publicStoreScopedFilter(),
+      query: async ({ session, context }) => await permissions.canManageProducts({ session, context })
+        ? storeScopedFilter({ session, context })
+        : publicStoreScopedFilter(),
       update: storeScopedFilter,
       delete: storeScopedFilter,
     },
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error('An active store is required');
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
   },
   ui: {

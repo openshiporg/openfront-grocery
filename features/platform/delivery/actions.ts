@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { gql } from 'graphql-request';
 import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import type { DeliveryStopInput } from '@/features/keystone/lib/deliveryStops';
 
 export async function updateDeliverySlotState(input: {
   slotId: string;
@@ -86,4 +87,34 @@ export async function updateDeliveryRouteStatus(input: {
   revalidatePath('/dashboard/platform/delivery');
   revalidatePath('/dashboard/platform/orders');
   return response.data;
+}
+
+export async function recordDeliveryStopOutcome(input: DeliveryStopInput) {
+  const response = await keystoneClient(gql`
+    mutation ResolveDeliveryStop($routeId: ID!, $orderId: ID!, $status: String!, $recipient: String,
+      $proofReference: String, $reason: String, $custody: String!, $conditionEvidence: String!,
+      $retryAt: String, $approvalEvidence: String, $idempotencyKey: String!) {
+      resolveDeliveryStop(routeId: $routeId, orderId: $orderId, status: $status, recipient: $recipient,
+        proofReference: $proofReference, reason: $reason, custody: $custody, conditionEvidence: $conditionEvidence,
+        retryAt: $retryAt, approvalEvidence: $approvalEvidence, idempotencyKey: $idempotencyKey)
+    }
+  `, input);
+  if (!response.success) throw new Error(response.error);
+  revalidatePath('/dashboard/platform/delivery');
+  revalidatePath('/dashboard/platform/orders');
+  return response.data.resolveDeliveryStop;
+}
+
+export async function getReturnedDeliveryRescheduleSlots(orderId: string) {
+  const response = await keystoneClient(gql`query LaterDeliverySlots($orderId: ID!) { groceryDeliveryRescheduleSlots(orderId: $orderId) }`, { orderId });
+  if (!response.success) throw new Error(response.error);
+  return response.data.groceryDeliveryRescheduleSlots;
+}
+export async function rescheduleReturnedDelivery(input: { orderId: string; deliverySlotId: string; customerApproval: string; conditionEvidence: string; idempotencyKey: string }) {
+  const response = await keystoneClient(gql`mutation RescheduleReturnedDelivery($orderId: ID!, $deliverySlotId: ID!, $customerApproval: String!, $conditionEvidence: String!, $idempotencyKey: String!) {
+    rescheduleReturnedGroceryDelivery(orderId: $orderId, deliverySlotId: $deliverySlotId, customerApproval: $customerApproval, conditionEvidence: $conditionEvidence, idempotencyKey: $idempotencyKey)
+  }`, input);
+  if (!response.success) throw new Error(response.error);
+  revalidatePath('/dashboard/platform/delivery'); revalidatePath('/dashboard/platform/orders'); revalidatePath(`/order/${input.orderId}`);
+  return response.data.rescheduleReturnedGroceryDelivery;
 }

@@ -7,6 +7,5 @@ export {
   updateOnboardingStatus,
   dismissOnboarding,
   startOnboarding,
-  completeOnboarding,
   type OnboardingStatus
 } from './actions/onboarding';

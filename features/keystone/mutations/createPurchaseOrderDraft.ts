@@ -116,10 +116,10 @@ export async function createPurchaseOrderDraft(
         data: {
           productTitle: product.title,
           productSku: product.sku,
-          quantity: item.quantity,
+          quantity: String(item.quantity),
           unitCost: item.unitCost,
           unitCostCents: Math.round(item.unitCost * 100),
-          quantityReceived: 0,
+          quantityReceived: "0",
           purchaseOrder: { connect: { id: purchaseOrder.id } },
           product: { connect: { id: item.productId } },
         },

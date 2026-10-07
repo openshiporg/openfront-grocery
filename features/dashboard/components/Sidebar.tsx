@@ -41,16 +41,14 @@ import { Logo, LogoIcon } from '@/features/dashboard/components/Logo'
 import { UserProfileClient } from './UserProfileClient'
 import { OnboardingCards } from '@/features/platform/onboarding/components/OnboardingCards'
 import { dismissOnboarding } from '@/features/platform/onboarding/actions/onboarding'
-import { groceryPlatformNavGroups, getPlatformNavItemsWithBasePath, platformStandaloneItems } from '@/features/platform/lib/navigation'
+import { groceryPlatformNavGroups, getPlatformNavItemsWithBasePath, type GroceryPlatformCapabilities } from '@/features/platform/lib/navigation'
 
 interface User {
   id: string;
   email: string;
   name?: string;
   onboardingStatus?: string;
-  role?: {
-    canManageOnboarding?: boolean;
-  };
+  role?: GroceryPlatformCapabilities;
 }
 
 interface SidebarProps {
@@ -102,18 +100,17 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
     },
   ]
 
-  const groceryPlatformNavItems = getPlatformNavItemsWithBasePath('/dashboard')
-  const standaloneItemsWithBasePath = platformStandaloneItems.map((item) => ({
-    ...item,
-    href: `/dashboard${item.href}`,
-  }))
-  const platformItems = groceryPlatformNavGroups.map((group) => ({
-    ...group,
-    items: groceryPlatformNavItems.filter((item) => item.group === group.id),
-    isActive: groceryPlatformNavItems
-      .filter((item) => item.group === group.id)
-      .some((item) => isLinkActive(item.href)),
-  }))
+  const groceryPlatformNavItems = getPlatformNavItemsWithBasePath('/dashboard', user?.role)
+  const standaloneItemsWithBasePath = groceryPlatformNavItems.filter((item) => item.group === 'standalone')
+  const platformItems = groceryPlatformNavGroups.map((group) => {
+    const items = groceryPlatformNavItems.filter((item) => item.group === group.id)
+    return {
+      ...group,
+      items,
+      isActive: items.some((item) => isLinkActive(item.href)),
+    }
+  }).filter((group) => group.items.length > 0)
+  const hasPlatformItems = standaloneItemsWithBasePath.length > 0 || platformItems.length > 0
 
   return (
     <SidebarComponent collapsible="icon">
@@ -146,6 +143,7 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
         </SidebarGroup>
 
         {/* Platform Navigation */}
+        {hasPlatformItems && (
         <SidebarGroup>
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarMenu className="group-has-[[data-collapsible=icon]]/sidebar-wrapper:hidden gap-0">
@@ -209,7 +207,11 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
               <DropdownMenu key={platformItem.title}>
                 <SidebarMenuItem>
                   <DropdownMenuTrigger asChild>
-                    <SidebarMenuButton className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
+                    <SidebarMenuButton
+                      aria-label={platformItem.title}
+                      title={platformItem.title}
+                      className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+                    >
                       <platformItem.icon className="h-4 w-4" />
                     </SidebarMenuButton>
                   </DropdownMenuTrigger>
@@ -240,6 +242,7 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
             ))}
           </div>
         </SidebarGroup>
+        )}
 
         {/* Models Dropdown - Collapsible */}
         {dashboardItems.map((dashboardItem) => (
@@ -292,7 +295,11 @@ export function Sidebar({ adminMeta, user, onOpenDialog }: SidebarProps) {
               <DropdownMenu>
                 <SidebarMenuItem>
                   <DropdownMenuTrigger asChild>
-                    <SidebarMenuButton className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
+                    <SidebarMenuButton
+                      aria-label={dashboardItem.title}
+                      title={dashboardItem.title}
+                      className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+                    >
                       <dashboardItem.icon className="h-4 w-4" />
                     </SidebarMenuButton>
                   </DropdownMenuTrigger>

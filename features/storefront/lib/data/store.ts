@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import type { GroceryStore } from '../../types';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 import { DEFAULT_STOREFRONT_BRAND_HUE } from '../branding';
@@ -9,7 +10,9 @@ const immutableBuildStore: GroceryStore = {
   effectiveBrandHue: DEFAULT_STOREFRONT_BRAND_HUE,
 };
 
-export async function getStore(): Promise<GroceryStore> {
+// React.cache shares this read only within one server render/request. It does
+// not retain settings or GraphQL errors across onboarding/navigation requests.
+export const getStore = cache(async function getStore(): Promise<GroceryStore> {
   // Dynamic runtime identity cannot be fetched during the immutable compile.
   // This placeholder is never a runtime outage fallback and carries no retailer identity.
   if (process.env.GROCERY_IMMUTABLE_BUILD === 'true') return immutableBuildStore;
@@ -39,7 +42,9 @@ export async function getStore(): Promise<GroceryStore> {
       }
     `,
     undefined,
-    { next: { revalidate: 300 } },
+    // GraphQL failures also return HTTP 200. Caching that response can keep a
+    // newly onboarded store unavailable after its settings have been created.
+    { cache: 'no-store' },
   );
   throwGraphQLErrors(errors);
   const settings = data?.publicGroceryStorefrontSettings;
@@ -47,4 +52,4 @@ export async function getStore(): Promise<GroceryStore> {
     throw new Error('The public grocery storefront is not configured');
   }
   return settings;
-}
+});

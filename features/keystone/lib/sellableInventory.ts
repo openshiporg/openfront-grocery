@@ -1,9 +1,14 @@
 import type { Context } from '.keystone/types';
+import { isInventoryLotEligible } from './inventorySafety';
+import { quantityMilli } from './inventoryMovements';
+export { isInventoryLotEligible } from './inventorySafety';
 
 export type SellableInventoryLot = {
   id?: string;
   expirationDate: Date | string;
-  quantityRemaining: number | null;
+  quantityRemaining: number | string | null;
+  safetyStatus?: string | null;
+  conditionStatus?: string | null;
   store?: { id?: string | null } | null;
 };
 
@@ -29,10 +34,9 @@ export function deriveSellableQuantity(
   if (product.store?.id !== storeId) return 0;
   const unexpiredLotQuantity = (product.inventoryLots || []).reduce((total, lot) => {
     if (lot.store?.id !== storeId) return total;
-    const remaining = Math.max(0, Math.trunc(Number(lot.quantityRemaining || 0)));
-    const expiresAt = new Date(lot.expirationDate).getTime();
-    return remaining > 0 && Number.isFinite(expiresAt) && expiresAt > now.getTime()
-      ? total + remaining
+    const remaining = Math.max(0, quantityMilli(lot.quantityRemaining || 0) / 1000);
+    return remaining > 0 && isInventoryLotEligible(lot, now)
+      ? (quantityMilli(total) + quantityMilli(remaining)) / 1000
       : total;
   }, 0);
   return unexpiredLotQuantity;
@@ -64,20 +68,21 @@ export function planSellableLotAllocation<T extends SellableInventoryLot>(
   productName: string,
   now = new Date(),
 ) {
+  if (quantityMilli(requestedQuantity) < 0) throw new Error('Requested quantity cannot be negative');
   let remaining = requestedQuantity;
   const allocations: Array<{ lot: T; quantity: number }> = [];
   const candidates = [...lots]
     .filter((lot) => lot.store?.id === storeId
       && Number(lot.quantityRemaining || 0) > 0
-      && new Date(lot.expirationDate).getTime() > now.getTime())
+      && isInventoryLotEligible(lot, now))
     .sort((left, right) =>
       new Date(left.expirationDate).getTime() - new Date(right.expirationDate).getTime()
       || String(left.id || '').localeCompare(String(right.id || '')));
   for (const lot of candidates) {
     if (remaining === 0) break;
-    const quantity = Math.min(remaining, Math.trunc(Number(lot.quantityRemaining || 0)));
+    const quantity = Math.min(remaining, quantityMilli(lot.quantityRemaining || 0) / 1000);
     allocations.push({ lot, quantity });
-    remaining -= quantity;
+    remaining = (quantityMilli(remaining) - quantityMilli(quantity)) / 1000;
   }
   if (remaining > 0) {
     const sellableQuantity = requestedQuantity - remaining;
@@ -97,7 +102,7 @@ export async function requireSellableStoreProduct(
     query: `
       id title handle sku status store { id } price priceCents costPrice costPriceCents
       department imageUrl thumbnailUrl pricingMethod unitOfMeasure
-      inventoryLots { expirationDate quantityRemaining store { id } }
+      inventoryLots { expirationDate quantityRemaining safetyStatus conditionStatus store { id } }
     `,
   });
   if (!product || product.store?.id !== storeId) throw new Error('Product is not available in the active store');

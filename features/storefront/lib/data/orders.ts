@@ -73,6 +73,7 @@ export async function getOrderById(id: string): Promise<GroceryOrder | null> {
             title
             quantity
             unitPrice
+            unitPriceCents
             thumbnail
             metadata
             product {
@@ -94,17 +95,20 @@ export async function getOrderById(id: string): Promise<GroceryOrder | null> {
   }
 }
 
-export async function getOrdersByUser(): Promise<GroceryOrder[]> {
+export async function getOrderHistory(requestedPage = 1, pageSize = 10): Promise<{ orders: GroceryOrder[]; total: number; page: number; pageSize: number; error?: string }> {
+  const page = Math.max(1, Math.min(10000, Math.floor(Number(requestedPage) || 1)));
+  pageSize = Math.max(1, Math.min(50, Math.floor(pageSize)));
   try {
     const userId = await getAuthenticatedUserId();
-    if (!userId) return [];
-
-    const { data } = await storefrontGraphQL<{ orders: any[] }>(`
-      query GetUserOrders($userId: ID!) {
+    if (!userId) return { orders: [], total: 0, page, pageSize };
+    const { data, errors } = await storefrontGraphQL<{ orders: any[]; ordersCount: number }>(`
+      query GetUserOrders($userId: ID!, $take: Int!, $skip: Int!) {
+        ordersCount(where: { user: { id: { equals: $userId } } })
         orders(
           where: { user: { id: { equals: $userId } } }
-          orderBy: { createdAt: desc }
-          take: 20
+          orderBy: [{ createdAt: desc }, { id: desc }]
+          take: $take
+          skip: $skip
         ) {
           id
           displayId
@@ -123,6 +127,7 @@ export async function getOrdersByUser(): Promise<GroceryOrder[]> {
             title
             quantity
             unitPrice
+            unitPriceCents
             thumbnail
             metadata
             product {
@@ -132,21 +137,17 @@ export async function getOrdersByUser(): Promise<GroceryOrder[]> {
           }
         }
       }
-    `, { userId }, { cache: 'no-store' });
-    const orders = data?.orders || [];
-    const lineItemIds = orders.flatMap((order: any) => (order.lineItems || []).map((item: any) => item.id));
-    const substitutions = await getOrderSubstitutions(lineItemIds);
-
-    return orders.map((order: any) => ({
-      ...order,
-      orderItemSubstitutions: substitutions.filter((substitution: any) =>
-        (order.lineItems || []).some((item: any) => item.id === substitution.orderItem)
-      ),
-    })).map(mapStorefrontOrder);
+    `, { userId, take: pageSize, skip: (page - 1) * pageSize }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
+    if (!data) throw new Error('Order history is unavailable. Please try again.');
+    return { orders: data.orders.map(mapStorefrontOrder), total: data.ordersCount, page, pageSize };
   } catch (error) {
-    console.error('Error fetching user orders:', error);
-    return [];
+    return { orders: [], total: 0, page, pageSize, error: error instanceof Error ? error.message : 'Unable to load orders' };
   }
+}
+
+export async function getOrdersByUser(): Promise<GroceryOrder[]> {
+  return (await getOrderHistory(1, 20)).orders;
 }
 
 export async function getAvailableParkingSpots(accessibleOnly = false): Promise<GroceryParkingSpot[]> {
@@ -218,43 +219,23 @@ export async function checkInPickupOrder(input: {
   }
 }
 
-export async function reorderFromOrder(orderId: string): Promise<{ success: boolean; cartId?: string; error?: string }> {
-  try {
-    const order = await getOrderById(orderId);
-    if (!order) {
-      return { success: false, error: 'Order not found' };
+/** Client-only repeat buying uses the same owned cart session as product and basket controls. */
+export async function reorderFromOrder(orderId: string): Promise<{ success: boolean; added: number; skipped: string[]; error?: string }> {
+  if (typeof window === 'undefined') return { success: false, added: 0, skipped: [], error: 'Open this order in your browser to shop it again.' };
+  const order = await getOrderById(orderId);
+  if (!order) return { success: false, added: 0, skipped: [], error: 'Order unavailable. Sign in and try again.' };
+  const { addToCart } = await import('./cart');
+  let added = 0;
+  const skipped: string[] = [];
+  // Original pack counts are valid Int quantities; picked weights must never become cart counts.
+  for (const item of order.requestedItems || order.items) {
+    if (!item.product?.id || !Number.isInteger(item.quantity) || item.quantity <= 0) {
+      skipped.push(item.title);
+      continue;
     }
-
-    const { data: authData } = await storefrontGraphQL<{
-      authenticatedItem?: { id: string } | null;
-    }>(`
-      query GetReorderSessionId {
-        authenticatedItem {
-          ... on User {
-            id
-          }
-        }
-      }
-    `, undefined, { cache: 'no-store' });
-
-    const isSignedIn = Boolean(authData?.authenticatedItem?.id);
-    const sessionId = !isSignedIn ? `guest_reorder_${Date.now()}` : undefined;
-
-    for (const item of order.items) {
-      if (item.product?.id) {
-        await storefrontGraphQL(`
-          mutation ReorderItem($productId: ID!, $quantity: Int!, $sessionId: String) {
-            addItemToGroceryCart(productId: $productId, quantity: $quantity, sessionId: $sessionId) {
-              id
-            }
-          }
-        `, { productId: item.product.id, quantity: item.quantity, sessionId });
-      }
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Error reordering:', error);
-    return { success: false, error: 'Failed to reorder' };
+    const cart = await addToCart(item.product.id, item.quantity);
+    if (cart) added += 1;
+    else skipped.push(item.title);
   }
+  return { success: skipped.length === 0 && added > 0, added, skipped, ...(!added ? { error: 'No items were added. Availability may have changed; browse the shop to choose alternatives.' } : {}) };
 }

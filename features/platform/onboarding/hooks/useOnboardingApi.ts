@@ -7,6 +7,8 @@ interface OnboardingApiProps {
   currentJsonData: Record<string, any>;
   completedItems: Record<string, string[]>;
   setProgress: (message: string) => void;
+  setResult: (result: { reused: boolean; counts: Record<string, number> } | null) => void;
+  onCompleted?: () => void;
   setItemLoading: (type: SeedSectionKey, item: string) => void;
   setItemCompleted: (type: SeedSectionKey, item: string) => void;
   setItemError: (type: SeedSectionKey, item: string, errorMessage: string) => void;
@@ -25,6 +27,8 @@ function itemLabel(item: any, fallback: string) {
 export function useOnboardingApi({
   currentJsonData,
   setProgress,
+  setResult,
+  onCompleted,
   setItemLoading,
   setItemCompleted,
   setItemError,
@@ -56,8 +60,10 @@ export function useOnboardingApi({
       }
 
       pending.forEach(({ section, label }) => setItemCompleted(section, label));
-      setProgress('Grocery launch baseline complete!');
+      setResult({ reused: result.data.reused, counts: result.data.counts });
+      setProgress(result.data.reused ? 'Existing Store setup verified.' : 'Grocery launch baseline complete!');
       setStep('done');
+      onCompleted?.();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to complete grocery onboarding';
       pending.forEach(({ section, label }) => setItemError(section, label, message));

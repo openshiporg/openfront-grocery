@@ -5,6 +5,8 @@ function mapList(list: any): ShoppingList {
   const items = (list.items || []).map((item: any) => ({
     id: item.id,
     name: item.product,
+    productId: item.productRef?.id,
+    productHandle: item.productRef?.handle,
     quantity: item.quantity,
     checked: item.checked,
     unit: item.unit || undefined,
@@ -15,7 +17,7 @@ function mapList(list: any): ShoppingList {
   return {
     id: list.id,
     name: list.name,
-    updatedAt: list.updatedAt || new Date().toISOString(),
+    updatedAt: list.updatedAt || '',
     isDefault: list.isDefault,
     itemCount: list.itemCount ?? items.length,
     checkedCount: list.checkedCount ?? items.filter((item: any) => item.checked).length,
@@ -31,7 +33,7 @@ async function requestGraphQL<T = any>(query: string, variables?: Record<string,
   return result.data as T;
 }
 
-export async function getShoppingLists(): Promise<ShoppingList[]> {
+export async function getShoppingLists(options: { throwOnError?: boolean } = {}): Promise<ShoppingList[]> {
   try {
     const data = await requestGraphQL<{
       shoppingLists: Array<{
@@ -51,6 +53,7 @@ export async function getShoppingLists(): Promise<ShoppingList[]> {
           items {
             id
             product
+            productRef { id handle }
             quantity
             checked
             unit
@@ -64,6 +67,7 @@ export async function getShoppingLists(): Promise<ShoppingList[]> {
     return (data?.shoppingLists || []).map(mapList);
   } catch (error) {
     console.error('Error fetching shopping lists:', error);
+    if (options.throwOnError) throw error;
     return [];
   }
 }
@@ -88,6 +92,7 @@ export async function getShoppingListById(id: string): Promise<ShoppingList | nu
           items {
             id
             product
+            productRef { id handle }
             quantity
             checked
             unit
@@ -125,6 +130,7 @@ export async function createShoppingList(name: string): Promise<ShoppingList | n
           items {
             id
             product
+            productRef { id handle }
             quantity
             checked
             unit
@@ -146,9 +152,15 @@ export async function createShoppingList(name: string): Promise<ShoppingList | n
 
 export async function addItemToList(
   listId: string,
-  item: { name: string; quantity?: number; unit?: string; notes?: string }
+  item: { name: string; productId?: string; quantity?: number; unit?: string; notes?: string }
 ): Promise<ShoppingList | null> {
   try {
+    if (item.productId) {
+      const list = await getShoppingListById(listId);
+      if (!list) throw new Error('The shopping list could not be loaded.');
+      const existing = list.items.find((entry) => entry.productId === item.productId);
+      if (existing) return updateListItemQuantity(listId, existing.id, existing.quantity + (item.quantity || 1));
+    }
     const data = await requestGraphQL<{ addToShoppingList: any }>(`
       mutation AddItemToShoppingList(
         $listId: ID!
@@ -182,13 +194,13 @@ export async function addItemToList(
       }
     `, {
       listId,
-      product: item.name,
+      product: item.productId || item.name,
       quantity: item.quantity || 1,
       unit: item.unit || 'each',
       notes: item.notes || '',
     });
 
-    return data?.addToShoppingList ? mapList(data.addToShoppingList) : null;
+    return data?.addToShoppingList ? (await getShoppingListById(listId)) || mapList(data.addToShoppingList) : null;
   } catch (error) {
     console.error('Error adding item to list:', error);
     return null;
@@ -222,7 +234,7 @@ export async function updateListItemQuantity(listId: string, itemId: string, qua
       quantity,
     });
 
-    return data?.updateShoppingListItemQuantity ? mapList(data.updateShoppingListItemQuantity) : null;
+    return data?.updateShoppingListItemQuantity ? (await getShoppingListById(listId)) || mapList(data.updateShoppingListItemQuantity) : null;
   } catch (error) {
     console.error('Error updating list item quantity:', error);
     return null;
@@ -255,7 +267,7 @@ export async function toggleListItem(listId: string, itemId: string): Promise<Sh
       itemId,
     });
 
-    return data?.toggleShoppingListItemChecked ? mapList(data.toggleShoppingListItemChecked) : null;
+    return data?.toggleShoppingListItemChecked ? (await getShoppingListById(listId)) || mapList(data.toggleShoppingListItemChecked) : null;
   } catch (error) {
     console.error('Error toggling list item:', error);
     return null;
@@ -288,7 +300,7 @@ export async function removeListItem(listId: string, itemId: string): Promise<Sh
       itemId,
     });
 
-    return data?.removeFromShoppingList ? mapList(data.removeFromShoppingList) : null;
+    return data?.removeFromShoppingList ? (await getShoppingListById(listId)) || mapList(data.removeFromShoppingList) : null;
   } catch (error) {
     console.error('Error removing list item:', error);
     return null;

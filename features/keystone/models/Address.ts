@@ -17,7 +17,7 @@ export const Address = list({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = ownerStoreScopedFilter('user')({ session });
+        const store = await ownerStoreScopedFilter('user')({ session, context });
         if (store === false) return false;
         if (await permissions.canManageUsers({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };

@@ -1,4 +1,5 @@
 import { getGraphQLEndpoint } from '@/features/storefront/lib/getBaseUrl';
+import { getInternalGraphQLEndpoint } from '@/features/keystone/lib/internalTransport';
 
 export type StorefrontGraphQLRequestOptions = Omit<RequestInit, 'method' | 'headers' | 'body'> & {
   headers?: HeadersInit;
@@ -40,8 +41,21 @@ export async function storefrontGraphQL<T = any>(
   options: StorefrontGraphQLRequestOptions = {}
 ): Promise<StorefrontGraphQLResponse<T>> {
   const { headers, ...requestOptions } = options;
-  const endpoint = await getGraphQLEndpoint();
+  const internalEndpoint = getInternalGraphQLEndpoint();
+  const endpoint = internalEndpoint || await getGraphQLEndpoint();
   const requestHeaders = new Headers(headers);
+
+  // Server destinations and client identity come from deployment/runtime
+  // context, never from caller-supplied Host, forwarding, or legacy signer headers.
+  for (const name of ['host', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip', 'x-grocery-proxy-identity']) {
+    requestHeaders.delete(name);
+  }
+  if (typeof window === 'undefined' && internalEndpoint) {
+    const { headers: requestContextHeaders } = await import('next/headers');
+    const { trustedClientIp } = await import('@/features/keystone/lib/clientIp');
+    const clientIp = trustedClientIp(await requestContextHeaders());
+    if (clientIp) requestHeaders.set('x-real-ip', clientIp);
+  }
 
   if (!requestHeaders.has('Content-Type')) {
     requestHeaders.set('Content-Type', 'application/json');

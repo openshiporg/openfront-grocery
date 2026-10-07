@@ -36,7 +36,7 @@ export const Order = list({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = storeScopedFilter({ session });
+        const store = await storeScopedFilter({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
@@ -60,18 +60,19 @@ export const Order = list({
 
         const route = await context.sudo().query.DeliveryRoute.findOne({
           where: { id: current.deliveryRouteId },
-          query: 'id status date timeWindow',
+          query: 'id status date timeWindow stops',
         });
         if (!route) {
           addValidationError('Routed orders must retain their delivery route');
           return;
         }
 
-        const expectedStatus = route.status === 'planning'
-          ? 'packed'
-          : route.status === 'in_progress'
-            ? 'out_for_delivery'
-            : 'delivered';
+        const stop = (Array.isArray(route.stops) ? route.stops : []).find((entry: any) => entry.orderId === current.id);
+        const expectedStatus = stop?.status === 'delivered' ? 'delivered'
+          : stop?.status === 'returned' ? 'returned'
+          : stop?.status === 'failed' ? 'delivery_failed'
+          : stop?.status === 'refused' ? 'delivery_refused'
+          : route.status === 'planning' ? 'packed' : 'out_for_delivery';
         const nextStatus = resolvedData.status ?? current.status;
         if (nextStatus !== expectedStatus) {
           addValidationError(`Routed order status must remain ${expectedStatus}`);
@@ -89,7 +90,11 @@ export const Order = list({
         if (resolvedData.metadata !== undefined) {
           const previousMetadata = current.metadata || {};
           const nextMetadata = (resolvedData.metadata || {}) as Record<string, unknown>;
-          if (nextMetadata.deliveryRouteId !== current.deliveryRouteId) {
+          const recordedReturn = stop?.status === 'returned' && nextStatus === 'returned'
+            && resolvedData.deliveryRoute?.disconnect === true
+            && (nextMetadata.deliveryOutcome as any)?.routeId === current.deliveryRouteId
+            && (nextMetadata.deliveryOutcome as any)?.custody === 'store';
+          if (nextMetadata.deliveryRouteId !== current.deliveryRouteId && !recordedReturn) {
             addValidationError('Routed order metadata must retain its delivery route');
           }
           for (const key of ['routedAt', 'dispatchedAt', 'deliveredAt']) {
@@ -132,6 +137,9 @@ export const Order = list({
         { label: "Packed", value: "packed" },
         { label: "Out for Delivery", value: "out_for_delivery" },
         { label: "Delivered", value: "delivered" },
+        { label: "Delivery failed", value: "delivery_failed" },
+        { label: "Delivery refused", value: "delivery_refused" },
+        { label: "Returned to store", value: "returned" },
         { label: "Cancelled", value: "cancelled" },
       ],
       defaultValue: "pending",

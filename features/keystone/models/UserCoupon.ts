@@ -30,6 +30,11 @@ export const UserCoupon = list({
     },
   },
   fields: {
+    usedByOrder: relationship({
+      ref: 'Order',
+      access: { create: () => false, update: () => false },
+      ui: { itemView: { fieldMode: 'read' } },
+    }),
     user: relationship({
       access: { create: () => false, update: () => false },
       db: { extendPrismaSchema: requiredRelationshipPrisma },

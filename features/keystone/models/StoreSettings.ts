@@ -1,7 +1,8 @@
+import { normalizeDeliveryPolicy } from '../lib/deliveryPolicy';
 import { list } from '@keystone-6/core';
 import { checkbox, integer, json, relationship, text } from '@keystone-6/core/fields';
 import { permissions } from '../access';
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 import { assertValidRollingFulfillmentPolicy } from '../lib/rollingFulfillment';
 import { assertValidTimeZone } from '../lib/storeTime';
 import { requiredUniqueRelationshipPrisma } from './relationshipConfig';
@@ -25,6 +26,10 @@ export const StoreSettings = list({
   },
   hooks: {
     validateInput: async ({ resolvedData, addValidationError }) => {
+      if (resolvedData.deliveryPolicy !== undefined) {
+        try { normalizeDeliveryPolicy(resolvedData.deliveryPolicy); }
+        catch (error) { addValidationError(error instanceof Error ? error.message : 'Invalid delivery policy'); }
+      }
       if (resolvedData.timezone !== undefined) {
         try { assertValidTimeZone(String(resolvedData.timezone)); }
         catch (error) { addValidationError(error instanceof Error ? error.message : 'Store timezone is invalid'); }
@@ -38,7 +43,7 @@ export const StoreSettings = list({
       const data = { ...resolvedData };
       if ('brandHue' in data) data.brandHue = normalizeStorefrontBrandHue(data.brandHue);
       if (operation !== 'create') return data;
-      const storeId = context.session?.data.store?.id;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
       if (!storeId) throw new Error('An active store is required');
       return { ...data, store: { connect: { id: storeId } } };
     },
@@ -91,6 +96,7 @@ export const StoreSettings = list({
     locale: text({ defaultValue: 'en-US' }),
     timezone: text({ defaultValue: 'America/Los_Angeles' }),
     countryCode: text({ defaultValue: 'US' }),
+    deliveryPolicy: json({ defaultValue: { version: 1, postalPrefixes: [], pickupMinimumCents: 0, deliveryMinimumCents: 0, deliveryFeeCents: 0, feeTaxRateBasisPoints: 0 }, access: { create: () => false, update: () => false } }),
     hours: json({
       defaultValue: {
         monday: '8:00 AM - 8:00 PM',

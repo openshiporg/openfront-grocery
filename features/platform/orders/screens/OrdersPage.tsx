@@ -18,6 +18,8 @@ import { TaskButton } from '@/features/platform/components/TaskButton';
 import { platformProjections, type GroceryPlatformOrder } from '@/features/platform/lib/platformProjections';
 import { advanceOrderTask, reconcileCheckoutTask } from '@/features/platform/lib/taskActions';
 import { OrderAfterSalesActions } from '@/features/platform/orders/components/OrderAfterSalesActions';
+import { orderFinancialDisplay } from '@/features/platform/orders/lib/orderFinancials';
+import { orderPageHref } from '@/features/platform/orders/lib/orderPagination';
 
 function formatDate(value?: string | null) {
   if (!value) return '—';
@@ -48,7 +50,7 @@ export async function OrdersPage({ searchParams }: { searchParams?: Promise<Plat
     loadError = error instanceof Error ? error.message : 'Unable to load orders.';
   }
   const storeCurrencyCode = data?.currencyCode || 'USD';
-  if (data && page > data.totalPages) redirect(`/dashboard/platform/orders?page=${data.totalPages}`);
+  if (data && page > data.totalPages) redirect(orderPageHref(data.totalPages, params));
 
   const orders = [...(data?.orders || [])]
     .filter((order) => !q || String(order.displayId).includes(q) || order.email.toLowerCase().includes(q) || order.lineItems.some((item) => item.id.toLowerCase().includes(q)))
@@ -77,12 +79,12 @@ export async function OrdersPage({ searchParams }: { searchParams?: Promise<Plat
         <PlatformMetricGrid metrics={[
           { label: 'Active orders', value: activeOrders, note: `${data?.pending || 0} waiting · ${data?.picking || 0} picking` },
           { label: 'Packed', value: data?.packed || 0, note: `${data?.outForDelivery || 0} out for delivery` },
-          { label: 'Net · 30 days', value: formatCents(sales?.thirtyDayNetCents, storeCurrencyCode), note: `${sales?.thirtyDayOrders || 0} orders in cohort` },
+          { label: 'Estimate less refunds · 30 days', value: formatCents(sales?.thirtyDayNetCents, storeCurrencyCode), note: 'Checkout estimates less refunds processed in period; not final picked sales' },
           { label: 'Needs payment attention', value: attentionCount, note: 'Failed payments or dead-letter refunds', tone: attentionCount ? 'critical' : 'default' },
         ]} />
 
         <PlatformTruthNotice title="After-sales boundary">
-          Refunds operate against payment evidence. Cancellation is whole-order only and requires settled money to be fully refunded first. Item-level returns and line-level tax or coupon allocation are not implemented.
+          Refunds operate against payment evidence. Use Payments for item-level refunds with allocated tax and discounts, or to void an unused authorization. Whole-order cancellation requires money and returned-stock custody to be resolved first.
         </PlatformTruthNotice>
 
         <PlatformToolbar
@@ -110,6 +112,7 @@ export async function OrdersPage({ searchParams }: { searchParams?: Promise<Plat
               <div className="divide-y">
                 {orders.map((order) => {
                   const orderMeta = metadata(order);
+                  const financial = orderFinancialDisplay(order);
                   const fulfillmentMethod = orderMeta.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery';
                   const paymentTotal = order.payments.reduce((sum, payment) => sum + payment.amountCents, 0);
                   const flaggedLines = order.lineItems.filter((item) => {
@@ -144,17 +147,18 @@ export async function OrdersPage({ searchParams }: { searchParams?: Promise<Plat
                             <div><p className="text-xs text-muted-foreground">Preference</p><p className="mt-1 font-medium">{humanize(order.substitutionPreference)}</p></div>
                           </div>
                           <div>
-                            <h3 className="text-sm font-semibold">Grocery lines</h3>
+                            <h3 className="text-sm font-semibold">Requested grocery lines</h3>
                             <div className="mt-2 overflow-x-auto rounded-lg border">
-                              <table className="w-full min-w-[38rem] text-left text-sm">
-                                <thead className="bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Product snapshot</th><th className="px-3 py-2 font-medium">SKU</th><th className="px-3 py-2 text-right font-medium">Qty</th><th className="px-3 py-2 text-right font-medium">Unit</th><th className="px-3 py-2 font-medium">Substitution</th></tr></thead>
-                                <tbody className="divide-y">{order.lineItems.map((item) => { const itemMeta = (item.metadata || {}) as Record<string, unknown>; return <tr key={item.id}><td className="px-3 py-2 font-medium">{item.title || `Line …${item.id.slice(-8)}`}</td><td className="px-3 py-2 font-mono text-xs text-muted-foreground">{item.sku || '—'}</td><td className="px-3 py-2 text-right tabular-nums">{item.quantity}</td><td className="px-3 py-2 text-right tabular-nums">{formatCents(item.unitPriceCents, order.currencyCode)}</td><td className="px-3 py-2 capitalize text-muted-foreground">{humanize(String(itemMeta.substitutionPreference || 'none'))}</td></tr>; })}</tbody>
+                              <table className="w-full min-w-[54rem] text-left text-sm">
+                                <thead className="bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Requested product</th><th className="px-3 py-2 font-medium">SKU</th><th className="px-3 py-2 text-right font-medium">Requested qty</th><th className="px-3 py-2 text-right font-medium">Estimate rate</th><th className="px-3 py-2 font-medium">Replacement preference</th><th className="px-3 py-2 font-medium">Picked actual</th></tr></thead>
+                                <tbody className="divide-y">{order.lineItems.map((item) => { const itemMeta = (item.metadata || {}) as Record<string, unknown>; const actual = item.fulfillment; return <tr key={item.id}><td className="px-3 py-2 font-medium">{item.title || `Line …${item.id.slice(-8)}`}</td><td className="px-3 py-2 font-mono text-xs text-muted-foreground">{item.sku || '—'}</td><td className="px-3 py-2 text-right tabular-nums">{item.quantity}</td><td className="px-3 py-2 text-right tabular-nums">{formatCents(item.unitPriceCents, order.currencyCode)}</td><td className="px-3 py-2 capitalize text-muted-foreground">{humanize(String(itemMeta.substitutionPreference || 'none'))}</td><td className="px-3 py-2 text-xs">{actual ? <>{humanize(actual.resolution)} · {actual.productTitle} · {actual.quantityMilli / 1000} {actual.unitOfMeasure} · {formatCents(actual.subtotalCents, order.currencyCode)} before tax/discount</> : 'Not recorded'}</td></tr>; })}</tbody>
                               </table>
                             </div>
                           </div>
                           <div className="rounded-lg border bg-background p-3">
-                            <h3 className="text-sm font-semibold">Order totals</h3>
-                            <dl className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 text-sm sm:grid-cols-5"><div><dt className="text-xs text-muted-foreground">Subtotal</dt><dd className="font-medium tabular-nums">{formatCents(order.subtotalCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Discount</dt><dd className="font-medium tabular-nums">−{formatCents(order.discountCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Tax</dt><dd className="font-medium tabular-nums">{formatCents(order.taxCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Delivery fee</dt><dd className="font-medium tabular-nums">{formatCents(order.deliveryFeeCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Total</dt><dd className="font-semibold tabular-nums">{formatCents(order.totalCents, order.currencyCode)}</dd></div></dl>
+                            <h3 className="text-sm font-semibold">{financial.title}</h3>
+                            {financial.stage !== 'estimate' ? <p className="mt-1 text-xs text-muted-foreground">Checkout estimate: {formatCents(financial.checkoutEstimateCents, order.currencyCode)}. {financial.stage === 'finalized' ? 'This finalized picked sale total is the settled amount.' : financial.stage === 'authorization' ? 'Customer authorization is required before this picked sale can be settled.' : 'Picked actuals are recorded; payment reconciliation must finish before packing.'}</p> : null}
+                            <dl className="mt-3 grid grid-cols-2 gap-x-5 gap-y-2 text-sm sm:grid-cols-5"><div><dt className="text-xs text-muted-foreground">Subtotal</dt><dd className="font-medium tabular-nums">{formatCents(financial.subtotalCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Discount</dt><dd className="font-medium tabular-nums">−{formatCents(financial.discountCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Tax</dt><dd className="font-medium tabular-nums">{formatCents(financial.taxCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Delivery fee</dt><dd className="font-medium tabular-nums">{formatCents(financial.deliveryFeeCents, order.currencyCode)}</dd></div><div><dt className="text-xs text-muted-foreground">Total</dt><dd className="font-semibold tabular-nums">{formatCents(financial.totalCents, order.currencyCode)}</dd></div></dl>
                           </div>
                           <div className="flex flex-wrap gap-2">
                             {order.status === 'pending' ? <TaskButton variant="primary" label="Start picking" onRun={advanceOrderTask.bind(null, order.id, 'picking')} /> : null}
@@ -173,9 +177,9 @@ export async function OrdersPage({ searchParams }: { searchParams?: Promise<Plat
             )}
             {(data?.totalPages || 1) > 1 ? (
               <nav aria-label="Order pages" className="flex flex-col gap-3 border-t px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between md:px-5">
-                <Link aria-disabled={page <= 1} className={page <= 1 ? 'pointer-events-none opacity-40' : 'font-medium'} href={page <= 2 ? '/dashboard/platform/orders' : `/dashboard/platform/orders?page=${page - 1}`}>Previous page</Link>
+                <Link aria-disabled={page <= 1} className={page <= 1 ? 'pointer-events-none opacity-40' : 'font-medium'} href={orderPageHref(Math.max(1, page - 1), params)}>Previous page</Link>
                 <span className="text-center text-muted-foreground">Page {data?.page || page} of {data?.totalPages || 1} · {data?.totalOrders || 0} total</span>
-                <Link aria-disabled={page >= (data?.totalPages || 1)} className={page >= (data?.totalPages || 1) ? 'pointer-events-none opacity-40' : 'font-medium'} href={`/dashboard/platform/orders?page=${page + 1}`}>Next page</Link>
+                <Link aria-disabled={page >= (data?.totalPages || 1)} className={page >= (data?.totalPages || 1) ? 'pointer-events-none opacity-40' : 'font-medium'} href={orderPageHref(page + 1, params)}>Next page</Link>
               </nav>
             ) : null}
           </PlatformSurface>

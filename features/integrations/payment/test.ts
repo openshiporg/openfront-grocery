@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 const TEST_PROVIDER_SECRET_ENV = 'GROCERY_PAYMENT_TEST_SECRET';
+const paymentStates = new Map<string, any>();
+const refundStates = new Map<string, any>();
 
 function secret() {
   const value = process.env[TEST_PROVIDER_SECRET_ENV];
@@ -12,15 +14,22 @@ function signature(rawBody: string) {
   return createHmac('sha256', secret()).update(rawBody).digest('hex');
 }
 
-export async function createPaymentFunction({ amount, currency, idempotencyKey }: { amount: number; currency: string; idempotencyKey?: string }) {
+export async function createPaymentFunction({ amount, currency, idempotencyKey, captureMethod = 'automatic' }: { amount: number; currency: string; idempotencyKey?: string; captureMethod?: 'automatic' | 'manual' }) {
   secret();
   const paymentIntentId = `test_pi_${Buffer.from(idempotencyKey || `${currency}:${amount}:${Date.now()}`).toString('base64url')}`;
+  if (!paymentStates.has(paymentIntentId)) paymentStates.set(paymentIntentId, { status: captureMethod === 'manual' ? 'requires_capture' : 'succeeded', amount, amountCents: amount, currency: currency.toLowerCase(), authorizedAmountCents: amount, capturedAmountCents: captureMethod === 'manual' ? 0 : amount, capturableAmountCents: captureMethod === 'manual' ? amount : 0, captureMethod });
   return { clientSecret: `${paymentIntentId}_secret`, paymentIntentId, amount, currency: currency.toLowerCase() };
 }
 
-export async function capturePaymentFunction({ paymentId, amount }: { paymentId: string; amount?: number }) {
+export async function capturePaymentFunction({ paymentId, amount, amountCents }: { paymentId: string; amount?: number; amountCents?: number; idempotencyKey: string }) {
   secret();
-  return { status: 'succeeded', amount: amount ?? 0, data: { id: paymentId, status: 'succeeded' } };
+  const current = await getPaymentStatusFunction({ paymentId });
+  const captured = amountCents ?? amount ?? current.authorizedAmountCents;
+  if (!Number.isInteger(captured) || captured < 1 || captured > current.authorizedAmountCents) throw new Error('Capture exceeds authorized amount');
+  if (current.status === 'canceled' || (current.status === 'succeeded' && current.capturedAmountCents !== captured)) throw new Error('Payment cannot be recaptured');
+  const result = { ...current, status: 'succeeded', amount: captured, amountCents: captured, capturedAmountCents: captured, capturableAmountCents: 0, data: { id: paymentId, status: 'succeeded' } };
+  paymentStates.set(paymentId, result);
+  return result;
 }
 
 export async function refundPaymentFunction({ paymentId, amount, idempotencyKey }: { paymentId: string; amount?: number; idempotencyKey?: string }) {
@@ -28,15 +37,23 @@ export async function refundPaymentFunction({ paymentId, amount, idempotencyKey 
   if (process.env.GROCERY_TEST_PROVIDER_TIMEOUT === 'true') await new Promise((resolve) => setTimeout(resolve, 250));
   if (!paymentId) throw new Error('Test payment id is required');
   const refundedAmount = amount ?? Number((await getPaymentStatusFunction({ paymentId })).amount || 0);
-  return {
+  const refundId = `test_re_${Buffer.from(idempotencyKey || paymentId).toString('base64url')}`;
+  if (refundStates.has(refundId)) return refundStates.get(refundId);
+  const payment = await getPaymentStatusFunction({ paymentId });
+  const result = {
     status: 'succeeded',
     amount: refundedAmount,
-    data: { id: `test_re_${Buffer.from(idempotencyKey || paymentId).toString('base64url')}`, paymentId, amount: refundedAmount, fullRefund: amount === undefined, idempotencyKey },
+    currency: payment.currency,
+    paymentId,
+    data: { id: refundId, payment_intent: paymentId, amount: refundedAmount, currency: payment.currency, fullRefund: amount === undefined, metadata: { groceryRefundKey: idempotencyKey } },
   };
+  refundStates.set(refundId, result);
+  return result;
 }
 
 export async function getPaymentStatusFunction({ paymentId }: { paymentId: string }) {
   secret();
+  if (paymentStates.has(paymentId)) return paymentStates.get(paymentId);
   let amount = 0;
   let currency = 'usd';
   if (paymentId.startsWith('test_pi_')) {
@@ -46,7 +63,23 @@ export async function getPaymentStatusFunction({ paymentId }: { paymentId: strin
       if (last && /^\d+$/.test(last)) amount = Number(last);
     } catch { /* malformed local IDs remain amount-mismatched and fail closed */ }
   }
-  return { status: 'succeeded', amount, currency, data: { id: paymentId, status: 'succeeded', amount, currency } };
+  return { status: 'succeeded', amount, amountCents: amount, currency, authorizedAmountCents: amount, capturedAmountCents: amount, capturableAmountCents: 0, captureMethod: 'automatic', data: { id: paymentId, status: 'succeeded', amount, currency } };
+}
+
+export async function getRefundStatusFunction({ refundId }: { refundId: string }) {
+  secret();
+  const refund = refundStates.get(refundId);
+  if (!refund) throw new Error('Test refund not found');
+  return refund;
+}
+
+export async function cancelPaymentFunction({ paymentId }: { paymentId: string; idempotencyKey?: string }) {
+  secret();
+  const current = await getPaymentStatusFunction({ paymentId });
+  if (current.status === 'succeeded') throw new Error('Captured payment requires refund');
+  const result = { ...current, status: 'canceled', capturableAmountCents: 0 };
+  paymentStates.set(paymentId, result);
+  return result;
 }
 
 export async function generatePaymentLinkFunction({ paymentId }: { paymentId: string }) {

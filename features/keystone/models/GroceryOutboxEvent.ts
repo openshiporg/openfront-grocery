@@ -13,6 +13,7 @@ const DELIVERY_FIELDS = new Set([
   'claimedAt',
   'deliveredAt',
   'lastError',
+  'nextAttemptAt',
 ]);
 
 export const GroceryOutboxEvent = list({
@@ -60,6 +61,7 @@ export const GroceryOutboxEvent = list({
     claimToken: text(),
     claimedAt: timestamp(),
     deliveredAt: timestamp(),
+    nextAttemptAt: timestamp(),
     lastError: text({ ui: { displayMode: 'textarea' } }),
     ...trackingFields,
   },

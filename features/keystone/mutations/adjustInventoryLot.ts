@@ -1,9 +1,11 @@
+import { unconvertedLotCapacityMilli } from '../lib/inventoryConversion';
 import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
+import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 
-const REASONS = new Set(['cycle_count', 'damage', 'spoilage', 'correction']);
+const REASONS = new Set(['damage', 'spoilage', 'correction']);
 
 type Args = {
   inventoryLotId: string;
@@ -15,8 +17,8 @@ type Args = {
 
 export async function adjustInventoryLot(_root: unknown, args: Args, context: Context) {
   const { storeId } = await requireFreshCapability(context, 'canManageInventory');
-  if (!Number.isInteger(args.targetQuantityRemaining) || args.targetQuantityRemaining < 0) {
-    throw new Error('Target remaining quantity must be a non-negative integer');
+  if (quantityMilli(args.targetQuantityRemaining) < 0) {
+    throw new Error('Target remaining quantity must be a non-negative quantity with at most three decimal places');
   }
   if (!REASONS.has(args.reason)) throw new Error('Unsupported inventory adjustment reason');
   if (args.idempotencyKey.trim().length < 12) throw new Error('A valid inventory adjustment idempotency key is required');
@@ -31,6 +33,7 @@ export async function adjustInventoryLot(_root: unknown, args: Args, context: Co
     const existing = await tx.inventoryAdjustment.findUnique({ where: { idempotencyKey } });
     if (existing && existing.storeId !== storeId) throw new Error('Inventory adjustment idempotency key belongs to another store');
     if (existing) {
+      if (existing.inventoryLotId !== args.inventoryLotId || quantityMilli(existing.quantityAfter) !== quantityMilli(args.targetQuantityRemaining) || existing.reason !== args.reason || (existing.note || '') !== (args.note?.trim() || '')) throw new Error('Inventory adjustment replay conflicts with original inputs');
       return {
         success: true,
         adjustmentId: existing.id,
@@ -43,6 +46,9 @@ export async function adjustInventoryLot(_root: unknown, args: Args, context: Co
       };
     }
 
+    const identity = await tx.inventoryLot.findUnique({ where: { id: args.inventoryLotId }, select: { productId: true, storeId: true } });
+    if (!identity || identity.storeId !== storeId || !identity.productId) throw new Error('Inventory lot not found in active store');
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', identity.productId);
     await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', args.inventoryLotId);
     const lot = await tx.inventoryLot.findUnique({
       where: { id: args.inventoryLotId },
@@ -65,34 +71,35 @@ export async function adjustInventoryLot(_root: unknown, args: Args, context: Co
       select: { id: true, stockQuantity: true },
     });
     if (!product) throw new Error('Inventory product not found');
-    if (args.targetQuantityRemaining > lot.quantity) {
+    if (quantityMilli(args.targetQuantityRemaining) > await unconvertedLotCapacityMilli(tx, storeId!, lot)) {
       throw new Error('Target remaining quantity cannot exceed the received lot quantity');
     }
 
-    const quantityBefore = lot.quantityRemaining;
-    const quantityDelta = args.targetQuantityRemaining - quantityBefore;
+    const quantityBefore = Number(lot.quantityRemaining);
+    const quantityDelta = (quantityMilli(args.targetQuantityRemaining) - quantityMilli(quantityBefore)) / 1000;
     const productStockBefore = Number(product.stockQuantity || 0);
-    const productStockAfter = productStockBefore + quantityDelta;
+    const productStockAfter = (quantityMilli(productStockBefore) + quantityMilli(quantityDelta)) / 1000;
     if (productStockAfter < 0) throw new Error('Inventory adjustment would make product stock negative');
 
-    const sudoContext = transactionContext.sudo();
+    // Decimal fields are source-owned; generated Context types await the reviewed migration.
+    const sudoContext: any = transactionContext.sudo();
     await sudoContext.db.InventoryLot.updateOne({
       where: { id: lot.id },
-      data: { quantityRemaining: args.targetQuantityRemaining },
+      data: { quantityRemaining: String(args.targetQuantityRemaining) },
     });
     await sudoContext.db.Product.updateOne({
       where: { id: product.id },
-      data: { stockQuantity: productStockAfter, inStock: productStockAfter > 0 },
+      data: { stockQuantity: String(productStockAfter), inStock: productStockAfter > 0 },
     });
     const adjustment = await sudoContext.db.InventoryAdjustment.createOne({
       data: {
         idempotencyKey,
         reason: args.reason as any,
-        quantityBefore,
-        quantityAfter: args.targetQuantityRemaining,
-        quantityDelta,
-        productStockBefore,
-        productStockAfter,
+        quantityBefore: String(quantityBefore),
+        quantityAfter: String(args.targetQuantityRemaining),
+        quantityDelta: String(quantityDelta),
+        productStockBefore: String(productStockBefore),
+        productStockAfter: String(productStockAfter),
         note: args.note?.trim() || undefined,
         store: { connect: { id: storeId } },
         product: { connect: { id: product.id } },
@@ -102,6 +109,7 @@ export async function adjustInventoryLot(_root: unknown, args: Args, context: Co
           : undefined,
       },
     });
+    await appendInventoryMovement(tx, { storeId: storeId!, productId: product.id, inventoryLotId: lot.id, sourceType: args.reason === 'spoilage' || args.reason === 'damage' ? 'waste' : 'manual_adjustment', sourceId: adjustment.id, idempotencyKey: `adjustment:${idempotencyKey}`, actorId: context.session?.itemId, reason: args.note?.trim() || args.reason, quantityBefore, quantityAfter: args.targetQuantityRemaining, productStockBefore, productStockAfter });
     return {
       success: true,
       adjustmentId: adjustment.id,
@@ -112,5 +120,5 @@ export async function adjustInventoryLot(_root: unknown, args: Args, context: Co
       productStock: productStockAfter,
       reused: false,
     };
-  }, { isolationLevel: 'ReadCommitted' as any }));
+  }, { isolationLevel: 'Serializable' as any }));
 }

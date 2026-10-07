@@ -30,3 +30,12 @@ export async function updateStorefrontBrandHueAction(formData: FormData) {
   revalidatePath('/', 'layout');
   revalidatePath('/manifest.webmanifest');
 }
+
+export async function updateDeliveryPolicyAction(formData: FormData) {
+  const policy={version:1,postalPrefixes:String(formData.get('postalPrefixes') || '').split(',').map(s=>s.trim()).filter(Boolean),
+    ...Object.fromEntries(['pickupMinimumCents','deliveryMinimumCents','deliveryFeeCents','feeTaxRateBasisPoints'].map(key=>[key,Number(formData.get(key) || 0)]))};
+  const result=await keystoneClient('mutation Policy($policy:JSON!){updateGroceryDeliveryPolicy(policy:$policy)}',{policy});
+  if (!result.success) throw new Error(result.error);
+  revalidatePath('/dashboard/platform/settings');
+  revalidatePath('/checkout');
+}

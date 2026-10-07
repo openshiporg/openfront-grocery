@@ -1,6 +1,6 @@
 import type { Session } from '../access';
 
-type AccessArgs = { session?: Session };
+type AccessArgs = { session?: Session; context?: { prisma?: any } };
 
 type Filter = Record<string, unknown> | false;
 
@@ -13,8 +13,8 @@ export function currentStoreId(session?: Session) {
 }
 
 /** Store filter for Lists with a direct `store` relationship. */
-export function currentStoreScopedFilter({ session }: AccessArgs): Filter {
-  const storeId = sessionStoreId(session);
+export async function currentStoreScopedFilter(args: AccessArgs): Promise<Filter> {
+  const storeId = await currentMembershipStoreId(args);
   return storeId ? { id: { equals: storeId } } : false;
 }
 
@@ -23,22 +23,41 @@ export function publicStoreScopedFilter(): Filter {
   return { store: { id: { equals: storeId } } };
 }
 
-export function storeScopedFilter({ session }: AccessArgs): Filter {
-  const storeId = sessionStoreId(session);
-  return storeId ? { store: { id: { equals: storeId } } } : false;
+export function storeScopedFilter(args: AccessArgs): Promise<Filter> {
+  return currentMembershipStoreScopedFilter(args);
 }
 
 /** Store filter for Lists whose owner is another store-owned relation. */
 export function relatedStoreScopedFilter(relation: string) {
-  return ({ session }: AccessArgs): Filter => {
-    const storeId = sessionStoreId(session);
+  return currentMembershipRelatedStoreScopedFilter(relation);
+}
+
+export async function currentMembershipStoreId({ session, context }: AccessArgs): Promise<string | null> {
+  if (!session?.itemId || !context?.prisma?.user?.findUnique) return null;
+  const user = await context.prisma.user.findUnique({
+    where: { id: session.itemId },
+    select: { privacyErasedAt: true, store: { select: { id: true, isActive: true } } },
+  });
+  return !user?.privacyErasedAt && user?.store?.isActive && user.store.id ? user.store.id : null;
+}
+
+// Store list scope is authorization data: never use a potentially stale Store
+// snapshot from a stateless session when the current User→Store link is available.
+export async function currentMembershipStoreScopedFilter(args: AccessArgs): Promise<Filter> {
+  const storeId = await currentMembershipStoreId(args);
+  return storeId ? { store: { id: { equals: storeId } } } : false;
+}
+
+export function currentMembershipRelatedStoreScopedFilter(relation: string) {
+  return async (args: AccessArgs): Promise<Filter> => {
+    const storeId = await currentMembershipStoreId(args);
     return storeId ? { [relation]: { store: { id: { equals: storeId } } } } : false;
   };
 }
 
 export function nestedRelatedStoreScopedFilter(...relations: string[]) {
-  return ({ session }: AccessArgs): Filter => {
-    const storeId = sessionStoreId(session);
+  return async (args: AccessArgs): Promise<Filter> => {
+    const storeId = await currentMembershipStoreId(args);
     if (!storeId) return false;
     return relations.reduceRight<Record<string, unknown>>(
       (value, relation) => ({ [relation]: value }),
@@ -58,8 +77,8 @@ export function oneOfRelatedStoreScopedFilter(...relations: string[]) {
 }
 
 export function ownerStoreScopedFilter(ownerField = 'user') {
-  return ({ session }: AccessArgs): Filter => {
-    const storeId = sessionStoreId(session);
+  return async (args: AccessArgs): Promise<Filter> => {
+    const storeId = await currentMembershipStoreId(args);
     return storeId ? { [ownerField]: { store: { id: { equals: storeId } } } } : false;
   };
 }

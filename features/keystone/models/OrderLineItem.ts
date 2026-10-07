@@ -21,7 +21,7 @@ export const OrderLineItem = list({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = relatedStoreScopedFilter('order')({ session });
+        const store = await relatedStoreScopedFilter('order')({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { order: { user: { id: { equals: session.itemId } } } }] };
@@ -37,6 +37,7 @@ export const OrderLineItem = list({
     },
   },
   fields: {
+    fulfillment: relationship({ ref: "OrderLineFulfillment.lineItem", access: { create: () => false, update: () => false } }),
     title: text({
       access: { update: () => false },
       validation: { isRequired: true },

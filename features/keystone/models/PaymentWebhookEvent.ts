@@ -1,10 +1,10 @@
 import { list } from '@keystone-6/core';
-import { integer, relationship, select, text, timestamp } from '@keystone-6/core/fields';
+import { json, integer, relationship, select, text, timestamp } from '@keystone-6/core/fields';
 
 import { permissions } from '../access';
 import { trackingFields } from './trackingFields';
 import { requiredRelationshipPrisma } from './relationshipConfig';
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreScopedFilter } from '../lib/storeAccess';
 
 export const PaymentWebhookEvent = list({
   access: {
@@ -14,7 +14,7 @@ export const PaymentWebhookEvent = list({
       update: () => false,
       delete: () => false,
     },
-    filter: { query: storeScopedFilter, update: storeScopedFilter, delete: storeScopedFilter },
+    filter: { query: currentMembershipStoreScopedFilter, update: currentMembershipStoreScopedFilter, delete: currentMembershipStoreScopedFilter },
   },
   ui: {
     isHidden: true,
@@ -37,6 +37,14 @@ export const PaymentWebhookEvent = list({
     eventType: text({
       validation: { isRequired: true },
     }),
+    // Full verified provider payload is internal replay evidence, not a GraphQL field.
+    verifiedPayload: json({ defaultValue: {}, access: { read: () => false, create: () => false, update: () => false } }),
+    processingAttempts: integer({ defaultValue: 0, validation: { min: 0 } }),
+    nextAttemptAt: timestamp({ db: { isNullable: true } }),
+    deadLetterAt: timestamp({ db: { isNullable: true } }),
+    // Diagnostic and replay history are exposed only via the sanitized recovery projection.
+    lastProcessingError: text({ access: { read: () => false } }),
+    replayAudit: json({ defaultValue: [], access: { read: () => false } }),
     payloadHash: text({
       validation: { isRequired: true },
     }),

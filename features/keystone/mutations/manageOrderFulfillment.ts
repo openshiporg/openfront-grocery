@@ -1,7 +1,10 @@
+import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
+import { assertOrderInventoryEligible } from '../lib/inventorySafety';
 import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
 import { withSerializableRetry } from '../utils/serializableTransaction';
+import { getFulfillmentActualLines } from '../lib/fulfillmentActuals';
 
 type FulfillmentTarget = 'picking' | 'packed' | 'ready_for_pickup';
 
@@ -71,7 +74,12 @@ export async function advanceOrderFulfillment(
       throw new Error(`Cannot move fulfillment from ${order.status} to ${target}`);
     }
 
+    if (target === 'packed' || target === 'ready_for_pickup') await assertOrderInventoryEligible(transactionContext.prisma, orderId, storeId as string);
     if (target === 'packed') {
+      await getFulfillmentActualLines(transactionContext, orderId);
+      if ((metadata.finalSale as any)?.status !== 'finalized') {
+        throw new Error('Finalize the actual sale before packing this order');
+      }
       const unresolved = (order.lineItems || []).some((lineItem: any) => {
         const linePreference = lineItem.metadata?.substitutionPreference;
         const requiresApproval = linePreference === 'contact' || order.substitutionPreference === 'call_me';
@@ -87,13 +95,13 @@ export async function advanceOrderFulfillment(
     const settledPayments = await sudoContext.query.Payment.findMany({
       where: {
         order: { id: { equals: orderId } },
-        status: { in: ['succeeded', 'partially_refunded'] },
+        status: { in: target === 'picking' ? ['authorized', 'succeeded', 'partially_refunded'] : ['succeeded', 'partially_refunded'] },
       },
       take: 1,
       query: 'id',
     });
     if (!settledPayments.length) {
-      throw new Error('Order fulfillment requires a succeeded payment');
+      throw new Error('Order fulfillment requires an authorized payment for picking and a settled payment for packing');
     }
 
     const now = new Date().toISOString();
@@ -105,6 +113,7 @@ export async function advanceOrderFulfillment(
         ? { readyForPickup: true, pickupReadyAt: now }
         : {}),
     };
+    if(target === 'ready_for_pickup') await enqueueGroceryOutboxEvent(transactionContext.prisma,{storeId:storeId!,eventKey:`order.ready:${orderId}`,eventType:'order.ready',aggregateType:'Order',aggregateId:orderId,occurredAt:now,payload:{orderId}});
     const nextStatus = target === 'ready_for_pickup' ? 'packed' : target;
     await sudoContext.db.Order.updateOne({
       where: { id: orderId },

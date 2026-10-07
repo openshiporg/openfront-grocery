@@ -9,7 +9,7 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 
 export const DeliverySlot = list({
   access: {
@@ -27,8 +27,10 @@ export const DeliverySlot = list({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) return resolvedData;
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      if (!context.session?.itemId) return resolvedData;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
     validate: { delete: async ({ item, addValidationError }) => { if (Number(item.currentBookings || 0) > 0) addValidationError('Booked delivery slots cannot be deleted'); } },
   },
@@ -47,6 +49,7 @@ export const DeliverySlot = list({
     orders: relationship({ ref: 'Order.deliverySlot', many: true, access: { update: () => false } }),
     // Date of the delivery slot
     date: timestamp({
+      access: { update: () => false },
       validation: { isRequired: true },
       isIndexed: true,
       label: "Date",
@@ -56,6 +59,7 @@ export const DeliverySlot = list({
     }),
     // Start time of the delivery window
     startTime: text({
+      access: { update: () => false },
       validation: { isRequired: true },
       label: "Start Time",
       ui: {
@@ -64,6 +68,7 @@ export const DeliverySlot = list({
     }),
     // End time of the delivery window
     endTime: text({
+      access: { update: () => false },
       validation: { isRequired: true },
       label: "End Time",
       ui: {

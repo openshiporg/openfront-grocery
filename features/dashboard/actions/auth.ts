@@ -269,6 +269,13 @@ export async function getAuthenticatedUser() {
           role {
             canAccessDashboard
             canManageOnboarding
+            canManageProducts
+            canManageOrders
+            canManageInventory
+            canManageSuppliers
+            canManageDelivery
+            canManageUsers
+            canManagePayments
           }
         }
       }

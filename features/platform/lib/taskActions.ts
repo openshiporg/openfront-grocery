@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { parseInventoryAdjustmentForm, parseInventoryQuantityInput } from '@/features/platform/inventory/lib/inventoryQuantityInput';
 
 async function run(query: string, variables: Record<string, unknown>) {
   const response = await keystoneClient<any>(query, variables, { cache: 'no-store' });
@@ -18,8 +19,8 @@ export async function advanceOrderTask(orderId: string, target: string) {
   return run(`mutation($orderId:ID!,$target:String!){ advanceOrderFulfillment(orderId:$orderId,target:$target){ success orderId status stage reused message } }`, { orderId, target });
 }
 
-export async function cancelOrderTask(input: { orderId: string; reason: string; idempotencyKey: string }) {
-  return run(`mutation($orderId:ID!,$reason:String!,$idempotencyKey:String!){ cancelGroceryOrder(orderId:$orderId,reason:$reason,idempotencyKey:$idempotencyKey){ success orderId status reused } }`, input);
+export async function cancelOrderTask(input: { orderId: string; reason: string; idempotencyKey: string; disposition?: string; conditionNote?: string }) {
+  return run(`mutation($orderId:ID!,$reason:String!,$idempotencyKey:String!,$disposition:String,$conditionNote:String){ cancelGroceryOrder(orderId:$orderId,reason:$reason,idempotencyKey:$idempotencyKey,disposition:$disposition,conditionNote:$conditionNote){ success orderId status reused } }`, input);
 }
 
 export async function refundOrderPaymentTask(input: { paymentId: string; amountCents: number; reason: string; idempotencyKey: string }) {
@@ -27,16 +28,13 @@ export async function refundOrderPaymentTask(input: { paymentId: string; amountC
 }
 
 export async function adjustInventoryTask(inventoryLotId: string, targetQuantityRemaining: number, reason = 'correction', note?: string) {
-  return run(`mutation($inventoryLotId:ID!,$targetQuantityRemaining:Int!,$reason:String!,$note:String,$idempotencyKey:String!){ adjustInventoryLot(inventoryLotId:$inventoryLotId,targetQuantityRemaining:$targetQuantityRemaining,reason:$reason,note:$note,idempotencyKey:$idempotencyKey){ success inventoryLotId quantityRemaining productStock quantityDelta reused } }`, { inventoryLotId, targetQuantityRemaining, reason, note: note || null, idempotencyKey: `platform:${inventoryLotId}:${targetQuantityRemaining}:${reason}:${Date.now()}` });
+  const normalizedTarget = parseInventoryQuantityInput(targetQuantityRemaining);
+  return run(`mutation($inventoryLotId:ID!,$targetQuantityRemaining:Float!,$reason:String!,$note:String,$idempotencyKey:String!){ adjustInventoryLot(inventoryLotId:$inventoryLotId,targetQuantityRemaining:$targetQuantityRemaining,reason:$reason,note:$note,idempotencyKey:$idempotencyKey){ success inventoryLotId quantityRemaining productStock quantityDelta reused } }`, { inventoryLotId, targetQuantityRemaining: normalizedTarget, reason, note: note || null, idempotencyKey: `platform:${inventoryLotId}:${normalizedTarget}:${reason}:${Date.now()}` });
 }
 
 export async function adjustInventoryFormTask(formData: FormData) {
-  const inventoryLotId = String(formData.get('inventoryLotId') || '');
-  const targetQuantityRemaining = Number(formData.get('targetQuantityRemaining'));
-  const reason = String(formData.get('reason') || 'correction');
-  const note = String(formData.get('note') || '');
-  if (!inventoryLotId || !Number.isInteger(targetQuantityRemaining)) throw new Error('Lot and whole-unit target count are required');
-  await adjustInventoryTask(inventoryLotId, targetQuantityRemaining, reason, note);
+  const input = parseInventoryAdjustmentForm(formData);
+  await adjustInventoryTask(input.inventoryLotId, input.targetQuantityRemaining, input.reason, input.note);
 }
 
 export async function createPurchaseOrderTask(input: { supplierId: string; productId: string; quantity: number; unitCost: number; expectedDeliveryDate?: string }) {
@@ -53,7 +51,15 @@ export async function transitionPurchaseOrderTask(purchaseOrderId: string, statu
 }
 
 export async function receivePurchaseOrderTask(purchaseOrderId: string, receipts: Array<{ poItemId: string; targetQuantityReceived: number; lotNumber: string; expirationDate: string; location?: string }>) {
-  return run(`mutation($purchaseOrderId:ID!,$receipts:[PurchaseOrderReceiptInput!]!){ receivePurchaseOrder(purchaseOrderId:$purchaseOrderId,receipts:$receipts){ success purchaseOrderId status message } }`, { purchaseOrderId, receipts });
+  try {
+    const data = await run(`mutation($purchaseOrderId:ID!,$receipts:[PurchaseOrderReceiptInput!]!){ receivePurchaseOrder(purchaseOrderId:$purchaseOrderId,receipts:$receipts){ success purchaseOrderId status message } }`, { purchaseOrderId, receipts });
+    return { ok: true as const, data };
+  } catch {
+    return {
+      ok: false as const,
+      error: 'Receipt could not be recorded. Check that the lot number is unique, the expiry is in the future, and cumulative quantities do not exceed the purchase order.',
+    };
+  }
 }
 
 export async function updateSupplierTask(id: string, paymentTerms: string) {

@@ -1,3 +1,4 @@
+import { validateLoyaltyCoupon } from "../lib/loyaltyAccounting";
 import type { Context } from '.keystone/types';
 import { requireSessionStore } from '../lib/storeScope';
 
@@ -73,6 +74,8 @@ export async function clipCoupon(
   if (!coupon || coupon.store?.id !== store.id) {
     throw new Error('Coupon is not available in the active store');
   }
+
+  await validateLoyaltyCoupon(context.prisma, coupon.id, userId, store.id);
 
   // Check if coupon is active
   if (!coupon.isActive) {

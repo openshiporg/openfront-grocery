@@ -9,9 +9,9 @@ import { ChevronDown, PlusIcon, Database } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { PageContainer } from '../../components/PageContainer'
-import { getAdminMetaAction, getListCounts } from '../../actions'
+import { getAdminMetaAction, getAuthenticatedUser, getListCounts } from '../../actions'
 import { cn } from '@/lib/utils'
-import { platformNavGroups, platformStandaloneItems } from '@/features/platform/lib/navigation'
+import { getPlatformNavItemsForCapabilities, groceryPlatformNavGroups, type GroceryPlatformCapabilities } from '@/features/platform/lib/navigation'
 
 interface ListCardProps {
   list: any
@@ -152,7 +152,10 @@ function EmptyState() {
 }
 
 export async function HomePage() {
-  const adminMetaResponse = await getAdminMetaAction()
+  const [adminMetaResponse, authenticatedUserResponse] = await Promise.all([
+    getAdminMetaAction(),
+    getAuthenticatedUser(),
+  ])
 
   if (!adminMetaResponse.success) {
     console.error('Failed to fetch admin meta:', adminMetaResponse.error)
@@ -179,8 +182,15 @@ export async function HomePage() {
     }
   }
 
-  const standaloneItems = (platformStandaloneItems || []) as PlatformItem[]
-  const groupedSections = ((platformNavGroups || []) as PlatformGroup[]).filter((group) => group.items?.length > 0)
+  const role = authenticatedUserResponse.success
+    ? authenticatedUserResponse.data?.authenticatedItem?.role as GroceryPlatformCapabilities | undefined
+    : undefined
+  const visiblePlatformItems = getPlatformNavItemsForCapabilities(role)
+  const standaloneItems = visiblePlatformItems.filter((item) => item.group === 'standalone') as PlatformItem[]
+  const groupedSections = groceryPlatformNavGroups.map((group) => ({
+    ...group,
+    items: visiblePlatformItems.filter((item) => item.group === group.id),
+  })).filter((group) => group.items.length > 0) as PlatformGroup[]
   const hasPlatformPages = standaloneItems.length > 0 || groupedSections.length > 0
 
   const header = (

@@ -13,6 +13,13 @@ export interface GroceryDepartment {
 }
 
 export interface GroceryProduct {
+  pricingMethod?: string | null;
+  allergens?: string[];
+  nutrition?: Record<string, string | number>;
+  variantLabel?: string;
+  variantOf?: {id:string;handle:string;title:string};
+  packBaseUnitsMilli?: number;
+  informationSource?: string;
   id: string;
   name: string;
   handle: string;
@@ -72,9 +79,13 @@ export interface DeliveryWindow {
 }
 
 export interface GroceryOrder {
+  requestedItems?: GroceryOrderItem[];
+  receiptStage?: 'requested' | 'proposed' | 'final';
+  finalSale?: {status:string;totalCents:number};
+  deliveryOutcome?: {status:string;reason?:string;custody?:string};
   id: string;
   orderNumber: string;
-  status: 'pending' | 'confirmed' | 'processing' | 'picking' | 'ready_for_pickup' | 'out_for_delivery' | 'delivered' | 'cancelled';
+  status: 'pending' | 'confirmed' | 'processing' | 'picking' | 'ready_for_pickup' | 'out_for_delivery' | 'delivered' | 'cancelled' | 'delivery_failed' | 'delivery_refused' | 'returned';
   email?: string;
   items: GroceryOrderItem[];
   subtotal: number;
@@ -148,6 +159,9 @@ export interface DeliverySlot {
 }
 
 export interface GroceryOrderItem {
+  resolution?: string;
+  unitOfMeasure?: string;
+  subtotalCents?: number;
   id: string;
   title: string;
   variant?: { title: string };
@@ -195,6 +209,8 @@ export interface ShoppingList {
 }
 
 export interface ShoppingListItem {
+  productId?: string;
+  productHandle?: string;
   id: string;
   name: string;
   quantity: number;
@@ -210,7 +226,7 @@ export interface GroceryDeal {
   type: 'weekly' | 'coupon' | 'flash';
   discountCode?: string;
   discountValue: number;
-  discountType: 'percentage' | 'fixed';
+  discountType: 'percentage' | 'fixed' | 'bogo';
   description?: string;
   minimumPurchase?: number;
   expiresAt?: string;

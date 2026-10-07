@@ -35,13 +35,13 @@ export async function requireFreshCapability(context: { session?: Session; sudo(
   if (!session?.itemId) throw new Error('Authentication required');
   const sudoContext = context.sudo();
   if (!context.prisma?.$queryRaw || !sudoContext?.query?.User?.findOne) {
-    return { user: session.data, storeId: session.data.store?.id };
+    throw new Error('Current capability context is unavailable');
   }
   const user = await sudoContext.query.User.findOne({
     where: { id: session.itemId },
-    query: `id store { id isActive } role { ${capability} }`,
+    query: `id privacyErasedAt store { id isActive } role { ${capability} }`,
   });
-  if (!user?.store?.isActive || !user.role?.[capability]) throw new Error(`Missing current capability: ${capability}`);
+  if (user?.privacyErasedAt || !user?.store?.isActive || !user.role?.[capability]) throw new Error(`Missing current capability: ${capability}`);
   return { user, storeId: user.store.id };
 }
 
@@ -54,9 +54,9 @@ function currentPermission(capability: Capability) {
     if (!session?.itemId || !context?.prisma?.user) return false;
     const user = await context.prisma.user.findUnique({
       where: { id: session.itemId },
-      select: { store: { select: { isActive: true } }, role: { select: { [capability]: true } } },
+      select: { privacyErasedAt: true, store: { select: { isActive: true } }, role: { select: { [capability]: true } } },
     });
-    return Boolean(user?.store?.isActive && user.role?.[capability]);
+    return Boolean(!user?.privacyErasedAt && user?.store?.isActive && user.role?.[capability]);
   };
 }
 

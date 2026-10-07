@@ -5,6 +5,7 @@ import {
   password,
   relationship,
   select,
+  timestamp,
 } from "@keystone-6/core/fields";
 import { isSignedIn } from "../access";
 import { trackingFields } from "./trackingFields";
@@ -18,18 +19,22 @@ export const User = list({
       // Account creation is intentionally closed at the generic list boundary.
       // A future public signup flow must use a dedicated, rate-limited contract.
       create: () => false,
-      update: isSignedIn,
+      update: async ({ session, context }) => {
+        if (!session?.itemId) return false;
+        const user = await (context.prisma as any).user.findUnique({ where: { id: session.itemId }, select: { privacyErasedAt: true } });
+        return Boolean(user && !user.privacyErasedAt);
+      },
       // Customer provisioning and staff lifecycle are dedicated mutations.
       // Generic deletion must never trust stale stateless-session capabilities.
       delete: () => false,
     },
     filter: {
-      query: ({ session }) => {
-        const store = storeScopedFilter({ session });
+      query: async ({ session, context }) => {
+        const store = await storeScopedFilter({ session, context });
         return store === false ? false : { AND: [store, { id: { equals: session?.itemId } }] };
       },
-      update: ({ session }) => {
-        const store = storeScopedFilter({ session });
+      update: async ({ session, context }) => {
+        const store = await storeScopedFilter({ session, context });
         return store === false ? false : { AND: [store, { id: { equals: session?.itemId } }] };
       },
       delete: storeScopedFilter,
@@ -112,6 +117,8 @@ export const User = list({
       defaultValue: "not_started",
       label: "Onboarding Status",
     }),
+    staffAccessEvents: relationship({ ref: 'StaffAccessEvent.subject', many: true, access: { update: () => false } }),
+    privacyErasedAt: timestamp({ db: { isNullable: true }, access: { create: () => false, update: () => false } }),
     ...trackingFields,
   },
 });

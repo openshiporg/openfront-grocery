@@ -36,20 +36,25 @@ export function OrderAfterSalesActions({
   const [isPending, startTransition] = useTransition();
   const [message, setMessage] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  const [cancelDisposition, setCancelDisposition] = useState('');
+  const [cancelCondition, setCancelCondition] = useState('');
   const [refundReason, setRefundReason] = useState('');
   const [refundAmounts, setRefundAmounts] = useState<Record<string, string>>({});
   const cancelKey = useRef(operationKey(`cancel:${orderId}`));
   const refundKeys = useRef<Record<string, string>>({});
 
   const terminalOrder = ['cancelled', 'delivered'].includes(orderStatus);
-  const hasUnrefundedSettlement = payments.some((payment) => ['succeeded', 'partially_refunded'].includes(payment.status));
-  const canCancel = !terminalOrder && !hasUnrefundedSettlement;
+  // The server additionally verifies zero-charge provenance under payment locks.
+  const hasUnrefundedSettlement = payments.some((payment) => payment.amountCents > 0 && ['succeeded', 'partially_refunded'].includes(payment.status));
+  const hasLiveAuthorization = payments.some((payment) => ['authorized', 'pending'].includes(payment.status));
+  const requiresDisposition = ['packed', 'returned'].includes(orderStatus);
+  const canCancel = ['pending', 'picking', 'packed', 'returned'].includes(orderStatus) && !hasUnrefundedSettlement && !hasLiveAuthorization;
 
   function runCancel() {
     setMessage(null);
     startTransition(async () => {
       try {
-        await cancelOrderTask({ orderId, reason: cancelReason, idempotencyKey: cancelKey.current });
+        await cancelOrderTask({ orderId, reason: cancelReason, idempotencyKey: cancelKey.current, ...(requiresDisposition ? { disposition: cancelDisposition, conditionNote: cancelCondition } : {}) });
         setMessage('Order cancelled. The reason and operator are retained in order evidence.');
         cancelKey.current = operationKey(`cancel:${orderId}`);
         router.refresh();
@@ -147,7 +152,7 @@ export function OrderAfterSalesActions({
           })}
         </div>
 
-        {payments.some((payment) => ['succeeded', 'partially_refunded'].includes(payment.status)) ? (
+        {payments.some((payment) => payment.amountCents > 0 && ['succeeded', 'partially_refunded'].includes(payment.status)) ? (
           <label className="grid gap-1 text-xs">
             Refund reason
             <input
@@ -178,18 +183,33 @@ export function OrderAfterSalesActions({
                 className="rounded-md border bg-background px-3 py-2 text-sm"
               />
             </label>
+            {requiresDisposition ? <>
+              <label className="grid gap-1 text-xs">
+                Packed goods disposition
+                <select value={cancelDisposition} onChange={(event) => { setCancelDisposition(event.target.value); cancelKey.current = operationKey(`cancel:${orderId}`); }} className="rounded-md border bg-background px-3 py-2 text-sm">
+                  <option value="">Choose after inspecting goods</option>
+                  <option value="return_to_stock">Return safe goods to stock</option>
+                  <option value="quarantine">Quarantine for review</option>
+                  <option value="waste">Record waste</option>
+                </select>
+              </label>
+              <label className="grid gap-1 text-xs">
+                Condition and custody evidence
+                <input value={cancelCondition} onChange={(event) => { setCancelCondition(event.target.value); cancelKey.current = operationKey(`cancel:${orderId}`); }} maxLength={500} placeholder="Inspection, temperature and return custody" className="rounded-md border bg-background px-3 py-2 text-sm" />
+              </label>
+            </> : null}
             <button
               type="button"
-              disabled={isPending || cancelReason.trim().length < 3}
+              disabled={isPending || cancelReason.trim().length < 3 || (requiresDisposition && (!cancelDisposition || !cancelCondition.trim()))}
               onClick={runCancel}
               className="rounded-md border border-destructive/50 px-3 py-1.5 font-medium text-destructive hover:bg-destructive/5 disabled:opacity-50"
             >
-              {isPending ? 'Working…' : payments.some((payment) => payment.status === 'refunded') ? 'Cancel fully refunded order' : 'Cancel unpaid order'}
+              {isPending ? 'Working…' : 'Cancel order'}
             </button>
           </div>
         ) : null}
 
-        {!canCancel && !terminalOrder ? <p className="text-xs text-muted-foreground">Fully refund every settled payment before cancelling this order.</p> : null}
+        {!canCancel && !terminalOrder ? <p className="text-xs text-muted-foreground">{hasLiveAuthorization ? 'Void active payment authorizations before cancelling this order.' : hasUnrefundedSettlement ? 'Fully refund every settled payment before cancelling this order.' : 'Return dispatched goods to store custody before cancelling.'}</p> : null}
       </div>
     </details>
   );

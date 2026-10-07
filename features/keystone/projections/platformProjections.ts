@@ -1,12 +1,22 @@
 import type { Context } from '.keystone/types';
 
-import { paymentProviderDefinitions } from '../../integrations/payment';
+import { isPaymentProviderConfigured, isPublicPaymentProviderEnabled } from '../../integrations/payment';
 import { requireFreshCapability, type Capability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
 import { zonedDateKeyOffset, zonedStartOfDateKey, zonedStartOfDay } from '../lib/storeTime';
 
 function requirePermission(context: Context, capability: Capability, message: string) {
   return requireFreshCapability(context, capability).catch(() => { throw new Error(message); });
+}
+
+async function hasFreshCapability(context: Context, capability: Capability) {
+  try {
+    await requireFreshCapability(context, capability);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message === `Missing current capability: ${capability}`) return false;
+    throw error;
+  }
 }
 
 function iso(value: Date | null | undefined) {
@@ -17,16 +27,19 @@ function number(value: unknown) {
   return value === null || value === undefined ? null : Number(value);
 }
 
-const OPERATOR_BOUND = 500;
-function assertWithinOperatorBound(rows: unknown[], label: string) {
-  if (rows.length > OPERATOR_BOUND) throw new Error(`${label} exceeds the bounded launch view; archive historical records or use the paginated Orders workflow`);
-  return rows;
+export type ProjectionPageInput = { page?: number; pageSize?: number; search?: string; status?: string };
+export function pageArgs(args: ProjectionPageInput | undefined) {
+  const page = Number(args?.page ?? 1), pageSize = Number(args?.pageSize ?? 50);
+  if (!Number.isInteger(page) || page < 1 || page > 1000000 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new Error('Choose a positive page and a page size between 1 and 100');
+  }
+  return { page, pageSize, skip: (page - 1) * pageSize, search: args?.search?.trim().slice(0, 100) || '', status: args?.status?.trim() || '' };
 }
-
-function pageArgs(args: { page?: number; pageSize?: number } | undefined) {
-  const page = Math.max(1, Math.trunc(Number(args?.page || 1)));
-  const pageSize = Math.max(1, Math.min(100, Math.trunc(Number(args?.pageSize || 50))));
-  return { page, pageSize, skip: (page - 1) * pageSize };
+function collectionPage(paging: ReturnType<typeof pageArgs>, counts: Record<string, number>) {
+  return { page: paging.page, pageSize: paging.pageSize, collections: Object.fromEntries(Object.entries(counts).map(([key, total]) => [key, { total, totalPages: Math.max(1, Math.ceil(total / paging.pageSize)) }])) };
+}
+function searchFields(search: string, fields: string[]) {
+  return search ? { OR: fields.map(field => ({ [field]: { contains: search, mode: 'insensitive' } })) } : {};
 }
 
 function mapLineItem(line: any) {
@@ -40,6 +53,8 @@ function mapLineItem(line: any) {
     unitPriceCents,
     thumbnail: line.thumbnail || '',
     metadata: line.metadata || null,
+    product: line.product || null,
+    fulfillment: line.fulfillment || null,
   };
 }
 
@@ -72,7 +87,20 @@ function mapPayment(payment: any) {
   };
 }
 
-export async function groceryPlatformOrders(_root: unknown, args: { page?: number; pageSize?: number }, context: Context) {
+export function mapPaymentProviderTruth(provider: any) {
+  // Private configuration is consumed only to derive booleans. Never return
+  // selectors, credentials, metadata, or idempotency evidence to the projection.
+  return {
+    id: provider.id,
+    name: provider.name,
+    code: provider.code,
+    isInstalled: provider.isInstalled,
+    publicCheckout: isPublicPaymentProviderEnabled(provider),
+    runtimeConfigured: isPaymentProviderConfigured(provider),
+  };
+}
+
+export async function groceryPlatformOrders(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageOrders', 'Orders projection requires order-management permission');
   const store = await requireSessionStore(context);
   const pagination = pageArgs(args);
@@ -80,9 +108,10 @@ export async function groceryPlatformOrders(_root: unknown, args: { page?: numbe
   const today = zonedStartOfDay(now, store.timezone);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const commercialOrderWhere = { storeId: store.id };
+  const orderWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['email']), ...(pagination.status ? { status: pagination.status } : {}) };
   const [orders, totalOrders, statuses, todaySales, thirtyDaySales, thirtyDayRefunds] = await Promise.all([
-    context.prisma.order.findMany({
-      where: { storeId: store.id },
+    (context.prisma as any).order.findMany({
+      where: orderWhere,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       skip: pagination.skip,
       take: pagination.pageSize,
@@ -90,7 +119,7 @@ export async function groceryPlatformOrders(_root: unknown, args: { page?: numbe
         id: true, displayId: true, email: true, status: true, deliveryDate: true,
         deliveryTimeWindow: true, metadata: true, createdAt: true, currencyCode: true,
         subtotalCents: true, taxCents: true, deliveryFeeCents: true, discountCents: true, totalCents: true,
-        lineItems: { select: { id: true, title: true, sku: true, quantity: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
+        lineItems: { select: { product: {select:{id:true,pricingMethod:true,unitOfMeasure:true}}, fulfillment: true, id: true, title: true, sku: true, quantity: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
         payments: {
           orderBy: { createdAt: 'desc' },
               select: {
@@ -110,8 +139,8 @@ export async function groceryPlatformOrders(_root: unknown, args: { page?: numbe
         },
       },
     }),
-    context.prisma.order.count({ where: { storeId: store.id } }),
-    Promise.all(['pending', 'picking', 'packed', 'out_for_delivery', 'delivered'].map(async (status) => [
+    context.prisma.order.count({ where: orderWhere }),
+    Promise.all(['pending', 'picking', 'packed', 'out_for_delivery', 'delivered', 'delivery_failed', 'delivery_refused', 'returned'].map(async (status) => [
       status,
       await context.prisma.order.count({ where: { storeId: store.id, status: status as any } }),
     ] as const)),
@@ -134,7 +163,7 @@ export async function groceryPlatformOrders(_root: unknown, args: { page?: numbe
   const counts = Object.fromEntries(statuses);
   return {
     currencyCode: store.currencyCode,
-    orders: orders.map((order) => ({
+    orders: orders.map((order: any) => ({
       ...order,
       deliveryDate: iso(order.deliveryDate),
       createdAt: iso(order.createdAt),
@@ -158,20 +187,21 @@ export async function groceryPlatformOrders(_root: unknown, args: { page?: numbe
     page: pagination.page,
     pageSize: pagination.pageSize,
     totalOrders,
+    pagination: collectionPage(pagination, { orders: totalOrders }),
     totalPages: Math.max(1, Math.ceil(totalOrders / pagination.pageSize)),
   };
 }
 
-async function ordersByStatus(context: Context, storeId: string, status: string, orderBy: 'createdAt' | 'updatedAt') {
-  return context.prisma.order.findMany({
-    where: { storeId, status: status as any },
+async function ordersByStatus(context: Context, storeId: string, status: string, orderBy: 'createdAt' | 'updatedAt', pagination: ReturnType<typeof pageArgs>) {
+  return (context.prisma as any).order.findMany({
+    where: { storeId, status: status as any, ...searchFields(pagination.search, ['email']) },
     orderBy: [{ [orderBy]: orderBy === 'createdAt' ? 'asc' : 'desc' }, { id: 'asc' }],
-    take: OPERATOR_BOUND + 1,
+    take: pagination.pageSize, skip: pagination.skip,
     select: {
       id: true, displayId: true, email: true, status: true, deliveryDate: true, deliveryTimeWindow: true,
       createdAt: true, currencyCode: true, subtotalCents: true, taxCents: true, deliveryFeeCents: true,
       discountCents: true, totalCents: true, substitutionPreference: true, metadata: true,
-      lineItems: { select: { id: true, quantity: true, title: true, sku: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
+      lineItems: { select: { product: {select:{id:true,pricingMethod:true,unitOfMeasure:true}}, fulfillment: true, id: true, quantity: true, title: true, sku: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
       payments: {
         orderBy: { createdAt: 'desc' },
         select: {
@@ -191,62 +221,54 @@ async function ordersByStatus(context: Context, storeId: string, status: string,
   });
 }
 
-export async function groceryPlatformFulfillment(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformFulfillment(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageOrders', 'Fulfillment projection requires order-management permission');
   const store = await requireSessionStore(context);
-  const [pending, picking, packed, substitutions] = await Promise.all([
-    ordersByStatus(context, store.id, 'pending', 'createdAt'),
-    ordersByStatus(context, store.id, 'picking', 'createdAt'),
-    ordersByStatus(context, store.id, 'packed', 'updatedAt'),
-    context.prisma.orderItemSubstitution.findMany({
-      where: { lineItem: { order: { storeId: store.id } } },
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      take: OPERATOR_BOUND + 1,
-      select: {
-        id: true, orderItem: true, originalProduct: true, substitutedProduct: true,
-        reason: true, customerApproved: true, approvedAt: true,
-      },
-    }),
+  const pagination = pageArgs(args);
+  const [pending, picking, packed, counts] = await Promise.all([
+    ordersByStatus(context, store.id, 'pending', 'createdAt', pagination),
+    ordersByStatus(context, store.id, 'picking', 'createdAt', pagination),
+    ordersByStatus(context, store.id, 'packed', 'updatedAt', pagination),
+    Promise.all(['pending', 'picking', 'packed'].map(status => context.prisma.order.count({ where: { storeId: store.id, status: status as any, ...searchFields(pagination.search, ['email']) } }))),
   ]);
-  assertWithinOperatorBound(pending, 'Pending fulfillment orders');
-  assertWithinOperatorBound(picking, 'Picking fulfillment orders');
-  assertWithinOperatorBound(packed, 'Packed fulfillment orders');
-  assertWithinOperatorBound(substitutions, 'Substitution evidence');
-  const mapOrder = (order: any) => ({
-    ...order,
-    deliveryDate: iso(order.deliveryDate),
-    createdAt: iso(order.createdAt),
-    lineItems: order.lineItems.map(mapLineItem),
-    payments: order.payments.map(mapPayment),
-  });
-  return {
-    pending: pending.map(mapOrder),
-    picking: picking.map(mapOrder),
-    packed: packed.map(mapOrder),
-    orderItemSubstitutions: substitutions.map((item) => ({ ...item, approvedAt: iso(item.approvedAt) })),
+  const lineIds = [...pending, ...picking, ...packed].flatMap((order: any) => order.lineItems.map((line: any) => line.id));
+  const substitutions = lineIds.length ? await context.prisma.orderItemSubstitution.findMany({
+    where: { lineItemId: { in: lineIds }, lineItem: { order: { storeId: store.id } } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], distinct: ['orderItem'], take: lineIds.length,
+    select: { id: true, orderItem: true, originalProduct: true, substitutedProduct: true, reason: true, customerApproved: true, approvedAt: true },
+  }) : [];
+  const mapOrder = (order: any) => ({ ...order, deliveryDate: iso(order.deliveryDate), createdAt: iso(order.createdAt), lineItems: order.lineItems.map(mapLineItem), payments: order.payments.map(mapPayment) });
+  return { pending: pending.map(mapOrder), picking: picking.map(mapOrder), packed: packed.map(mapOrder),
+    orderItemSubstitutions: substitutions.map(item => ({ ...item, approvedAt: iso(item.approvedAt) })),
+    pagination: collectionPage(pagination, { pending: counts[0], picking: counts[1], packed: counts[2] }),
   };
 }
 
-export async function groceryPlatformDelivery(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformDelivery(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageDelivery', 'Delivery projection requires delivery-management permission');
   const store = await requireSessionStore(context);
+  const pagination = pageArgs(args);
   const slotWindowStart = zonedStartOfDateKey(zonedDateKeyOffset(new Date(), store.timezone, -1), store.timezone);
+  const routeWhere: any = { storeId: store.id, ...(pagination.status ? { status: pagination.status } : {}) };
+  const readyWhere: any = { storeId: store.id, status: 'packed', deliveryRouteId: null, metadata: { path: ['fulfillmentMethod'], equals: 'delivery' }, ...searchFields(pagination.search, ['email']) };
+  const driverWhere: any = { storeId: store.id, role: { canManageDelivery: true }, ...searchFields(pagination.search, ['name', 'email']) };
+  const slotWhere = { storeId: store.id, date: { gte: slotWindowStart } };
   const [routes, readyCandidates, drivers, slots] = await Promise.all([
     context.prisma.deliveryRoute.findMany({
-      where: { storeId: store.id }, orderBy: [{ date: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1,
+      where: routeWhere, orderBy: [{ date: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip,
       select: {
-        id: true, date: true, timeWindow: true, status: true, startedAt: true, completedAt: true,
+        id: true, date: true, timeWindow: true, status: true, stops: true, startedAt: true, completedAt: true,
         driver: { select: { id: true, name: true, email: true } },
         orders: { select: { id: true, displayId: true, status: true, metadata: true } },
       },
     }),
-    context.prisma.order.findMany({
-      where: { storeId: store.id, status: 'packed' }, orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1,
+    (context.prisma as any).order.findMany({
+      where: readyWhere, orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip,
       select: {
         id: true, displayId: true, email: true, status: true, deliveryDate: true, deliveryTimeWindow: true,
         createdAt: true, currencyCode: true, subtotalCents: true, taxCents: true, deliveryFeeCents: true,
         discountCents: true, totalCents: true, substitutionPreference: true, metadata: true,
-        lineItems: { select: { id: true, title: true, sku: true, quantity: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
+        lineItems: { select: { product: {select:{id:true,pricingMethod:true,unitOfMeasure:true}}, fulfillment: true, id: true, title: true, sku: true, quantity: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
         payments: {
           orderBy: { createdAt: 'desc' },
           select: {
@@ -265,22 +287,20 @@ export async function groceryPlatformDelivery(_root: unknown, _args: unknown, co
       },
     }),
     context.prisma.user.findMany({
-      where: { storeId: store.id, role: { canManageDelivery: true } }, orderBy: [{ name: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1,
+      where: driverWhere, orderBy: [{ name: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip,
       select: { id: true, name: true, email: true },
     }),
     context.prisma.deliverySlot.findMany({
-      where: { storeId: store.id, date: { gte: slotWindowStart } }, orderBy: [{ date: 'asc' }, { startTime: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1,
+      where: slotWhere, orderBy: [{ date: 'asc' }, { startTime: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip,
       select: { id: true, date: true, startTime: true, endTime: true, capacity: true, currentBookings: true, isActive: true, deliveryFee: true },
     }),
   ]);
-  assertWithinOperatorBound(routes, 'Delivery routes');
-  assertWithinOperatorBound(readyCandidates, 'Delivery-ready orders');
-  assertWithinOperatorBound(drivers, 'Delivery drivers');
-  assertWithinOperatorBound(slots, 'Delivery slots');
-  const readyOrders = readyCandidates.filter((order) => (order.metadata as any)?.fulfillmentMethod === 'delivery');
+  const counts = await Promise.all([context.prisma.deliveryRoute.count({ where: routeWhere }), context.prisma.order.count({ where: readyWhere }), context.prisma.user.count({ where: driverWhere }), context.prisma.deliverySlot.count({ where: slotWhere })]);
+  const readyOrders = readyCandidates.filter((order: any) => (order.metadata as any)?.fulfillmentMethod === 'delivery');
   return {
+    pagination: collectionPage(pagination, { deliveryRoutes: counts[0], readyOrders: counts[1], drivers: counts[2], deliverySlots: counts[3] }),
     deliveryRoutes: routes.map((route) => ({ ...route, date: iso(route.date), status: route.status || 'planning', startedAt: iso(route.startedAt), completedAt: iso(route.completedAt) })),
-    readyOrders: readyOrders.map((order) => ({
+    readyOrders: readyOrders.map((order: any) => ({
       ...order,
       deliveryDate: iso(order.deliveryDate),
       createdAt: iso(order.createdAt),
@@ -292,158 +312,171 @@ export async function groceryPlatformDelivery(_root: unknown, _args: unknown, co
   };
 }
 
-export async function groceryPlatformPickup(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformPickup(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageDelivery', 'Pickup projection requires delivery-management permission');
   const store = await requireSessionStore(context);
+  const pagination = pageArgs(args);
   const slotWindowStart = zonedStartOfDateKey(zonedDateKeyOffset(new Date(), store.timezone, -1), store.timezone);
+  const orderWhere: any = { storeId: store.id, status: 'packed', metadata: { path: ['fulfillmentMethod'], equals: 'pickup' }, ...searchFields(pagination.search, ['email']) };
+  const slotWhere = { storeId: store.id, date: { gte: slotWindowStart } };
+  const parkingWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['spotNumber']) };
   const [slots, parkingSpots, orders] = await Promise.all([
-    context.prisma.pickupSlot.findMany({ where: { storeId: store.id, date: { gte: slotWindowStart } }, orderBy: [{ date: 'asc' }, { startTime: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, date: true, startTime: true, endTime: true, maxOrders: true, currentOrders: true, isAvailable: true } }),
-    context.prisma.parkingSpot.findMany({ where: { storeId: store.id }, orderBy: [{ spotNumber: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, spotNumber: true, description: true, isAccessible: true, isAvailable: true } }),
-    context.prisma.order.findMany({ where: { storeId: store.id, status: 'packed' }, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, displayId: true, email: true, status: true, metadata: true } }),
+    context.prisma.pickupSlot.findMany({ where: slotWhere, orderBy: [{ date: 'asc' }, { startTime: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, date: true, startTime: true, endTime: true, maxOrders: true, currentOrders: true, isAvailable: true } }),
+    context.prisma.parkingSpot.findMany({ where: parkingWhere, orderBy: [{ spotNumber: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, spotNumber: true, description: true, isAccessible: true, isAvailable: true } }),
+    (context.prisma as any).order.findMany({ where: orderWhere, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, displayId: true, email: true, status: true, metadata: true } }),
   ]);
-  assertWithinOperatorBound(slots, 'Pickup slots');
-  assertWithinOperatorBound(parkingSpots, 'Parking spots');
-  assertWithinOperatorBound(orders, 'Pickup-ready orders');
-  const pickupOrders = orders.filter((order) => (order.metadata as any)?.fulfillmentMethod === 'pickup');
+  const counts = await Promise.all([context.prisma.pickupSlot.count({ where: slotWhere }), context.prisma.parkingSpot.count({ where: parkingWhere }), context.prisma.order.count({ where: orderWhere })]);
+  const pickupOrders = orders.filter((order: any) => (order.metadata as any)?.fulfillmentMethod === 'pickup');
   return {
+    pagination: collectionPage(pagination, { pickupSlots: counts[0], parkingSpots: counts[1], pickupOrders: counts[2] }),
     pickupSlots: slots.map((slot) => ({ ...slot, date: iso(slot.date), currentOrders: slot.currentOrders || 0 })),
     parkingSpots,
     pickupOrders,
   };
 }
 
-export async function groceryPlatformInventory(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformInventory(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageInventory', 'Inventory projection requires inventory-management permission');
-  const store = await requireSessionStore(context);
-  const now = new Date();
-  const [products, inventoryLots] = await Promise.all([
-    context.prisma.product.findMany({ where: { storeId: store.id }, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, title: true, sku: true, stockQuantity: true, lowStockThreshold: true, department: true, supplier: { select: { id: true, name: true } }, _count: { select: { backInStockAlerts: { where: { isActive: true } } } } } }),
-    context.prisma.inventoryLot.findMany({ where: { storeId: store.id }, orderBy: [{ expirationDate: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, lotNumber: true, expirationDate: true, quantity: true, quantityRemaining: true, location: true, productId: true, product: { select: { id: true, title: true } }, supplier: { select: { id: true, name: true } } } }),
+  const store = await requireSessionStore(context), pagination = pageArgs(args), now = new Date();
+  const productWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['title', 'sku']) };
+  const lotWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['lotNumber']), ...(pagination.status ? { safetyStatus: pagination.status } : {}) };
+  const prisma = context.prisma as any;
+  const [products, inventoryLots, productCount, lotCount] = await Promise.all([
+    prisma.product.findMany({ where: productWhere, orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, title: true, sku: true, stockQuantity: true, lowStockThreshold: true, department: true, supplier: { select: { id: true, name: true } }, _count: { select: { backInStockAlerts: { where: { isActive: true } } } } } }),
+    prisma.inventoryLot.findMany({ where: lotWhere, orderBy: [{ expirationDate: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, lotNumber: true, expirationDate: true, quantity: true, quantityRemaining: true, safetyStatus: true, conditionStatus: true, location: true, productId: true, product: { select: { id: true, title: true } }, supplier: { select: { id: true, name: true } } } }),
+    prisma.product.count({ where: productWhere }), prisma.inventoryLot.count({ where: lotWhere }),
   ]);
-  assertWithinOperatorBound(products, 'Inventory products');
-  assertWithinOperatorBound(inventoryLots, 'Inventory lots');
-  const sellableByProduct = new Map<string, number>();
-  for (const lot of inventoryLots) {
-    if (lot.productId && lot.expirationDate.getTime() > now.getTime() && lot.quantityRemaining > 0) {
-      sellableByProduct.set(lot.productId, (sellableByProduct.get(lot.productId) || 0) + lot.quantityRemaining);
-    }
-  }
+  // Aggregate every eligible lot for the displayed products, independent of the
+  // lot page. A historical lot count cannot truncate the stock authority.
+  const balances = products.length ? await prisma.inventoryLot.groupBy({ by: ['productId'],
+    where: { storeId: store.id, productId: { in: products.map((product: any) => product.id) }, expirationDate: { gt: now }, quantityRemaining: { gt: 0 },
+      safetyStatus: 'available', conditionStatus: 'accepted' },
+    _sum: { quantityRemaining: true },
+  }) : [];
+  const sellableByProduct = new Map(balances.map((row: any) => [row.productId, Number(row._sum.quantityRemaining || 0)]));
   return {
-    products: products.map(({ _count, stockQuantity, ...product }) => {
-      const sellableQuantity = sellableByProduct.get(product.id) || 0;
-      return {
-        ...product,
-        stockQuantity: sellableQuantity,
-        recordedStockQuantity: Number(stockQuantity || 0),
-        inStock: sellableQuantity > 0,
-        activeBackInStockAlerts: _count.backInStockAlerts,
-      };
+    products: products.map(({ _count, stockQuantity, ...product }: any) => {
+      const sellableQuantity = Number(sellableByProduct.get(product.id) || 0);
+      return { ...product, stockQuantity: sellableQuantity, recordedStockQuantity: Number(stockQuantity || 0), inStock: sellableQuantity > 0, activeBackInStockAlerts: _count.backInStockAlerts };
     }),
-    inventoryLots: inventoryLots.map(({ productId: _productId, ...lot }) => ({
-      ...lot,
-      expirationDate: iso(lot.expirationDate),
-      isExpired: lot.expirationDate.getTime() <= now.getTime(),
-      isExpiringSoon: lot.expirationDate.getTime() > now.getTime() && lot.expirationDate.getTime() <= now.getTime() + 7 * 86_400_000,
-    })),
+    inventoryLots: inventoryLots.map(({ productId: _productId, ...lot }: any) => ({ ...lot, quantity: Number(lot.quantity), quantityRemaining: Number(lot.quantityRemaining),
+      expirationDate: iso(lot.expirationDate), isExpired: lot.expirationDate.getTime() <= now.getTime(),
+      isExpiringSoon: lot.expirationDate.getTime() > now.getTime() && lot.expirationDate.getTime() <= now.getTime() + 7 * 86_400_000 })),
+    pagination: collectionPage(pagination, { products: productCount, inventoryLots: lotCount }),
   };
 }
 
-export async function groceryPlatformSuppliers(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformSuppliers(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageSuppliers', 'Suppliers projection requires supplier-management permission');
-  const store = await requireSessionStore(context);
-  const suppliers = await context.prisma.supplier.findMany({
-    where: { storeId: store.id }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1,
-    select: { id: true, name: true, contactName: true, email: true, phone: true, paymentTerms: true, deliveryDays: true, minimumOrder: true, minimumOrderCents: true, products: { select: { id: true } }, purchaseOrders: { select: { id: true, status: true } } },
-  });
-  assertWithinOperatorBound(suppliers, 'Suppliers');
-  return { currencyCode: store.currencyCode, suppliers };
+  const store = await requireSessionStore(context), pagination = pageArgs(args);
+  const where: any = { storeId: store.id, ...searchFields(pagination.search, ['name', 'email']) };
+  const [suppliers, total] = await Promise.all([
+    context.prisma.supplier.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip,
+      select: { id: true, name: true, contactName: true, email: true, phone: true, paymentTerms: true, deliveryDays: true, minimumOrder: true, minimumOrderCents: true,
+        _count: { select: { products: true, purchaseOrders: true } } } }),
+    context.prisma.supplier.count({ where }),
+  ]);
+  const openOrders = await context.prisma.purchaseOrder.groupBy({ by: ['supplierId'], where: { storeId: store.id, supplierId: { in: suppliers.map(supplier => supplier.id) }, status: { in: ['draft', 'sent', 'confirmed'] } }, _count: { _all: true } });
+  const openCounts = new Map(openOrders.map(row => [row.supplierId, row._count._all]));
+  return { currencyCode: store.currencyCode, suppliers: suppliers.map(({ _count, ...supplier }) => ({ ...supplier, products: [], purchaseOrders: [], openPurchaseOrderCount: openCounts.get(supplier.id) || 0, productCount: _count.products, purchaseOrderCount: _count.purchaseOrders })),
+    pagination: collectionPage(pagination, { suppliers: total }) };
 }
 
-export async function groceryPlatformPurchasing(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPurchasingOptions(_root: unknown, args: { kind: string; search: string }, context: Context) {
+  await requirePermission(context, 'canManageInventory', 'Purchasing options require inventory-management permission');
+  const store = await requireSessionStore(context);
+  const search = args.search.trim().slice(0, 100);
+  const prisma = context.prisma as any;
+
+  if (args.kind === 'supplier') {
+    const suppliers = await prisma.supplier.findMany({
+      where: { storeId: store.id, ...searchFields(search, ['name']) },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      take: 50,
+      select: { id: true, name: true },
+    });
+    return suppliers.map((supplier: { id: string; name: string }) => ({ id: supplier.id, name: supplier.name, title: null }));
+  }
+
+  if (args.kind === 'product') {
+    const products = await prisma.product.findMany({
+      where: { storeId: store.id, ...searchFields(search, ['title', 'sku']) },
+      orderBy: [{ title: 'asc' }, { id: 'asc' }],
+      take: 50,
+      select: { id: true, title: true },
+    });
+    return products.map((product: { id: string; title: string }) => ({ id: product.id, name: null, title: product.title }));
+  }
+
+  throw new Error('Unsupported purchasing lookup');
+}
+
+export async function groceryPlatformPurchasing(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageInventory', 'Purchasing projection requires inventory-management permission');
   const store = await requireSessionStore(context);
+  const pagination = pageArgs(args);
   const dueSoonBoundary = new Date(Date.now() + 3 * 86_400_000);
+  const where: any = { storeId: store.id, ...searchFields(pagination.search, ['poNumber']), ...(pagination.status ? { status: pagination.status } : {}) };
+  const total = await context.prisma.purchaseOrder.count({ where });
   const purchaseOrders = await context.prisma.purchaseOrder.findMany({
-    where: { storeId: store.id }, orderBy: [{ orderDate: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1,
+    where, orderBy: [{ orderDate: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip,
     select: { id: true, poNumber: true, orderDate: true, expectedDeliveryDate: true, status: true, totalAmount: true, totalAmountCents: true, notes: true, supplier: { select: { id: true, name: true } }, items: { select: { id: true, productTitle: true, productSku: true, quantity: true, quantityReceived: true, unitCost: true, unitCostCents: true } } },
   });
-  assertWithinOperatorBound(purchaseOrders, 'Purchase orders');
-  return { currencyCode: store.currencyCode, purchaseOrders: purchaseOrders.map((order) => ({ ...order, orderDate: iso(order.orderDate), expectedDeliveryDate: iso(order.expectedDeliveryDate), isDueSoon: Boolean(order.expectedDeliveryDate && order.expectedDeliveryDate <= dueSoonBoundary), totalAmount: Number(order.totalAmountCents || Math.round(Number(order.totalAmount || 0) * 100)) / 100, totalAmountCents: order.totalAmountCents, items: order.items.map((item) => ({ ...item, unitCost: Number(item.unitCostCents || Math.round(Number(item.unitCost || 0) * 100)) / 100, unitCostCents: item.unitCostCents })) })) };
+  return { currencyCode: store.currencyCode, pagination: collectionPage(pagination, { purchaseOrders: total }), purchaseOrders: purchaseOrders.map((order) => ({ ...order, orderDate: iso(order.orderDate), expectedDeliveryDate: iso(order.expectedDeliveryDate), isDueSoon: Boolean(order.expectedDeliveryDate && order.expectedDeliveryDate <= dueSoonBoundary), totalAmount: Number(order.totalAmountCents || Math.round(Number(order.totalAmount || 0) * 100)) / 100, totalAmountCents: order.totalAmountCents, items: order.items.map((item) => ({ ...item, unitCost: Number(item.unitCostCents || Math.round(Number(item.unitCost || 0) * 100)) / 100, unitCostCents: item.unitCostCents })) })) };
 }
 
-export async function groceryPlatformMerchandising(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformMerchandising(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageProducts', 'Merchandising projection requires product-management permission');
   const store = await requireSessionStore(context);
+  const pagination = pageArgs(args);
+  const departmentWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['name', 'handle']) };
+  const couponWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['code']) };
   const [departments, coupons] = await Promise.all([
-    context.prisma.department.findMany({ where: { storeId: store.id }, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, name: true, handle: true, sortOrder: true, isActive: true, temperatureZone: true, products: { select: { id: true } } } }),
-    context.prisma.coupon.findMany({ where: { storeId: store.id }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, code: true, discountType: true, discountValue: true, discountValueCents: true, minPurchase: true, minPurchaseCents: true, maxUses: true, currentUses: true, productCategories: true, isActive: true, validFrom: true, validTo: true } }),
+    context.prisma.department.findMany({ where: departmentWhere, orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, name: true, handle: true, sortOrder: true, isActive: true, temperatureZone: true, _count: { select: { products: true } } } }),
+    context.prisma.coupon.findMany({ where: couponWhere, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, code: true, discountType: true, discountValue: true, discountValueCents: true, minPurchase: true, minPurchaseCents: true, maxUses: true, currentUses: true, productCategories: true, isActive: true, validFrom: true, validTo: true } }),
   ]);
-  assertWithinOperatorBound(departments, 'Departments');
-  assertWithinOperatorBound(coupons, 'Coupons');
-  return { currencyCode: store.currencyCode, departments, coupons: coupons.map((coupon) => ({ ...coupon, discountValue: number(coupon.discountValue), minPurchase: number(coupon.minPurchase), validFrom: iso(coupon.validFrom), validTo: iso(coupon.validTo) })) };
+  const counts = await Promise.all([context.prisma.department.count({ where: departmentWhere }), context.prisma.coupon.count({ where: couponWhere })]);
+  return { pagination: collectionPage(pagination, { departments: counts[0], coupons: counts[1] }), currencyCode: store.currencyCode, departments: departments.map(({ _count, ...department }) => ({ ...department, products: [], productCount: _count.products })), coupons: coupons.map((coupon) => ({ ...coupon, discountValue: number(coupon.discountValue), minPurchase: number(coupon.minPurchase), validFrom: iso(coupon.validFrom), validTo: iso(coupon.validTo) })) };
 }
 
-export async function groceryPlatformCustomers(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformCustomers(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageUsers', 'Customers projection requires user-management permission');
-  const store = await requireSessionStore(context);
-  const [users, totalCustomers, savedCarts, orderStats, shoppingListStats] = await Promise.all([
-    context.prisma.user.findMany({ where: { storeId: store.id, roleId: null }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: OPERATOR_BOUND + 1, select: { id: true, name: true, email: true, onboardingStatus: true, createdAt: true } }),
-    context.prisma.user.count({ where: { storeId: store.id, roleId: null } }),
-    context.prisma.cart.count({ where: { storeId: store.id, itemCount: { gt: 0 } } }),
-    context.prisma.order.groupBy({
-      by: ['userId'],
-      where: { storeId: store.id, userId: { not: null } },
-      _count: { _all: true },
-      _max: { createdAt: true },
-    }),
-    context.prisma.shoppingList.groupBy({
-      by: ['userId'],
-      where: { user: { storeId: store.id } },
-      _count: { _all: true },
-    }),
+  const store = await requireSessionStore(context), pagination = pageArgs(args);
+  const where: any = { storeId: store.id, roleId: null, ...searchFields(pagination.search, ['name', 'email']) };
+  const [users, totalCustomers, savedCarts] = await Promise.all([
+    context.prisma.user.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, name: true, email: true, onboardingStatus: true, createdAt: true } }),
+    context.prisma.user.count({ where }), context.prisma.cart.count({ where: { storeId: store.id, itemCount: { gt: 0 } } }),
   ]);
-  assertWithinOperatorBound(users, 'Customers');
-  const latestDates = orderStats.flatMap((row) => row._max.createdAt ? [row._max.createdAt] : []);
-  const latestOrders = latestDates.length ? await context.prisma.order.findMany({
-    where: {
-      storeId: store.id,
-      userId: { in: orderStats.flatMap((row) => row.userId ? [row.userId] : []) },
-      createdAt: { in: latestDates },
-    },
-    orderBy: [{ createdAt: 'desc' }, { displayId: 'desc' }],
-    select: { userId: true, displayId: true, status: true, createdAt: true },
-  }) : [];
-  const orderCountByUser = new Map(orderStats.flatMap((row) => row.userId ? [[row.userId, Number((row._count as { _all?: number } | undefined)?._all || 0)] as const] : []));
-  const shoppingListCountByUser = new Map(shoppingListStats.map((row) => [row.userId, Number((row._count as { _all?: number } | undefined)?._all || 0)] as const));
-  const latestOrderByUser = new Map<string, (typeof latestOrders)[number]>();
-  for (const order of latestOrders) {
-    if (order.userId && !latestOrderByUser.has(order.userId)) latestOrderByUser.set(order.userId, order);
-  }
-  return {
-    users: users.map((user) => {
-      const lastOrder = latestOrderByUser.get(user.id);
-      return {
-        ...user,
-        createdAt: iso(user.createdAt),
-        orderCount: orderCountByUser.get(user.id) || 0,
-        shoppingListCount: shoppingListCountByUser.get(user.id) || 0,
-        lastOrder: lastOrder ? { displayId: lastOrder.displayId, status: lastOrder.status, createdAt: iso(lastOrder.createdAt) } : null,
-      };
-    }),
-    totalCustomers,
-    savedCarts,
-  };
+  const ids = users.map(user => user.id);
+  const [orderStats, shoppingListStats, latestOrders] = await Promise.all([
+    context.prisma.order.groupBy({ by: ['userId'], where: { storeId: store.id, userId: { in: ids } }, _count: { _all: true } }),
+    context.prisma.shoppingList.groupBy({ by: ['userId'], where: { userId: { in: ids }, user: { storeId: store.id } }, _count: { _all: true } }),
+    context.prisma.order.findMany({ where: { storeId: store.id, userId: { in: ids } }, distinct: ['userId'], take: pagination.pageSize,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], select: { userId: true, displayId: true, status: true, createdAt: true } }),
+  ]);
+  const orderCounts = new Map(orderStats.map(row => [row.userId, row._count._all]));
+  const listCounts = new Map(shoppingListStats.map(row => [row.userId, row._count._all]));
+  const lastOrders = new Map(latestOrders.map(row => [row.userId, row]));
+  return { users: users.map(user => {
+    const last = lastOrders.get(user.id);
+    return { ...user, createdAt: iso(user.createdAt), orderCount: orderCounts.get(user.id) || 0, shoppingListCount: listCounts.get(user.id) || 0,
+      lastOrder: last ? { displayId: last.displayId, status: last.status, createdAt: iso(last.createdAt) } : null };
+  }), totalCustomers, savedCarts, pagination: collectionPage(pagination, { users: totalCustomers }) };
 }
 
-export async function groceryPlatformPayments(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformPayments(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManagePayments', 'Payments projection requires payment-management permission');
   const store = await requireSessionStore(context);
-  const supportedCodes = Object.keys(paymentProviderDefinitions);
+  const pagination = pageArgs(args);
+  // Payment facts are Store-scoped; deployment-wide provider configuration is
+  // read only for operators holding both current payment and onboarding access.
+  const canReadProviderConfiguration = await hasFreshCapability(context, 'canManageOnboarding');
+  const paymentWhere: any = { storeId: store.id, ...searchFields(pagination.search, ['providerPaymentId']), ...(pagination.status ? { status: pagination.status } : {}) };
   const [payments, providers, paymentCount, failedCount, processingCount, captured, refunded, recoveryCounts] = await Promise.all([
     context.prisma.payment.findMany({
-      where: { storeId: store.id },
+      where: paymentWhere,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      take: 100,
+      take: pagination.pageSize, skip: pagination.skip,
       select: {
         id: true, amountCents: true, status: true, paymentMethod: true, providerPaymentId: true,
         processedAt: true, createdAt: true, errorMessage: true,
@@ -459,11 +492,15 @@ export async function groceryPlatformPayments(_root: unknown, _args: unknown, co
         },
       },
     }),
-    context.prisma.paymentProvider.findMany({
-      where: { code: { in: supportedCodes } },
-      orderBy: [{ code: 'asc' }, { id: 'asc' }],
-      select: { id: true, name: true, code: true, isInstalled: true },
-    }),
+    canReadProviderConfiguration
+      ? context.prisma.paymentProvider.findMany({
+          orderBy: [{ code: 'asc' }, { id: 'asc' }],
+          select: { id: true, name: true, code: true, isInstalled: true, publicCheckout: true,
+            credentials: true, metadata: true, createPaymentFunction: true, capturePaymentFunction: true,
+            refundPaymentFunction: true, getPaymentStatusFunction: true, getRefundStatusFunction: true,
+            cancelPaymentFunction: true, generatePaymentLinkFunction: true, handleWebhookFunction: true },
+        })
+      : Promise.resolve([]),
     context.prisma.payment.count({ where: { storeId: store.id } }),
     context.prisma.payment.count({ where: { storeId: store.id, status: 'failed' } }),
     context.prisma.payment.count({ where: { storeId: store.id, status: 'processing' } }),
@@ -479,8 +516,9 @@ export async function groceryPlatformPayments(_root: unknown, _args: unknown, co
       by: ['status'], where: { storeId: store.id }, _count: { _all: true },
     }),
   ]);
-  assertWithinOperatorBound(payments, 'Recent payments');
+  const filteredCount = await context.prisma.payment.count({ where: paymentWhere });
   return {
+    pagination: collectionPage(pagination, { payments: filteredCount }),
     currencyCode: store.currencyCode,
     payments: payments.map((payment) => ({
       ...payment,
@@ -489,14 +527,7 @@ export async function groceryPlatformPayments(_root: unknown, _args: unknown, co
       providerCode: payment.paymentProvider?.code || '',
       refunds: payment.refunds.map(mapRefund),
     })),
-    providers: providers.map((provider) => {
-      const definition = paymentProviderDefinitions[provider.code as keyof typeof paymentProviderDefinitions];
-      return {
-        ...provider,
-        publicCheckout: Boolean(definition?.publicCheckout),
-        runtimeConfigured: Boolean(definition) && definition.credentialEnv.every((name) => Boolean(process.env[name])),
-      };
-    }),
+    providers: providers.map(mapPaymentProviderTruth),
     summary: {
       paymentCount,
       failedCount,
@@ -509,16 +540,16 @@ export async function groceryPlatformPayments(_root: unknown, _args: unknown, co
   };
 }
 
-export async function groceryPlatformSettings(_root: unknown, _args: unknown, context: Context) {
+export async function groceryPlatformSettings(_root: unknown, args: ProjectionPageInput, context: Context) {
   await requirePermission(context, 'canManageOnboarding', 'Settings projection requires onboarding-management permission');
   const store = await requireSessionStore(context);
   const [settings, counts] = await Promise.all([
-    context.prisma.storeSettings.findUnique({
+    (context.prisma as any).storeSettings.findUnique({
       where: { storeId: store.id },
       select: {
         id: true, name: true, tagline: true, homepageTitle: true, homepageDescription: true,
         contactEmail: true, contactPhone: true, address: true, logoUrl: true, brandHue: true, currencyCode: true,
-        taxRateBps: true, locale: true, timezone: true, countryCode: true, hours: true, isActive: true,
+        deliveryPolicy: true, taxRateBps: true, locale: true, timezone: true, countryCode: true, hours: true, isActive: true,
       },
     }),
     Promise.all([

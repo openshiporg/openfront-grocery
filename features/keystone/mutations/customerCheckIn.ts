@@ -1,3 +1,5 @@
+import { assertOrderInventoryEligible } from '../lib/inventorySafety';
+import { assertOrderHandoffPayment } from '../lib/fulfillmentPayment';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
@@ -214,6 +216,10 @@ async function completePickupHandoff(context: Context, orderId: string, expected
     if (order.status !== 'packed' && order.status !== 'delivered') throw new Error('Pickup order must be packed before handoff');
     if (metadata.readyForPickup !== true && order.status !== 'delivered') throw new Error('Pickup order must be marked ready before handoff');
 
+    if (order.status !== 'delivered') {
+      await assertOrderHandoffPayment(tx, order);
+      await assertOrderInventoryEligible(tx,order.id,storeId as string);
+    }
     const parkingSpotId = typeof metadata.parkingSpotId === 'string' ? metadata.parkingSpotId : null;
     if (expectedParkingSpotId && parkingSpotId !== expectedParkingSpotId) {
       throw new Error('Parking spot does not belong to this order check-in');

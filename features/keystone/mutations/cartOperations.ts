@@ -1,9 +1,10 @@
+import { priceCommercialLines } from '../lib/commercialPricing';
 import type { Context } from '.keystone/types';
 
 import { publicStore, requireSessionStore } from '../lib/storeScope';
 import { requireStoreProduct, assertProductStore } from '../lib/catalogAccess';
 import { assertSellableQuantity, deriveSellableQuantity } from '../lib/sellableInventory';
-import { calculateTaxCents, getStoreTaxRateBps } from '../lib/storeMoney';
+import { getStoreTaxRateBps } from '../lib/storeMoney';
 
 const DELIVERY_FEE = 0;
 
@@ -49,9 +50,9 @@ const CART_QUERY = `
     subtotal
     substitutionPreference
     product {
-      id title handle price priceCents imageUrl status
+      id title handle price priceCents taxRateBasisPoints imageUrl status
       store { id }
-      inventoryLots { expirationDate quantityRemaining store { id } }
+      inventoryLots { expirationDate quantityRemaining safetyStatus conditionStatus store { id } }
       pricingMethod unitOfMeasure
     }
   }
@@ -173,7 +174,7 @@ async function formatCartResponse(cart: any, context: Context) {
   const subtotalCents = Number(cart.subtotalCents ?? Math.round(Number(cart.subtotal || 0) * 100));
   const subtotal = subtotalCents / 100;
   const taxRateBps = await getStoreTaxRateBps(context, cart.store?.id);
-  const taxCents = calculateTaxCents(subtotalCents, taxRateBps);
+  const taxCents = priceCommercialLines(cart.items.map((item:any)=>({id:item.id,subtotalCents:Number(item.product.priceCents)*item.quantity,taxRateBasisPoints:item.product.taxRateBasisPoints ?? taxRateBps}))).taxCents;
   const tax = taxCents / 100;
   const total = (subtotalCents + taxCents) / 100 + DELIVERY_FEE;
 

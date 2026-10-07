@@ -7,7 +7,7 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 
 export const ParkingSpot = list({
   access: {
@@ -25,8 +25,9 @@ export const ParkingSpot = list({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error('An active store is required');
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
   },
   ui: {

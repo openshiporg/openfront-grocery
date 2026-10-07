@@ -8,8 +8,7 @@ import { storefrontMetadata } from '@/features/storefront/lib/metadata';
 import UrbanProductGrid from '@/features/storefront/modules/urban/UrbanProductGrid';
 import CatalogControls from '@/features/storefront/modules/products/components/catalog-controls';
 import type { GroceryProduct, GroceryDepartment } from '@/features/storefront/types';
-import { UrbanBadge, UrbanContainer, UrbanMetric, UrbanPageHeader, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
-import { Boxes, PackageSearch } from 'lucide-react';
+import { UrbanBadge, UrbanContainer, UrbanPageHeader, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
 import Link from 'next/link';
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -33,7 +32,7 @@ export async function ProductsPage(props: {
     department,
     sort,
     search,
-    availability: availability as any,
+    availability: availability === 'all' || availability === 'low-stock' ? availability : 'in-stock',
     organic: organic === 'true',
     limit: pageSize,
     offset: (page - 1) * pageSize,
@@ -42,7 +41,7 @@ export async function ProductsPage(props: {
   const { departments }: { departments: GroceryDepartment[] } = await getDepartmentsList(0, 20);
   const activeDepartment = departments.find((entry) => entry.handle === department);
 
-  const title = activeDepartment?.name || (search ? `Results for “${search}”` : 'Full catalog');
+  const title = activeDepartment?.name || (search ? `Results for “${search}”` : 'Shop groceries');
   const description = activeDepartment?.description || (search ? 'Matching products from today\'s grocery selection.' : 'Search, filter by aisle, and browse in-stock inventory.');
   const totalPages = catalogTotalPages(count, pageSize);
   const pageParams = { department, sort, search, availability, organic };
@@ -55,12 +54,7 @@ export async function ProductsPage(props: {
           breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Products' }]}
           title={title}
           description={description}
-          aside={
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-              <UrbanMetric label="Matching" value={count} icon={PackageSearch} />
-              <UrbanMetric label="Aisles" value={departments.length} icon={Boxes} />
-            </div>
-          }
+
         />
 
         <CatalogControls departments={departments} activeDepartment={department} search={search} sort={sort || 'name'} availability={availability || 'in-stock'} organic={organic === 'true'} />
@@ -71,25 +65,30 @@ export async function ProductsPage(props: {
             {activeDepartment && <UrbanBadge tone="muted">Aisle: {activeDepartment.name}</UrbanBadge>}
             {availability && availability !== 'in-stock' && <UrbanBadge tone="blue">{availability.replace('-', ' ')}</UrbanBadge>}
             {organic === 'true' && <UrbanBadge tone="primary">Organic</UrbanBadge>}
-            <Link href="/products" className="text-sm font-medium text-[var(--sf-accent)] hover:text-[var(--sf-accent-hover)]">Clear filters</Link>
+            <Link prefetch={false} href="/products" className="text-sm font-medium text-[var(--sf-accent)] hover:text-[var(--sf-accent-hover)]">Clear filters</Link>
           </div>
         )}
 
+        <p role="status" className="text-sm text-[var(--sf-ink-muted)]">{count} {count === 1 ? 'product' : 'products'}{count ? ` · showing ${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, count)}` : ''}</p>
         <UrbanProductGrid products={products} featuredFirst={!search && !department && page === 1} />
 
         {totalPages > 1 ? (
           <nav aria-label="Catalog pages" className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--sf-rule)] pt-5">
             <Link
+              prefetch={false}
               href={catalogPageHref('/products', pageParams, Math.max(1, page - 1))}
               aria-disabled={page <= 1}
+              tabIndex={page <= 1 ? -1 : undefined}
               className={`border px-4 py-2 text-sm font-medium ${page <= 1 ? 'pointer-events-none opacity-40' : 'hover:border-[var(--sf-accent)]'}`}
             >
               Previous
             </Link>
             <span className="text-sm text-[var(--sf-ink-muted)]">Page {Math.min(page, totalPages)} of {totalPages}</span>
             <Link
+              prefetch={false}
               href={catalogPageHref('/products', pageParams, Math.min(totalPages, page + 1))}
               aria-disabled={page >= totalPages}
+              tabIndex={page >= totalPages ? -1 : undefined}
               className={`border px-4 py-2 text-sm font-medium ${page >= totalPages ? 'pointer-events-none opacity-40' : 'hover:border-[var(--sf-accent)]'}`}
             >
               Next

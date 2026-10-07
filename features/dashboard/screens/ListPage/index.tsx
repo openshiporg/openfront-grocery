@@ -13,14 +13,20 @@ import { notFound } from 'next/navigation'
 import { ListPageClient } from './ListPageClient'
 
 interface PageProps {
-  params: Promise<{ listKey: string }>;
+  params?: Promise<{ listKey: string }>;
   searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+  listKey?: string;
 }
 
-export async function ListPage({ params, searchParams }: PageProps) {
-  const resolvedParams = await params;
+export async function ListPage({ params, searchParams, listKey }: PageProps) {
+  const resolvedParams = params ? await params : undefined;
   const resolvedSearchParams = await searchParams;
-  const { listKey: listKeyParam } = resolvedParams;
+  const listKeyParam = listKey || resolvedParams?.listKey;
+
+  if (!listKeyParam) {
+    notFound()
+  }
+
   const searchParamsObj = Object.fromEntries(
     Object.entries(resolvedSearchParams).map(([key, value]) => [
       key,
@@ -71,7 +77,7 @@ export async function ListPage({ params, searchParams }: PageProps) {
 
   // Build selected fields set from URL params or default to initial columns
   let selectedFields = ['id'] // Always include ID
-  
+
   if (searchParamsObj.fields) {
     // Use fields from URL params
     const fieldsFromUrl = searchParamsObj.fields.toString().split(',').filter(field => {
@@ -91,7 +97,7 @@ export async function ListPage({ params, searchParams }: PageProps) {
       })
     }
   }
-  
+
   // Remove duplicates
   selectedFields = [...new Set(selectedFields)]
 
@@ -119,10 +125,10 @@ export async function ListPage({ params, searchParams }: PageProps) {
 
   // Get adminMeta for the list structure
   const adminMetaResponse = await getAdminMetaAction(list.key)
-  
+
   // Extract the list with proper field metadata if successful
   const adminMetaList = adminMetaResponse.success ? adminMetaResponse.data.list : null
-  
+
   // Create enhanced list with validation data
   const enhancedList = adminMetaList || list
 

@@ -13,12 +13,11 @@ interface SectionRendererProps {
   itemErrors: Record<string, Record<string, string>>;
   error: string | null;
   step: 'template' | 'progress' | 'done';
-  currentJsonData?: any;
+  currentJsonData?: unknown;
 }
 
 export const SectionRenderer: React.FC<SectionRendererProps> = ({
   sections,
-  selectedTemplate,
   isLoading,
   loadingItems,
   completedItems,
@@ -54,31 +53,43 @@ export const SectionRenderer: React.FC<SectionRendererProps> = ({
             <div className="pl-9">
               <div className="flex flex-wrap gap-2 pb-6">
                 {items.map((item) => {
-                  let status: 'normal' | 'loading' | 'completed' | 'error' = 'normal';
-                  let errorMessage: string | undefined;
+                    // Determine the status of this item
+                    let status: 'normal' | 'loading' | 'completed' | 'error' = 'normal';
+                    let errorMessage: string | undefined;
 
-                  if (step === 'done') {
-                    status = 'completed';
-                  } else if (error && itemErrors[section.type]?.[item]) {
-                    status = 'error';
-                    errorMessage = itemErrors[section.type][item];
-                  } else if (completedItems[section.type]?.includes(item)) {
-                    status = 'completed';
-                  } else if (isLoading && loadingItems[section.type]?.includes(item)) {
-                    status = 'loading';
-                  }
+                    // For completed step, all items are completed
+                    if (step === 'done') {
+                      status = 'completed';
+                    } else {
+                      // Check for errors first
+                      if (error && itemErrors[section.type]?.[item]) {
+                        status = 'error';
+                        errorMessage = itemErrors[section.type][item];
+                      }
+                      // Then check if it's completed
+                      else if (completedItems[section.type]?.includes(item)) {
+                        status = 'completed';
+                      }
+                      // Then check if it's loading
+                      else if (
+                        isLoading &&
+                        loadingItems[section.type]?.includes(item)
+                      ) {
+                        status = 'loading';
+                      }
+                    }
 
-                  return (
-                    <SectionItem
-                      key={item}
-                      item={item}
-                      sectionType={section.type}
-                      status={status}
-                      errorMessage={errorMessage}
-                      step={step}
-                    />
-                  );
-                })}
+                    return (
+                      <SectionItem
+                        key={item}
+                        item={item}
+                        sectionType={section.type}
+                        status={status}
+                        errorMessage={errorMessage}
+                        step={step}
+                      />
+                    );
+                  })}
               </div>
             </div>
           </div>

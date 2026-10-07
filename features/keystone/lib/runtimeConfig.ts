@@ -1,3 +1,5 @@
+import { stripeCheckoutActivated } from '../../integrations/payment/stripeEnabled';
+
 const PLACEHOLDER_VALUES = new Set([
   '',
   'change-me',
@@ -36,9 +38,18 @@ export function getSessionSecret() {
   return value;
 }
 
+export const GROCERY_STORE_ID = 'store_juniper';
+
 export function getPublicStoreId() {
-  const value = process.env.PUBLIC_STORE_ID?.trim() || 'store_juniper';
-  if (isProduction() && value === 'store_juniper' && !process.env.PUBLIC_STORE_ID) throw new Error('PUBLIC_STORE_ID is required in production');
+  const configuredValue = process.env.PUBLIC_STORE_ID?.trim();
+  if (isProduction() && !configuredValue) {
+    throw new Error('PUBLIC_STORE_ID is required in production');
+  }
+
+  const value = configuredValue || GROCERY_STORE_ID;
+  if (isProduction() && value !== GROCERY_STORE_ID) {
+    throw new Error(`PUBLIC_STORE_ID must match the migrated Grocery Store id ${GROCERY_STORE_ID}`);
+  }
   return value;
 }
 
@@ -54,7 +65,7 @@ export function isStripeEnabled() {
   if (isProduction() && value !== 'true' && value !== 'false') {
     throw new Error('STRIPE_ENABLED must be explicitly true or false in production');
   }
-  return value === 'true';
+  return stripeCheckoutActivated();
 }
 
 export function assertProductionPaymentConfig() {
@@ -66,8 +77,8 @@ export function assertProductionPaymentConfig() {
     if (!secretKey.startsWith('sk_live_')) throw new Error('STRIPE_SECRET_KEY must be a live-mode key in production');
     if (!publishableKey.startsWith('pk_live_')) throw new Error('NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY must be a live-mode key in production');
   }
-  if (process.env.TRUSTED_PROXY !== 'true') throw new Error('TRUSTED_PROXY=true is required in production for rate-limit identity');
-  required('TRUSTED_PROXY_IDENTITY_SECRET');
+  if (process.env.TRUSTED_PROXY !== 'true') throw new Error('TRUSTED_PROXY=true is required in production for Railway HTTP-edge client identity');
+  if (process.env.RAILWAY_TCP_PROXY_DOMAIN?.trim()) throw new Error('Trusted X-Real-IP rate limits require Railway HTTP ingress, not a TCP proxy');
 }
 
 export function getStorageConfig() {

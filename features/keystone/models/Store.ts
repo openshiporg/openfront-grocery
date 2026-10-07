@@ -1,17 +1,22 @@
 import { list } from '@keystone-6/core';
 import { checkbox, relationship, text } from '@keystone-6/core/fields';
 import { trackingFields } from './trackingFields';
+import { canResolveFreshInstallStore, freshInstallStoreQueryFilter } from '../lib/freshInstallAccess';
 import { currentStoreScopedFilter } from '../lib/storeAccess';
 
 export const Store = list({
   access: {
     operation: {
-      query: ({ session }) => Boolean(session?.itemId),
+      query: canResolveFreshInstallStore,
       create: () => false,
       update: () => false,
       delete: () => false,
     },
-    filter: { query: currentStoreScopedFilter, update: currentStoreScopedFilter, delete: currentStoreScopedFilter },
+    filter: {
+      query: freshInstallStoreQueryFilter,
+      update: currentStoreScopedFilter,
+      delete: currentStoreScopedFilter,
+    },
   },
   hooks: {
     resolveInput: async ({ resolvedData }) => ({

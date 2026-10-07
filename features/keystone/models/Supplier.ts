@@ -10,7 +10,7 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { permissions } from "../access";
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 
 export const Supplier = list({
   access: {
@@ -28,8 +28,9 @@ export const Supplier = list({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error('An active store is required');
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error('An active store is required');
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
     validate: {
       delete: async ({ item, context, addValidationError }) => {

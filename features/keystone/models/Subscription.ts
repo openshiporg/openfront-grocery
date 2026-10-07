@@ -1,6 +1,7 @@
 import { list } from "@keystone-6/core";
 import {
   text,
+  json,
   select,
   integer,
   checkbox,
@@ -14,7 +15,7 @@ import { isSignedIn, permissions, type Session } from "../access";
 import { ownerStoreScopedFilter } from '../lib/storeAccess';
 
 async function subscriptionAccessFilter({ session, context }: { session?: Session; context?: { prisma?: any } }) {
-  const store = ownerStoreScopedFilter('user')({ session });
+  const store = await ownerStoreScopedFilter('user')({ session, context });
   if (store === false) return false;
   if (await permissions.canManageOrders({ session, context })) return store;
   return session?.itemId
@@ -43,6 +44,12 @@ export const Subscription = list({
     },
   },
   fields: {
+    store: relationship({ ref: 'Store', db: { extendPrismaSchema: requiredRelationshipPrisma }, graphql: { isNonNull: { read: true, create: true } } }),
+    idempotencyKey: text({ isIndexed: 'unique', validation: { isRequired: true } }),
+    status: select({ options: ['active', 'paused', 'cancelled'], defaultValue: 'active', validation: { isRequired: true } }),
+    scheduleTimezone: text({ defaultValue: 'UTC' }),
+    anchorDay: integer({ validation: { min: 1, max: 31 } }),
+    consent: json(), events: json(), lastProcessedAt: timestamp(),
     // User who owns the subscription
     user: relationship({
       db: { extendPrismaSchema: requiredRelationshipPrisma },

@@ -1,5 +1,5 @@
 import { GraphQLError, Kind, parse, type ASTNode, type DocumentNode, type FragmentDefinitionNode, type SelectionSetNode, type ValidationContext, type ValidationRule } from 'graphql';
-import { verifyProxyIdentity } from './proxyIdentity';
+import { normalizeClientIp } from './clientIp';
 
 export const MAX_GRAPHQL_QUERY_LENGTH = 100_000;
 export const MAX_GRAPHQL_DEPTH = 12;
@@ -79,9 +79,12 @@ export function isDangerousAuthOperation(query?: string | null) {
   return operationDefinitions(query).some((definition) => visit(definition.selectionSet, new Set()));
 }
 
-export function requestIp(headers?: Headers) {
-  if (process.env.TRUSTED_PROXY !== 'true') return 'untrusted-proxy';
-  const identity = headers?.get('x-grocery-proxy-identity')?.trim() || '';
-  const secret = process.env.TRUSTED_PROXY_IDENTITY_SECRET?.trim() || '';
-  return verifyProxyIdentity(identity, secret)?.ip || 'unverified-proxy';
+export function requestIp(headers?: Headers, remoteAddress?: string | null) {
+  if (process.env.TRUSTED_PROXY === 'true') {
+    // Railway's HTTP edge overwrites X-Real-IP. Missing or malformed metadata
+    // stays in one conservative fallback bucket; XFF and custom identity
+    // headers are never accepted as client identity.
+    return normalizeClientIp(headers?.get('x-real-ip')) || 'unverified-proxy';
+  }
+  return normalizeClientIp(remoteAddress) || 'local';
 }

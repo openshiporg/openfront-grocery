@@ -4,7 +4,22 @@
 
 import { getAuthHeaders } from '@/features/dashboard/lib/cookies';
 import { GraphQLClient, ClientError } from 'graphql-request';
+import {graphqlErrorSummary} from './graphqlErrorSummary';
 import { getGraphQLEndpoint } from '@/features/dashboard/lib/getBaseUrl';
+import { getInternalGraphQLEndpoint } from '@/features/keystone/lib/internalTransport';
+
+async function getGraphQLRequestHeaders(): Promise<Record<string, string>> {
+  const authHeaders = await getAuthHeaders();
+  delete authHeaders['x-real-ip'];
+  delete authHeaders['x-grocery-proxy-identity'];
+  if (typeof window === 'undefined' && getInternalGraphQLEndpoint()) {
+    const { headers } = await import('next/headers');
+    const { trustedClientIp } = await import('@/features/keystone/lib/clientIp');
+    const clientIp = trustedClientIp(await headers());
+    if (clientIp) authHeaders['x-real-ip'] = clientIp;
+  }
+  return authHeaders;
+}
 
 // Define response type for keystoneClient
 export type KeystoneResponse<T = any> =
@@ -16,7 +31,7 @@ export type KeystoneResponse<T = any> =
  */
 async function createGraphQLClient(): Promise<GraphQLClient> {
   const endpoint = await getGraphQLEndpoint();
-  const authHeaders = await getAuthHeaders();
+  const authHeaders = await getGraphQLRequestHeaders();
   return new GraphQLClient(endpoint, {
     credentials: 'include',
     headers: authHeaders || {},
@@ -27,53 +42,7 @@ async function createGraphQLClient(): Promise<GraphQLClient> {
  * Format GraphQL error messages in a more readable way
  */
 function formatGraphQLErrors(error: ClientError): { message: string; errors?: any[] } {
-  if (!error.response) {
-    return { message: error.message };
-  }
-
-  const errors = error.response.errors;
-  if (!errors) {
-    return { message: error.message };
-  }
-
-  // Extract detailed error information
-  const formattedErrors = errors.map(err => {
-    const extensions = err.extensions || {};
-    const path = err.path?.join('.') || '';
-    const code = extensions.code || '';
-    
-    // Get original error if available
-    const originalError = (extensions.originalError as any)?.message || (extensions.exception as any)?.message || '';
-    
-    // Include validation errors if present
-    const validation = extensions.validation || {};
-    const validationErrors = Object.entries(validation)
-      .map(([field, error]) => `${field}: ${error}`)
-      .join(', ');
-
-    // Build detailed error message
-    const details = [
-      originalError && `Original Error: ${originalError}`,
-      path && `Path: ${path}`,
-      code && `Code: ${code}`,
-      validationErrors && `Validation: ${validationErrors}`
-    ].filter(Boolean).join(' | ');
-
-    return {
-      message: err.message,
-      details: details || undefined
-    };
-  });
-
-  // Create a detailed error message
-  const message = formattedErrors
-    .map(err => `${err.message}${err.details ? ` (${err.details})` : ''}`)
-    .join('\n');
-
-  return { 
-    message,
-    errors: errors 
-  };
+  return graphqlErrorSummary(error);
 }
 
 /**
@@ -111,7 +80,7 @@ export async function keystoneClient<T = any>(
     };
 
   } catch (error) {
-    console.error("Error fetching GraphQL data:", error);
+    console.error("GraphQL request failed", { category: error instanceof ClientError ? "graphql" : "transport" });
 
     if (error instanceof ClientError) {
       const { message, errors } = formatGraphQLErrors(error);
@@ -124,7 +93,7 @@ export async function keystoneClient<T = any>(
 
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error occurred'
+      error: 'The request could not be completed. Please try again.'
     };
   }
 }
@@ -139,7 +108,7 @@ async function _fetchGraphQLWithFiles(
 ): Promise<any> {
   try {
     const endpoint = await getGraphQLEndpoint();
-    const authHeaders = await getAuthHeaders();
+    const authHeaders = await getGraphQLRequestHeaders();
 
     // Clone the variables to avoid modifying the original
     const variablesCopy = structuredClone(variables);
@@ -196,12 +165,10 @@ async function _fetchGraphQLWithFiles(
     const json = await response.json();
 
     if (json.errors) {
-      console.error("GraphQL Errors:", json.errors);
+      console.error("GraphQL upload rejected");
       return {
         success: false,
-        error: `GraphQL Error: ${json.errors
-          .map((e: { message: string }) => e.message)
-          .join(", ")}`
+        error: graphqlErrorSummary({response:json}).message
       };
     }
 
@@ -210,10 +177,10 @@ async function _fetchGraphQLWithFiles(
       data: json.data
     };
   } catch (error) {
-    console.error("Error uploading files:", error);
+    console.error("GraphQL upload failed");
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error occurred'
+      error: 'The request could not be completed. Please try again.'
     };
   }
 }

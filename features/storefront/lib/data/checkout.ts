@@ -1,3 +1,4 @@
+import { mapStorefrontOrder } from './order-mappers';
 import type { GroceryOrder } from '../../types';
 import { clearCart, getSessionId } from './cart';
 import { getGuestOrderById, rememberGuestOrder } from './guest-orders';
@@ -67,6 +68,30 @@ export async function initiatePaymentSession(
 
   throwGraphQLErrors(errors);
   return data?.initiatePaymentSession || null;
+}
+
+export type RestartedCheckoutPayment = {
+  id: string;
+  amount?: number | string;
+  amountCents?: number;
+  data?: Record<string, any>;
+};
+
+export async function restartCheckoutAttempt(paymentSessionId: string): Promise<RestartedCheckoutPayment | null> {
+  const { data, errors } = await storefrontGraphQL<{
+    restartGroceryCheckout?: RestartedCheckoutPayment | null;
+  }>(`
+    mutation RestartGroceryCheckout($paymentSessionId: ID!, $sessionId: String) {
+      restartGroceryCheckout(paymentSessionId: $paymentSessionId, sessionId: $sessionId) {
+        id
+        amount
+        amountCents
+        data
+      }
+    }
+  `, { paymentSessionId, sessionId: getSessionId() });
+  throwGraphQLErrors(errors);
+  return data?.restartGroceryCheckout || null;
 }
 
 export async function submitOrder(orderData: {
@@ -247,51 +272,7 @@ export async function submitOrder(orderData: {
     };
   }
 
-  const mappedItems = (order.lineItems || []).map((item: any) => ({
-    id: item.id,
-    title: item.title,
-    quantity: item.quantity,
-    unit_price: Number(item.unitPriceCents || Math.round((item.unitPrice || 0) * 100)),
-    thumbnail: item.thumbnail,
-    product: item.product,
-  }));
-  const subtotal = mappedItems.reduce(
-    (sum: number, item: any) => sum + item.unit_price * item.quantity,
-    0
-  );
-  const taxTotal = Math.round(subtotal * (order.taxRate || 0));
-  const shippingTotal = Math.round((order.metadata?.deliveryFee || 0) * 100);
-
-  return {
-    id: order.id,
-    orderNumber: String(order.displayId),
-    status: 'pending',
-    email: order.email,
-    items: mappedItems,
-    subtotal,
-    tax_total: taxTotal,
-    shipping_total: shippingTotal,
-    discount_total: 0,
-    total: subtotal + taxTotal + shippingTotal,
-    shippingAddress: order.shippingAddress,
-    fulfillmentMethod: order.metadata?.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery',
-    deliverySlot: order.deliveryDate
-      ? {
-          date: order.deliveryDate,
-          startTime: order.metadata?.selectedFulfillmentSlot?.startTime || '08:00',
-          endTime: order.metadata?.selectedFulfillmentSlot?.endTime || '10:00',
-        }
-      : undefined,
-    deliveryInstructions: order.deliveryInstructions,
-    substitutionPreference:
-      order.substitutionPreference === 'call_me'
-        ? 'contact'
-        : order.substitutionPreference === 'refund'
-        ? 'remove'
-        : 'allow',
-    createdAt: order.createdAt,
-    updatedAt: order.updatedAt,
-  };
+  return mapStorefrontOrder(order);
 }
 
 export async function getOrder(orderId: string): Promise<GroceryOrder | null> {
@@ -305,4 +286,16 @@ export async function updatePaymentStatus(
   _chargeId?: string
 ): Promise<boolean> {
   return true;
+}
+
+export async function resumeCheckout(paymentSessionId: string) {
+  const result = await storefrontGraphQL<{resumeGroceryCheckout:{success:boolean;orderId:string;displayId:number;guestOrderToken?:string;message:string}}>(`
+    mutation Resume($paymentSessionId:ID!,$sessionId:String) {
+      resumeGroceryCheckout(paymentSessionId:$paymentSessionId,sessionId:$sessionId) { success orderId displayId guestOrderToken message }
+    }`,{paymentSessionId,sessionId:getSessionId()});
+  throwGraphQLErrors(result.errors);
+  const order=result.data?.resumeGroceryCheckout;
+  if (!order?.success) throw new Error(order?.message || 'Checkout recovery is pending');
+  if (order.guestOrderToken) await rememberGuestOrder(order.orderId,order.guestOrderToken);
+  return {id:order.orderId,orderNumber:String(order.displayId || order.orderId)};
 }

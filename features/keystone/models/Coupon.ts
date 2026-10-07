@@ -12,7 +12,7 @@ import {
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
-import { storeScopedFilter } from '../lib/storeAccess';
+import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
 
 export const Coupon = list({
   access: {
@@ -30,7 +30,8 @@ export const Coupon = list({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error('An active store is required');
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error('An active store is required');
       return {
         ...resolvedData,
         discountValueCents: resolvedData.discountValue !== undefined
@@ -39,7 +40,7 @@ export const Coupon = list({
         minPurchaseCents: resolvedData.minPurchase !== undefined
           ? Math.round(Number(resolvedData.minPurchase || 0) * 100)
           : resolvedData.minPurchaseCents,
-        store: { connect: { id: context.session.data.store.id } },
+        store: { connect: { id: storeId } },
       };
     },
   },

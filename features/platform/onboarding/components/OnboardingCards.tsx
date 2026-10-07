@@ -11,6 +11,7 @@ export interface OnboardingStep {
   description: string;
 }
 
+// Base InfoCard components
 interface CommonCardProps extends React.HTMLAttributes<HTMLDivElement> {
   children: React.ReactNode;
 }
@@ -80,9 +81,7 @@ export function OnboardingCards({
   onboardingStatus?: string;
   onDismiss: () => void;
   onOpenDialog: () => void;
-  userRole?: {
-    canManageOnboarding?: boolean;
-  } | null;
+  userRole?: any;
 }) {
   const [dismissedSteps] = React.useState<string[]>([]);
   const cards = steps.filter(({ href }) => !dismissedSteps.includes(href));
@@ -91,17 +90,17 @@ export function OnboardingCards({
 
   React.useEffect(() => {
     let timeout: NodeJS.Timeout | undefined = undefined;
-    if (cardCount === 0) {
+    if (cardCount === 0)
       timeout = setTimeout(() => setShowCompleted(false), 2700);
-    }
     return () => clearTimeout(timeout);
   }, [cardCount]);
 
+  // Don't show onboarding if user doesn't have permission
   if (!userRole?.canManageOnboarding) {
     return null;
   }
 
-  if (onboardingStatus === "completed") {
+  if (onboardingStatus === "completed" || onboardingStatus === "dismissed") {
     return null;
   }
 
@@ -145,6 +144,7 @@ function OnboardingCard({
 
   return (
     <>
+      {/* Full sidebar view */}
       <div
         className={cn(
           "group relative rounded-lg border bg-white dark:bg-black transition-all duration-300 ease-spring group-has-[[data-collapsible=icon]]/sidebar-wrapper:hidden",
@@ -181,6 +181,7 @@ function OnboardingCard({
         </InfoCardFooter>
       </div>
 
+      {/* Icon-only sidebar view */}
       <div
         className={cn(
           "hidden group-has-[[data-collapsible=icon]]/sidebar-wrapper:block",
@@ -194,6 +195,7 @@ function OnboardingCard({
           variant="outline"
           size="icon"
           className="size-8"
+          // className="w-full h-9 hover:bg-accent hover:text-accent-foreground"
           onClick={onOpenDialog}
         >
           <Rocket className="size-3" />

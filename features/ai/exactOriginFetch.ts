@@ -1,6 +1,7 @@
 type ExactOriginFetchOptions = {
   endpoint: URL;
   cookie: string;
+  clientIp?: string | null;
   fetchImpl?: typeof fetch;
 };
 
@@ -18,6 +19,7 @@ function requestUrl(input: RequestInfo | URL) {
 export function createExactOriginFetch({
   endpoint,
   cookie,
+  clientIp,
   fetchImpl = fetch,
 }: ExactOriginFetchOptions): typeof fetch {
   const allowedOrigin = endpoint.origin;
@@ -26,11 +28,11 @@ export function createExactOriginFetch({
     const headers = new Headers(input instanceof Request ? input.headers : undefined);
     new Headers(init?.headers).forEach((value, key) => headers.set(key, value));
 
-    if (cookie && requestUrl(input).origin === allowedOrigin) {
-      headers.set('cookie', cookie);
-    } else {
-      headers.delete('cookie');
-    }
+    const sameOrigin = requestUrl(input).origin === allowedOrigin;
+    if (cookie && sameOrigin) headers.set('cookie', cookie);
+    else headers.delete('cookie');
+    if (clientIp && sameOrigin) headers.set('x-real-ip', clientIp);
+    else headers.delete('x-real-ip');
 
     return fetchImpl(input, {
       ...init,

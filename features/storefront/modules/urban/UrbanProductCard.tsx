@@ -1,87 +1,42 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
-import { Check, Leaf, Plus, Snowflake } from 'lucide-react';
+import { Minus, Plus } from 'lucide-react';
+import type { GroceryProduct } from '../../types';
+import { useMarketBasket } from '../market/MarketBasket';
+import { formatMoney, formatUnit, UrbanBadge, UrbanProductArtwork } from './UrbanPrimitives';
 
-import { addToCart } from '@/features/storefront/lib/data/cart';
-import type { GroceryProduct } from '@/features/storefront/types';
-import { formatMoney, formatUnit, UrbanBadge, UrbanButton, UrbanProductArtwork } from './UrbanPrimitives';
-
-interface UrbanProductCardProps {
-  product: GroceryProduct;
-  featured?: boolean;
-}
-
-export default function UrbanProductCard({ product, featured = false }: UrbanProductCardProps) {
-  const [isAdding, setIsAdding] = useState(false);
-  const [addedCount, setAddedCount] = useState(0);
-  const unit = formatUnit(product.unit);
+export default function UrbanProductCard({ product }: { product: GroceryProduct; featured?: boolean }) {
+  const { cart, busy, change } = useMarketBasket();
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const quantity = cart?.items.find((item) => item.product.id === product.id)?.quantity ?? 0;
   const hasSavings = typeof product.compareAtPrice === 'number' && product.compareAtPrice > product.price;
-  const savings = useMemo(() => {
-    if (!hasSavings || !product.compareAtPrice) return null;
-    return Math.max(1, Math.round(((product.compareAtPrice - product.price) / product.compareAtPrice) * 100));
-  }, [hasSavings, product.compareAtPrice, product.price]);
-
-  async function handleAdd(event: React.MouseEvent) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!product.inStock || isAdding) return;
-    setIsAdding(true);
-    try {
-      const cart = await addToCart(product.id, 1);
-      if (!cart) throw new Error('Could not add item to cart');
-      setAddedCount((count) => count + 1);
-    } finally {
-      setIsAdding(false);
-    }
+  async function update(delta: number) {
+    setError(''); setMessage('');
+    try { await change(product.id, delta); setMessage(`${product.name}: basket updated.`); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not update your basket. Try again.'); }
   }
-
-  return (
-    <article className={`group flex h-full flex-col border border-[var(--sf-rule)] bg-[var(--sf-paper)] transition hover:border-[var(--sf-rule-strong)] ${featured ? 'lg:grid lg:grid-cols-2' : ''}`}>
-      <Link href={`/products/${product.handle}`} className={`relative block overflow-hidden bg-[var(--sf-paper-3)] ${featured ? 'min-h-[280px]' : 'aspect-[4/5]'}`}>
-        <UrbanProductArtwork product={product} className="h-full w-full transition duration-[var(--sf-dur-normal)] group-hover:scale-[1.02]" />
-        <div className="absolute left-2 top-2 flex flex-wrap gap-1">
-          {product.organicCertified ? <UrbanBadge><Leaf className="h-3 w-3" /> Organic</UrbanBadge> : null}
-          {product.isPerishable ? <UrbanBadge tone="blue"><Snowflake className="h-3 w-3" /> Chilled</UrbanBadge> : null}
-        </div>
-        {savings ? <UrbanBadge tone="orange" className="absolute right-2 top-2">−{savings}%</UrbanBadge> : null}
-      </Link>
-
-      <div className="flex flex-1 flex-col p-4">
-        <Link href={`/products/${product.handle}`} className="min-w-0 flex-1">
-          <p className="text-xs uppercase tracking-[0.08em] text-[var(--sf-ink-faint)]">{product.department?.name || 'Catalog'}</p>
-          <h3 className={`mt-1 line-clamp-2 font-[family-name:var(--sf-font-display)] font-semibold leading-[1.1] tracking-[-0.02em] text-[var(--sf-ink)] ${featured ? 'text-2xl' : 'text-lg'}`}>
-            {product.name}
-          </h3>
-        </Link>
-
-        <div className="mt-4 flex items-end justify-between gap-2 border-t border-[var(--sf-rule)] pt-3">
-          <div>
-            <p className="font-[family-name:var(--sf-font-display)] text-xl font-semibold text-[var(--sf-ink)]">{formatMoney(product.price)}</p>
-            <p className="text-xs text-[var(--sf-ink-muted)]">per {unit}</p>
-            {hasSavings ? <p className="text-xs text-[var(--sf-ink-faint)] line-through">{formatMoney(product.compareAtPrice)}</p> : null}
-          </div>
-          {!product.inStock ? <UrbanBadge tone="danger">Out</UrbanBadge> : product.stockQuantity > 0 && product.stockQuantity < 10 ? <UrbanBadge tone="orange">{product.stockQuantity} left</UrbanBadge> : null}
-        </div>
-
-        {product.inStock ? (
-          <UrbanButton
-            type="button"
-            onClick={handleAdd}
-            disabled={isAdding}
-            variant={addedCount > 0 ? 'ghost' : 'primary'}
-            className="mt-3 w-full"
-          >
-            {addedCount > 0 ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
-            {isAdding ? 'Adding…' : addedCount > 0 ? `Added (${addedCount})` : 'Add to basket'}
-          </UrbanButton>
-        ) : (
-          <Link href={`/products/${product.handle}`} className="mt-3 inline-flex w-full items-center justify-center border border-[var(--sf-rule-strong)] px-4 py-2.5 text-sm font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)]">
-            View restock options
-          </Link>
-        )}
-      </div>
-    </article>
-  );
+  return <article className="sf-card group flex h-full min-w-0 flex-col">
+    <Link prefetch={false} href={`/products/${product.handle}`} className="relative block aspect-square overflow-hidden bg-[var(--sf-paper-3)]">
+      <UrbanProductArtwork product={product} />
+      {hasSavings ? <UrbanBadge tone="orange" className="absolute left-2 top-2">Special</UrbanBadge> : product.organicCertified ? <UrbanBadge className="absolute left-2 top-2">Organic</UrbanBadge> : null}
+    </Link>
+    <div className="flex flex-1 flex-col p-3 sm:p-4">
+      <p className="text-xs text-[var(--sf-ink-muted)]">{product.department?.name || 'Groceries'}</p>
+      <Link prefetch={false} href={`/products/${product.handle}`} className="mt-1 flex-1"><h3 className="min-h-10 text-sm font-semibold leading-5 sm:text-base">{product.name}</h3></Link>
+      <div className="mt-3 flex flex-wrap items-baseline gap-x-2"><p className="text-lg font-semibold tabular-nums">{formatMoney(product.price)}</p>{hasSavings ? <del className="text-xs text-[var(--sf-ink-muted)]">{formatMoney(product.compareAtPrice)}</del> : null}</div>
+      <p className="mt-0.5 text-xs text-[var(--sf-ink-muted)]">per {formatUnit(product.unit)}{product.pricingMethod && ['weight', 'volume'].includes(product.pricingMethod) ? ' · estimated' : ''}</p>
+      {product.inStock || quantity > 0 ? <div className="mt-3">
+        {quantity > 0 ? <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center rounded-md border border-[var(--sf-accent)] text-[var(--sf-accent)]">
+          <button type="button" aria-label={`Remove one ${product.name} from basket`} disabled={busy} onClick={() => void update(-1)} className="flex h-11 items-center justify-center disabled:opacity-40"><Minus className="h-4 w-4" /></button>
+          <span className="text-center text-sm font-semibold tabular-nums" aria-label={`${quantity} in basket`}>{quantity}</span>
+          <button type="button" aria-label={`Add one ${product.name} to basket`} disabled={busy || !product.inStock || quantity >= product.stockQuantity} onClick={() => void update(1)} className="flex h-11 items-center justify-center disabled:opacity-40"><Plus className="h-4 w-4" /></button>
+        </div> : <button type="button" disabled={busy} aria-label={`Add ${product.name} to basket`} onClick={() => void update(1)} className="flex min-h-11 w-full items-center justify-center gap-1 rounded-md bg-[var(--sf-accent)] px-2 py-2 text-sm font-semibold text-white disabled:opacity-50"><Plus className="h-4 w-4 shrink-0" aria-hidden="true" />Add <span className="hidden sm:inline">to basket</span></button>}
+      </div> : <Link prefetch={false} href={`/products/${product.handle}`} className="mt-3 flex min-h-11 items-center justify-center rounded-md border border-[var(--sf-rule-strong)] px-2 py-2 text-center text-xs font-medium">Out of stock · details</Link>}
+      <p role="status" className="sr-only">{message}</p>
+      {error ? <p role="alert" className="mt-2 text-xs leading-5 text-[var(--sf-danger)]">{error}</p> : null}
+    </div>
+  </article>;
 }

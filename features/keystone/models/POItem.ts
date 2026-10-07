@@ -2,6 +2,7 @@ import { list } from "@keystone-6/core";
 import {
   text,
   integer,
+  decimal,
   float,
   relationship,
 } from "@keystone-6/core/fields";
@@ -60,9 +61,9 @@ export const POItem = list({
       access: { create: () => false, update: () => false },
       label: "Product SKU Snapshot",
     }),
-    quantity: integer({
+    quantity: decimal({ precision: 18, scale: 3,
       access: { update: () => false },
-      validation: { isRequired: true, min: 1 },
+      validation: { isRequired: true, min: "0.001" },
       label: "Quantity",
     }),
     unitCost: float({
@@ -77,9 +78,9 @@ export const POItem = list({
       validation: { isRequired: true, min: 0 },
       label: "Unit Cost (minor units)",
     }),
-    quantityReceived: integer({
+    quantityReceived: decimal({ precision: 18, scale: 3,
       access: { create: () => false, update: () => false },
-      defaultValue: 0,
+      defaultValue: "0",
       label: "Quantity Received",
       ui: {
         description: "Actual quantity received (may differ from ordered)",

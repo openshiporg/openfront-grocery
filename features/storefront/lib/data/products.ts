@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import type { GroceryProduct } from '../../types';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
@@ -27,6 +28,7 @@ type PublicCatalogProduct = {
 };
 
 const PUBLIC_PRODUCT_FIELDS = `
+  nutrition variantLabel variantOf packBaseUnitsMilli informationSource
   id
   title
   handle
@@ -115,7 +117,9 @@ export async function getProductsList(options?: {
   };
 }
 
-export async function getProductByHandle(handle: string): Promise<GroceryProduct | null> {
+// Includes visitor-specific back-in-stock state: request scope only, never a
+// shared persistent product cache. Metadata and body use the same handle.
+export const getProductByHandle = cache(async function getProductByHandle(handle: string): Promise<GroceryProduct | null> {
   const { data, errors } = await storefrontGraphQL<{ publicGroceryProduct: PublicCatalogProduct | null }>(`
     query GetPublicGroceryProduct($handle: String!) {
       publicGroceryProduct(handle: $handle) { ${PUBLIC_PRODUCT_FIELDS} }
@@ -123,7 +127,7 @@ export async function getProductByHandle(handle: string): Promise<GroceryProduct
   `, { handle }, { cache: 'no-store' });
   throwGraphQLErrors(errors);
   return data?.publicGroceryProduct ? mapProduct(data.publicGroceryProduct) : null;
-}
+});
 
 export async function getProductsByIds(ids: string[]): Promise<{ products: GroceryProduct[] }> {
   if (!ids.length) return { products: [] };

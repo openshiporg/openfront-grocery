@@ -1,5 +1,5 @@
 import { list } from '@keystone-6/core';
-import { integer, json, relationship } from '@keystone-6/core/fields';
+import { decimal, json, relationship } from '@keystone-6/core/fields';
 import { isSignedIn } from '../access';
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { trackingFields } from './trackingFields';
@@ -29,7 +29,7 @@ export const OrderLineInventoryAllocation = list({
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false },
     }),
-    quantity: integer({ validation: { isRequired: true, min: 1 }, access: { create: () => false, update: () => false } }),
+    quantity: decimal({ precision: 18, scale: 3, validation: { isRequired: true, min: "0.001" }, access: { create: () => false, update: () => false } }),
     provenance: json({ access: { create: () => false, update: () => false } }),
     ...trackingFields,
   },

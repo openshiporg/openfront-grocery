@@ -1,115 +1,50 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { ClipboardList, Package } from 'lucide-react';
-
-import { getUser } from '@/features/storefront/lib/data/user';
-import { getOrdersByUser, reorderFromOrder } from '@/features/storefront/lib/data/orders';
-import { getShoppingLists } from '@/features/storefront/lib/data/lists';
-import { storefrontMetadata } from '@/features/storefront/lib/metadata';
-import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanEmptyState, UrbanMetric, UrbanPageHeader, UrbanPageShell, formatCents, statusLabel } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { getUser } from '../lib/data/user';
+import { getOrderHistory } from '../lib/data/orders';
+import { storefrontMetadata } from '../lib/metadata';
+import { NotificationChoices } from '../modules/notifications/NotificationChoices';
+import MarketAccountNav from '../modules/market/MarketAccountNav';
+import { ReorderButton } from '../modules/account/ReorderButton';
+import { ProfileForm } from '../modules/account/ProfileForm';
+import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanEmptyState, UrbanPageShell, formatCents, statusLabel } from '../modules/urban/UrbanPrimitives';
 
 export async function generateMetadata(): Promise<Metadata> {
-  return storefrontMetadata({
-    title: 'Account',
-    description: 'Manage grocery orders, lists, and preferences.',
-  });
+  return storefrontMetadata({ title: 'Your account', description: 'Find your grocery orders, shop your favorites again, and manage your details.' });
 }
 
-export async function AccountPage() {
-  const [user, recentOrders, savedLists] = await Promise.all([getUser(), getOrdersByUser(), getShoppingLists()]);
+type Props = { searchParams?: Promise<{ page?: string }> };
 
-  if (!user) {
-    return (
-      <UrbanPageShell>
-        <UrbanContainer className="py-8">
-          <UrbanEmptyState title="Sign in to your account" actionHref="/dashboard/signin?from=/account" actionLabel="Sign in">
-            Orders and saved lists appear here once you are signed in.
-          </UrbanEmptyState>
-        </UrbanContainer>
-      </UrbanPageShell>
-    );
-  }
+export async function AccountPage({ searchParams }: Props) {
+  return <AccountContent searchParams={searchParams} section="overview" />;
+}
+export async function OrderHistoryPage({ searchParams }: Props) {
+  return <AccountContent searchParams={searchParams} section="orders" />;
+}
+export async function ProfilePage() {
+  return <AccountContent section="profile" />;
+}
 
-  const displayName = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
-
-  return (
-    <UrbanPageShell>
-      <UrbanContainer className="space-y-8 py-8 sm:py-10">
-        <UrbanPageHeader
-          breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Account' }]}
-          title={`Welcome, ${displayName}`}
-          description="Recent orders, saved lists, and quick links to your grocery flows."
-          aside={
-            <div className="space-y-3">
-              <UrbanMetric label="Orders" value={recentOrders.length} icon={Package} />
-              <UrbanMetric label="Lists" value={savedLists.length} icon={ClipboardList} />
-            </div>
-          }
-        />
-
-        <div className="grid gap-8 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <aside className="border border-[var(--sf-rule)] bg-[var(--sf-paper-2)] p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.1em] text-[var(--sf-ink-faint)]">Quick links</p>
-            <div className="mt-3 grid gap-2">
-              <UrbanButtonLink href="/lists" variant="ghost" className="justify-start">Lists ({savedLists.length})</UrbanButtonLink>
-              <UrbanButtonLink href={recentOrders[0] ? `/order/${recentOrders[0].id}` : '/products'} variant="ghost" className="justify-start">Latest order</UrbanButtonLink>
-            </div>
-          </aside>
-
-          <section>
-            <h2 className="border-b border-[var(--sf-rule)] pb-2 font-[family-name:var(--sf-font-display)] text-xl font-semibold text-[var(--sf-ink)]">Recent orders</h2>
-            {recentOrders.length === 0 ? (
-              <UrbanEmptyState title="No orders yet" actionHref="/products" actionLabel="Start shopping">Your order history will show up here.</UrbanEmptyState>
-            ) : (
-              <div>
-                {recentOrders.map((order) => (
-                  <article key={order.id} className="grid gap-4 border-b border-[var(--sf-rule)] py-5 sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
-                    <div className="min-w-0">
-                      <p className="font-[family-name:var(--sf-font-display)] text-lg font-semibold text-[var(--sf-ink)]">Order #{order.orderNumber}</p>
-                      <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">{new Date(order.createdAt).toLocaleDateString()} · {order.items.length} items</p>
-                    </div>
-                    <UrbanBadge tone="blue">{statusLabel(order.status)}</UrbanBadge>
-                    <div className="sm:text-right">
-                      <p className="font-[family-name:var(--sf-font-display)] text-xl font-semibold">{formatCents(order.total)}</p>
-                      <div className="mt-2 flex flex-wrap gap-3 text-sm sm:justify-end">
-                        <Link href={`/order/${order.id}`} className="font-medium text-[var(--sf-accent)]">Details</Link>
-                        <form action={async () => { 'use server'; await reorderFromOrder(order.id); }}>
-                          <button type="submit" className="font-medium text-[var(--sf-info)]">Reorder</button>
-                        </form>
-                      </div>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-
-        <section>
-          <div className="mb-4 flex items-center justify-between border-b border-[var(--sf-rule)] pb-2">
-            <h2 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold text-[var(--sf-ink)]">Shopping lists</h2>
-            <Link href="/lists" className="text-sm font-medium text-[var(--sf-accent)]">Manage</Link>
-          </div>
-          {savedLists.length === 0 ? (
-            <UrbanEmptyState title="No saved lists" actionHref="/lists" actionLabel="Create a list">Build reusable weekly runs for staples and refills.</UrbanEmptyState>
-          ) : (
-            <div>
-              {savedLists.map((list) => (
-                <div key={list.id} className="flex flex-col gap-2 border-b border-[var(--sf-rule)] py-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <ClipboardList className="h-4 w-4 shrink-0 text-[var(--sf-sage)]" />
-                    <div>
-                      <h3 className="font-medium text-[var(--sf-ink)]">{list.name}</h3>
-                      <p className="text-sm text-[var(--sf-ink-muted)]">{list.items.length} items</p>
-                    </div>
-                  </div>
-                  <Link href="/lists" className="text-sm font-medium text-[var(--sf-accent)]">Open</Link>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </UrbanContainer>
-    </UrbanPageShell>
-  );
+async function AccountContent({ searchParams, section }: Props & { section: 'overview' | 'orders' | 'profile' }) {
+  const user = await getUser();
+  const path = section === 'overview' ? '/account' : `/account/${section}`;
+  if (!user) return <UrbanPageShell><UrbanContainer className="space-y-6 py-10"><header><p className="sf-eyebrow">Your neighborhood shop</p><h1 className="sf-title mt-2">{section === 'orders' ? 'Your orders' : section === 'profile' ? 'Profile & preferences' : 'Your account'}</h1></header><UrbanEmptyState title="Your next grocery run starts here" actionHref={`/dashboard/signin?from=${encodeURIComponent(path)}`} actionLabel="Sign in to your account">See past orders, shop them again, and keep your details up to date. Ordered as a guest? <Link href="/order-access" className="underline">Find your order with an access link.</Link></UrbanEmptyState></UrbanContainer></UrbanPageShell>;
+  const params = await searchParams;
+  const history = section !== 'profile' ? await getOrderHistory(section === 'orders' ? Number(params?.page) : 1, section === 'overview' ? 3 : 10) : null;
+  const pages = history ? Math.max(1, Math.ceil(history.total / history.pageSize)) : 1;
+  const name = [user.firstName, user.lastName].filter(Boolean).join(' ');
+  return <UrbanPageShell><UrbanContainer className="sf-account-page space-y-7 py-8 sm:py-10">
+    <header className="border-b border-[var(--sf-rule)] pb-6"><p className="sf-eyebrow">Your neighborhood shop</p><h1 className="sf-title mt-2">{section === 'orders' ? 'Your orders' : section === 'profile' ? 'Profile & preferences' : `Good to see you${user.firstName ? `, ${user.firstName}` : ''}.`}</h1><p className="sf-copy mt-3">{section === 'orders' ? 'Every grocery run, all in one place. Open an order for its receipt and latest progress.' : section === 'profile' ? 'The details and updates that make shopping yours.' : 'Pick up where you left off, or plan your next basket.'}</p></header>
+    <MarketAccountNav active={section} />
+    {section === 'profile' ? <div className="grid items-start gap-6 lg:grid-cols-2"><ProfileForm name={name} email={user.email} /><NotificationChoices /></div> : <>
+      {section === 'overview' ? <div className="grid gap-5 md:grid-cols-2"><section className="sf-panel p-5 sm:p-7"><p className="sf-eyebrow">The next shop</p><h2 className="mt-2 font-[family-name:var(--sf-font-display)] text-2xl font-semibold">Make room for your favorites.</h2><p className="sf-copy my-3">Build a list for the week, or add the familiar essentials from a past order.</p><UrbanButtonLink href="/lists" variant="ghost">Open shopping lists</UrbanButtonLink></section><section className="sf-panel p-5 sm:p-7"><p className="sf-eyebrow">At your service</p><h2 className="mt-2 font-[family-name:var(--sf-font-display)] text-2xl font-semibold">A little help with your order.</h2><p className="sf-copy my-3">Find an order, review what was picked, or get in touch with the shop.</p><UrbanButtonLink href="/support" variant="ghost">Contact the shop</UrbanButtonLink></section></div> : null}
+      <section aria-labelledby="account-orders-title"><div className="mb-2 flex flex-wrap items-center justify-between gap-3"><h2 id="account-orders-title" className="font-[family-name:var(--sf-font-display)] text-2xl font-semibold">{section === 'overview' ? 'Recent grocery runs' : 'Order history'}</h2>{section === 'overview' ? <Link className="inline-flex min-h-11 items-center font-semibold underline underline-offset-4" href="/account/orders">View all orders</Link> : history && !history.error ? <p className="sf-copy">{history.total} order{history.total === 1 ? '' : 's'}</p> : null}</div>
+        {history?.error ? <div className="sf-panel space-y-3 p-5" role="alert"><p>We couldn’t load your orders. {history.error}</p><UrbanButtonLink href={path} variant="ghost">Try again</UrbanButtonLink></div> : !history?.orders.length ? <UrbanEmptyState title={history?.page && history.page > 1 ? 'No orders on this page' : 'Your first grocery run awaits'} actionHref={history?.page && history.page > 1 ? '/account/orders' : '/products'} actionLabel={history?.page && history.page > 1 ? 'Back to first page' : 'Explore the shop'}>Your placed orders will appear here, with fulfillment details and a receipt.</UrbanEmptyState> : <div className="divide-y divide-[var(--sf-rule)] border-y border-[var(--sf-rule)]">{history.orders.map(order => <article key={order.id} className="grid gap-4 py-5 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <div><div className="flex flex-wrap items-center gap-3"><h3 className="font-[family-name:var(--sf-font-display)] text-xl font-semibold"><Link className="underline-offset-4 hover:underline" href={`/order/${order.id}`}>Order #{order.orderNumber}</Link></h3><UrbanBadge tone={order.status === 'cancelled' || order.status.includes('failed') ? 'danger' : 'primary'}>{order.fulfillmentMethod === 'pickup' && order.status === 'delivered' ? 'Picked up' : statusLabel(order.status)}</UrbanBadge></div><p className="sf-copy mt-2">{new Date(order.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · {order.items.length} product{order.items.length === 1 ? '' : 's'} · {order.fulfillmentMethod === 'pickup' ? 'Pickup' : 'Delivery'}</p><Link href={`/order/${order.id}`} className="mt-2 inline-flex min-h-11 items-center font-semibold text-[var(--sf-accent)] underline underline-offset-4">View order & receipt</Link></div>
+          <div className="space-y-3 sm:text-right"><p className="font-[family-name:var(--sf-font-display)] text-2xl font-semibold">{formatCents(order.total)}<span className="ml-2 font-sans text-xs font-normal text-[var(--sf-ink-muted)]">{order.receiptStage === 'final' ? 'Final total' : order.receiptStage === 'proposed' ? 'Proposed total' : 'Order estimate'}</span></p><ReorderButton orderId={order.id} /></div>
+        </article>)}</div>}
+        {section === 'orders' && history && !history.error && pages > 1 ? <nav className="mt-5 flex flex-wrap items-center justify-between gap-3" aria-label="Order history pages">{history.page > 1 ? <UrbanButtonLink href={`/account/orders?page=${history.page - 1}`} variant="ghost">Previous</UrbanButtonLink> : <span />}<p className="text-sm">Page {history.page} of {pages}</p>{history.page < pages ? <UrbanButtonLink href={`/account/orders?page=${history.page + 1}`} variant="ghost">Next</UrbanButtonLink> : null}</nav> : null}
+      </section>
+    </>}
+  </UrbanContainer></UrbanPageShell>;
 }

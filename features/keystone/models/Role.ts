@@ -5,6 +5,7 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { storeScopedFilter } from '../lib/storeAccess';
+import { isFreshInstallBootstrapWindow } from '../lib/freshInstallAccess';
 import { getPublicStoreId } from '../lib/runtimeConfig';
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
@@ -24,8 +25,7 @@ export const Role = list({
     resolveInput: {
       create: async ({ resolvedData, context }) => {
         if (!context.session?.itemId) {
-          const userCount = await context.prisma.user.count();
-          const bootstrapStore = userCount === 0
+          const bootstrapStore = await isFreshInstallBootstrapWindow(context)
             ? await context.prisma.store.findUnique({ where: { id: getPublicStoreId() }, select: { id: true, isActive: true } })
             : null;
           if (!bootstrapStore?.isActive) throw new Error('Active store scope is required');

@@ -1,11 +1,12 @@
+import { commercialAdjustmentsForRefund, reconcileOrderLineRefundRows } from '../lib/refundAllocations';
 import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
 import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
-import { refundPayment } from '../utils/paymentProviderAdapter';
+import { refundPayment, getRefundStatus } from '../utils/paymentProviderAdapter';
 import { withSerializableRetry } from '../utils/serializableTransaction';
-import { type RefundStatus } from '../lib/refundState';
+import { assertRefundBudget, assertRefundCreationWindow, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
 
 export type RefundArgs = {
   paymentId: string;
@@ -44,14 +45,6 @@ function centsToDollars(cents: number) {
   return (cents / 100).toFixed(2);
 }
 
-function providerResultStatus(result: any): RefundStatus {
-  const status = String(result?.status || '').toLowerCase();
-  if (status === 'succeeded' || status === 'paid') return 'succeeded';
-  if (status === 'pending' || status === 'processing') return 'processing';
-  if (status === 'canceled' || status === 'cancelled') return 'canceled';
-  return 'failed';
-}
-
 function refundResult(claim: RefundClaim, status: string, providerRefundId: string | null, reused: boolean, message: string) {
   return {
     success: status === 'succeeded',
@@ -87,10 +80,16 @@ export async function refundPaymentForOrder(
         status: true,
         storeId: true,
         providerPaymentId: true,
-        paymentProvider: { select: { id: true, code: true, isInstalled: true } },
+        providerData: true,
+        paymentProvider: { select: { id: true, code: true, isInstalled: true, publicCheckout: true, supportsIdempotentCapture: true,
+          captureIdempotencyEvidence: true, credentials: true, metadata: true, createPaymentFunction: true, capturePaymentFunction: true,
+          refundPaymentFunction: true, getPaymentStatusFunction: true, getRefundStatusFunction: true, cancelPaymentFunction: true,
+          generatePaymentLinkFunction: true, handleWebhookFunction: true } },
       },
     });
     if (!payment || payment.storeId !== store.id) throw new Error('Payment not found in active store');
+    const authorizationVoid = (payment.providerData as any)?.authorizationVoid;
+    if (authorizationVoid && ['processing', 'unknown'].includes(authorizationVoid.status) && args.idempotencyKey !== `${authorizationVoid.key}:original-refund`) throw new Error('An authorization abandonment is unresolved; finish it before another refund');
     if (!payment.providerPaymentId || !payment.paymentProvider?.isInstalled) throw new Error('Payment provider settlement is unavailable');
     if (!['succeeded', 'partially_refunded', 'refunded'].includes(payment.status)) {
       throw new Error(`Only settled payments can be refunded: ${payment.status}`);
@@ -117,7 +116,7 @@ export async function refundPaymentForOrder(
           provider: payment.paymentProvider,
           providerPaymentId: payment.providerPaymentId,
           amountCents: existing.amountCents,
-          currencyCode: 'usd',
+          currencyCode: store.currencyCode.toLowerCase(),
           idempotencyKey: args.idempotencyKey,
           requestedAt: existing.requestedAt,
           status: existing.status,
@@ -126,8 +125,11 @@ export async function refundPaymentForOrder(
           executeProvider: false,
         };
       }
+      await assertRefundBudget(tx, payment.id, paymentCents, args.amountCents, existing.id, args.idempotencyKey);
+      const leaseActive = existing.reconciliationLeaseExpiresAt && new Date(existing.reconciliationLeaseExpiresAt).getTime() > Date.now();
       const stale = existing.status === 'processing' && Date.now() - new Date(existing.updatedAt).getTime() > 5 * 60 * 1000;
-      const shouldExecuteProvider = existing.status === 'failed' || existing.status === 'canceled' || stale;
+      const shouldExecuteProvider = !leaseActive && (existing.status === 'failed' || existing.status === 'canceled' || stale);
+      if (shouldExecuteProvider) assertRefundCreationWindow(existing.requestedAt, existing.providerRefundId);
       if (shouldExecuteProvider) {
         await tx.paymentRefund.update({
           where: { id: existing.id },
@@ -139,6 +141,7 @@ export async function refundPaymentForOrder(
             reconciliationLeaseExpiresAt: null,
             reconciliationDeadLetterAt: null,
             reconciliationLastError: null,
+            reconciliationNextAttemptAt: new Date(Date.now() + 30_000),
           },
         });
       }
@@ -149,7 +152,7 @@ export async function refundPaymentForOrder(
         provider: payment.paymentProvider,
         providerPaymentId: payment.providerPaymentId,
         amountCents: existing.amountCents,
-        currencyCode: 'usd',
+        currencyCode: store.currencyCode.toLowerCase(),
         idempotencyKey: args.idempotencyKey,
         requestedAt: existing.requestedAt,
         status: 'processing',
@@ -159,14 +162,7 @@ export async function refundPaymentForOrder(
       };
     }
 
-    const reserved = await tx.paymentRefund.aggregate({
-      where: { paymentId: payment.id, status: { in: ['processing', 'succeeded'] } },
-      _sum: { amountCents: true },
-    });
-    const reservedCents = reserved._sum.amountCents || 0;
-    if (reservedCents + args.amountCents > paymentCents) {
-      throw new Error('Cumulative refund amount cannot exceed the settled payment');
-    }
+    await assertRefundBudget(tx, payment.id, paymentCents, args.amountCents, undefined, args.idempotencyKey);
 
     const created = await tx.paymentRefund.create({
       data: {
@@ -177,7 +173,8 @@ export async function refundPaymentForOrder(
         providerCode: payment.paymentProvider.code,
         providerPaymentId: payment.providerPaymentId,
         requestedAt: new Date(),
-        providerData: { requestReason: args.reason },
+        providerData: { requestReason: args.reason, currencyCode: store.currencyCode.toLowerCase(), commercialAdjustments: await commercialAdjustmentsForRefund(tx, args.idempotencyKey) },
+        reconciliationNextAttemptAt: new Date(Date.now() + 30_000),
         payment: { connect: { id: payment.id } },
         requestedBy: { connect: { id: context.session!.itemId } },
       },
@@ -189,7 +186,7 @@ export async function refundPaymentForOrder(
       provider: payment.paymentProvider,
       providerPaymentId: payment.providerPaymentId,
       amountCents: args.amountCents,
-      currencyCode: 'usd',
+      currencyCode: store.currencyCode.toLowerCase(),
       idempotencyKey: args.idempotencyKey,
       requestedAt: created.requestedAt,
       status: created.status,
@@ -208,18 +205,11 @@ export async function refundPaymentForOrder(
 
   let providerResponse: any;
   try {
-    providerResponse = await refundPayment({
-      provider: claim.provider,
-      paymentId: claim.providerPaymentId,
-      amount: claim.amountCents,
-      idempotencyKey: claim.idempotencyKey,
-    });
-    if (providerResponse?.amount !== undefined && Number(providerResponse.amount) !== claim.amountCents) {
-      throw new Error('Payment provider returned a refund amount different from the requested amount');
-    }
-    if (providerResponse?.currency && String(providerResponse.currency).toLowerCase() !== claim.currencyCode.toLowerCase()) {
-      throw new Error('Payment provider returned a refund currency different from the payment');
-    }
+    assertRefundCreationWindow(claim.requestedAt, claim.providerRefundId);
+    providerResponse = claim.providerRefundId
+      ? await getRefundStatus({ provider: claim.provider, refundId: claim.providerRefundId })
+      : await refundPayment({ provider: claim.provider, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey });
+    normalizeProviderRefund(providerResponse, claim);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Payment provider refund failed';
     await context.transaction(async (transactionContext) => {
@@ -230,14 +220,15 @@ export async function refundPaymentForOrder(
       if (current?.status === 'processing') {
         await tx.paymentRefund.update({
           where: { id: claim.refundId },
-          data: { status: 'failed', failureMessage: message, providerStatus: 'failed', processedAt: new Date() },
+          data: { status: 'processing', failureMessage: message, providerStatus: 'unknown', processedAt: null, reconciliationLastError: message, reconciliationNextAttemptAt: new Date(Date.now() + 10_000) },
         });
       }
     });
     throw new Error(message);
   }
 
-  const providerStatus = providerResultStatus(providerResponse);
+  const normalized = normalizeProviderRefund(providerResponse, claim);
+  const providerStatus = normalized.status;
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', claim.paymentId);
@@ -247,22 +238,20 @@ export async function refundPaymentForOrder(
       return refundResult({ ...claim, providerRefundId: refund.providerRefundId || null }, refund.status, refund.providerRefundId || null, true, 'Refund state was finalized by another provider event.');
     }
 
-    const providerRefundId = providerResponse?.data?.id || providerResponse?.id || null;
+    const providerRefundId = normalized.id;
     await tx.paymentRefund.update({
       where: { id: refund.id },
       data: {
         status: providerStatus,
         providerRefundId,
         providerStatus: String(providerResponse?.status || providerStatus).toLowerCase(),
-        providerData: {
-          ...((refund.providerData as Record<string, unknown> | null) || {}),
-          providerResponse: providerResponse?.data || providerResponse || {},
-        },
+        providerData: refundProviderData(refund.providerData, normalized.resource),
         processedAt: providerStatus === 'processing' ? null : new Date(),
         failureMessage: providerStatus === 'failed' ? 'Provider reported refund failure' : providerStatus === 'canceled' ? 'Provider canceled refund' : '',
       },
     });
 
+    await reconcileOrderLineRefundRows(tx, await tx.paymentRefund.findUnique({ where: { id: refund.id } }));
     if (providerStatus !== 'succeeded') {
       return refundResult({ ...claim, providerRefundId }, providerStatus, providerRefundId, claim.reused, 'Payment provider has not completed the refund.');
     }

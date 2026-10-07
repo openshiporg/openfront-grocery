@@ -1,6 +1,7 @@
 import { list } from "@keystone-6/core";
 import {
   text,
+  json,
   integer,
   select,
   relationship,
@@ -20,7 +21,7 @@ export const LoyaltyTransaction = list({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = ownerStoreScopedFilter('user')({ session });
+        const store = await ownerStoreScopedFilter('user')({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
@@ -37,6 +38,12 @@ export const LoyaltyTransaction = list({
     },
   },
   fields: {
+    idempotencyKey: text({ isIndexed: "unique", validation: { isRequired: true } }),
+    store: relationship({ ref: "Store" }),
+    program: relationship({ ref: "LoyaltyProgram" }),
+    sourceId: text(), sourceType: text(), actorId: text(),
+    balanceBefore: integer(),
+    metadata: json(),
     // User who owns this transaction
     user: relationship({
       ref: "User",

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { requirePrismaSuccess } from '../utils/serializableTransaction';
 
 export type GroceryOutboxEnvelope = {
   storeId: string;
@@ -34,11 +35,11 @@ export function groceryOutboxPayloadHash(payload: Record<string, unknown>) {
 
 export async function enqueueGroceryOutboxEvent(tx: any, envelope: GroceryOutboxEnvelope) {
   const payloadHash = groceryOutboxPayloadHash(envelope.payload);
-  await tx.$queryRawUnsafe(
+  requirePrismaSuccess(await tx.$queryRawUnsafe(
     "SELECT 1 AS \"locked\" FROM pg_advisory_xact_lock(hashtext('grocery-outbox'), hashtext($1))",
     envelope.eventKey
-  );
-  const existing = await tx.groceryOutboxEvent.findUnique({ where: { eventKey: envelope.eventKey } });
+  ), 'outbox event lock');
+  const existing = requirePrismaSuccess(await tx.groceryOutboxEvent.findUnique({ where: { eventKey: envelope.eventKey } }), 'outbox event lookup');
   if (existing) {
     const matches = existing.storeId === envelope.storeId
       && existing.eventType === envelope.eventType
@@ -48,7 +49,7 @@ export async function enqueueGroceryOutboxEvent(tx: any, envelope: GroceryOutbox
     if (!matches) throw new Error('Outbox event key was reused with a different immutable snapshot');
     return { event: existing, created: false };
   }
-  const event = await tx.groceryOutboxEvent.create({
+  const event = requirePrismaSuccess(await tx.groceryOutboxEvent.create({
     data: {
       storeId: envelope.storeId,
       eventKey: envelope.eventKey,
@@ -62,7 +63,7 @@ export async function enqueueGroceryOutboxEvent(tx: any, envelope: GroceryOutbox
       status: 'pending',
       attempts: 0,
     },
-  });
+  }), 'outbox event creation');
   return { event, created: true };
 }
 

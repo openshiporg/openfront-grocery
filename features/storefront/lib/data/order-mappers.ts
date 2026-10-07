@@ -3,6 +3,9 @@ import type { GroceryOrder } from '../../types';
 function mapOrderStatus(status: string): GroceryOrder['status'] {
   const statusMap: Record<string, GroceryOrder['status']> = {
     pending: 'pending',
+    delivery_failed: 'delivery_failed',
+    delivery_refused: 'delivery_refused',
+    returned: 'returned',
     confirmed: 'confirmed',
     processing: 'processing',
     picking: 'picking',
@@ -44,7 +47,9 @@ function mapLineItems(lineItems: any[] = [], substitutions: any[] = []) {
       title: item.title,
       variant: undefined,
       quantity: item.quantity,
-      unit_price: Math.round((item.unitPrice || 0) * 100),
+      unit_price: Number.isFinite(item.unitPriceCents) && Number.isInteger(item.unitPriceCents)
+        ? item.unitPriceCents
+        : Math.round((item.unitPrice || 0) * 100),
       thumbnail: item.thumbnail,
       product: item.product
         ? {
@@ -68,9 +73,14 @@ function mapLineItems(lineItems: any[] = [], substitutions: any[] = []) {
 }
 
 export function mapStorefrontOrder(order: any): GroceryOrder {
-  const items = mapLineItems(order.lineItems || [], order.orderItemSubstitutions || []);
-  const subtotal = items.reduce((sum, item) => sum + item.unit_price * item.quantity, 0);
-  const metadata = order.metadata || {};
+  const finalSale=order.metadata?.finalSale;
+  const hasPickedActuals = ['finalized', 'requires_customer_authorization', 'processing'].includes(finalSale?.status) && Array.isArray(finalSale?.actuals);
+  const requestedItems = mapLineItems(order.lineItems || [], order.orderItemSubstitutions || []);
+  const items = hasPickedActuals
+    ? finalSale.actuals.map((line:any)=>({id:line.lineItemId,title:line.productTitle,quantity:line.quantityMilli/1000,unit_price:line.unitPriceCents,subtotalCents:line.subtotalCents,unitOfMeasure:line.unitOfMeasure,resolution:line.resolution,product:{id:line.productId,handle:line.product?.handle}}))
+    : requestedItems;
+  const subtotal = items.reduce((sum: number, item: any) => sum + item.unit_price * item.quantity, 0);
+  const metadata = hasPickedActuals ? {...order.metadata,...finalSale,deliveryFeeCents:finalSale.feeCents} : order.metadata || {};
   const authoritativeSubtotal = Number(metadata.subtotalCents ?? subtotal);
   const taxTotal = Number(metadata.taxCents ?? Math.round(authoritativeSubtotal * (order.taxRate || 0)));
   const shippingTotal = Number(metadata.deliveryFeeCents ?? Math.round((metadata.deliveryFee || 0) * 100));
@@ -81,6 +91,10 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
   const pickupReady = fulfillmentMethod === 'pickup' && Boolean(metadata.readyForPickup);
 
   return {
+    requestedItems,
+    receiptStage: finalSale?.status === 'finalized' ? 'final' : hasPickedActuals ? 'proposed' : 'requested',
+    finalSale: order.metadata?.finalSale,
+    deliveryOutcome: order.metadata?.deliveryStop || order.metadata?.deliveryOutcome,
     id: order.id,
     orderNumber: String(order.displayId || order.id.slice(-8).toUpperCase()),
     status: pickupReady && order.status === 'packed' ? 'ready_for_pickup' : mapOrderStatus(order.status),
@@ -92,7 +106,7 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
     shipping_total: shippingTotal,
     discount_total: discountTotal,
     total,
-    shippingAddress: order.shippingAddress,
+    shippingAddress: metadata.shippingAddressSnapshot || order.shippingAddress,
     fulfillmentMethod,
     deliverySlot: order.deliveryDate
       ? {
