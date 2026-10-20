@@ -8,6 +8,8 @@ import { refundPayment, getRefundStatus } from '../utils/paymentProviderAdapter'
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { assertRefundBudget, assertRefundCreationWindow, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export type RefundArgs = {
   paymentId: string;
   amountCents: number;
@@ -90,7 +92,7 @@ export async function refundPaymentForOrder(
     if (!payment || payment.storeId !== store.id) throw new Error('Payment not found in active store');
     const authorizationVoid = (payment.providerData as any)?.authorizationVoid;
     if (authorizationVoid && ['processing', 'unknown'].includes(authorizationVoid.status) && args.idempotencyKey !== `${authorizationVoid.key}:original-refund`) throw new Error('An authorization abandonment is unresolved; finish it before another refund');
-    if (!payment.providerPaymentId || !payment.paymentProvider?.isInstalled) throw new Error('Payment provider settlement is unavailable');
+    if (!payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw new Error('Payment provider settlement is unavailable');
     if (!['succeeded', 'partially_refunded', 'refunded'].includes(payment.status)) {
       throw new Error(`Only settled payments can be refunded: ${payment.status}`);
     }

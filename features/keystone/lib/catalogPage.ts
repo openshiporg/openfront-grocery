@@ -7,7 +7,8 @@ export function catalogPageQuery(args: {storeId:string;now:Date;department?:stri
   const filters=['p."store" = $1',`p."status" = 'published'`];
   if(args.ids?.length) filters.push(`p."id" = ANY(${bind([...new Set(args.ids)].slice(0,100))}::text[])`);
   if(args.handle) filters.push(`p."handle" = ${bind(args.handle)}`);
-  if(args.department?.trim()) filters.push(`d."handle" = ${bind(args.department.trim())}`);
+  // Only published (active) aisles can be browsed; a hidden aisle's handle selects nothing.
+  if(args.department?.trim()) filters.push(`d."handle" = ${bind(args.department.trim())} AND d."isActive" = true`);
   if(args.search?.trim()) {const p=bind(`%${args.search.trim().slice(0,200).replace(/[\\%_]/g,'\\$&')}%`);filters.push(`(p."title" ILIKE ${p} OR p."sku" ILIKE ${p} OR p."handle" ILIKE ${p})`);}
   if(args.organic===true) filters.push('p."organicCertified" = true');
   const availability=args.availability || 'in-stock';

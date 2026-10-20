@@ -27,9 +27,18 @@ export const Supplier = list({
     },
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
       const storeId = await currentMembershipStoreId({ session: context.session, context });
       if (!storeId) throw new Error('An active store is required');
+      // Every creation path writes the authoritative cents with the display amount.
+      if (operation === 'create') {
+        const amount = Number(resolvedData.minimumOrder ?? 0);
+        const cents = Math.round(amount * 100);
+        if (!Number.isFinite(amount) || amount < 0 || Math.abs(amount * 100 - cents) > 1e-6) {
+          throw new Error('Minimum order must be a non-negative amount with at most two decimal places');
+        }
+        return { ...resolvedData, minimumOrder: cents / 100, minimumOrderCents: cents, store: { connect: { id: storeId } } };
+      }
       return { ...resolvedData, store: { connect: { id: storeId } } };
     },
     validate: {

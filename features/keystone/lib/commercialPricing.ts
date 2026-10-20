@@ -39,9 +39,31 @@ export function priceCommercialLines(lines: CommercialLine[], discountCents = 0,
   const totalCents = cents(subtotalCents-discountCents+taxCents+feeCents);
   return {lines:priced,subtotalCents,discountCents,taxCents,feeCents,feeTaxCents,totalCents};
 }
+function couponList(value: unknown): string[] | null {
+  if (value === null || value === undefined) return [];
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+}
+
+/** A coupon whose restriction lists are malformed restricts everything; it never widens to every product. */
+export function couponRestrictionsValid(coupon: any) {
+  return !coupon || (couponList(coupon.productCategories) !== null && couponList(coupon.excludedProducts) !== null);
+}
+
+/**
+ * Whether a product line is covered by a coupon. Department matching follows
+ * the coupon's own taxonomy: Store department handles (departmentRef) for
+ * current offers, the legacy product department for offers — and order
+ * snapshots — created before that taxonomy existed.
+ */
 export function isCouponLineEligible(product: any, coupon: any) {
   if (!coupon) return true;
-  const categories = Array.isArray(coupon.productCategories) ? coupon.productCategories : [];
-  const excluded = Array.isArray(coupon.excludedProducts) ? coupon.excludedProducts : [];
-  return !!product?.id && (!categories.length || categories.includes(product.department)) && !excluded.includes(product.id);
+  const categories = couponList(coupon.productCategories);
+  const excluded = couponList(coupon.excludedProducts);
+  if (!categories || !excluded || !product?.id) return false;
+  if (excluded.includes(product.id)) return false;
+  if (!categories.length) return true;
+  const department = coupon.categoryTaxonomy === 'department_handle'
+    ? (product.departmentRef?.handle ?? product.departmentHandle)
+    : product.department;
+  return Boolean(department) && categories.includes(department);
 }

@@ -40,8 +40,9 @@ export async function manageInventorySafety(_root: unknown, args: SafetyArgs, co
       if (args.action === 'disposition') {
         if (!(recall.scope?.lots || []).some((lot: any) => lot.id === args.evidence?.lotId)) throw new Error('Disposition lot is outside recall scope');
         if (!['released', 'recovered', 'disposed', 'unaccounted'].includes(args.evidence?.disposition) || quantityMilli(args.evidence?.quantity) <= 0 || !args.evidence?.custody?.trim()) throw new Error('Disposition requires positive quantity and custody evidence');
+        let replaced: any = null;
         if (args.evidence.replacesIdempotencyKey) {
-          const replaced = effectiveDispositions(events).find(value => value.idempotencyKey === args.evidence.replacesIdempotencyKey);
+          replaced = effectiveDispositions(events).find(value => value.idempotencyKey === args.evidence.replacesIdempotencyKey);
           if (!replaced || replaced.evidence.lotId !== args.evidence.lotId || quantityMilli(replaced.evidence.quantity) !== quantityMilli(args.evidence.quantity)) throw new Error('Disposition correction must replace one current outcome for the same lot and quantity');
         }
         const lotScope = recall.scope.lots.find((lot: any) => lot.id === args.evidence.lotId);
@@ -55,13 +56,20 @@ export async function manageInventorySafety(_root: unknown, args: SafetyArgs, co
         requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', identity.id), 'disposition lot lock');
         const lot = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: identity.id } }), 'disposition lot lookup');
         const product = requirePrismaSuccess(await tx.product.findUnique({ where: { id: identity.productId } }), 'disposition product lookup');
-        const delta = args.evidence.disposition === 'recovered' ? stockQuantity : args.evidence.disposition === 'unaccounted' ? 0 : -stockQuantity;
+        // Physical effect of an outcome on stock (milli-units).
+        const physicalDelta = (evidence: any) => evidence.disposition === 'recovered' ? quantityMilli(evidence.stockQuantity ?? 0)
+          : evidence.disposition === 'unaccounted' ? 0 : -quantityMilli(evidence.stockQuantity ?? 0);
+        // A correction replaces the earlier outcome's evidence: only the difference
+        // between the two physical effects moves stock (the original movement stays
+        // in the journal; this is its compensating entry).
+        const deltaMilli = physicalDelta(args.evidence) - (replaced ? physicalDelta(replaced.evidence) : 0);
+        const delta = deltaMilli;
         const nextLot = (quantityMilli(lot.quantityRemaining) + delta) / 1000;
         const nextProduct = (quantityMilli(product.stockQuantity) + delta) / 1000;
         if (Math.min(nextLot, nextProduct) < 0 || quantityMilli(nextLot) > quantityMilli(lot.quantity)) throw new Error('Disposition exceeds recorded physical stock');
         requirePrismaSuccess(await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot } }), 'disposition lot balance update');
         requirePrismaSuccess(await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextProduct, inStock: nextProduct > 0 } }), 'disposition product balance update');
-        await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lot.id, sourceType: `recall_${args.evidence.disposition}`, sourceId: recall.id, idempotencyKey: `recall-disposition:${args.idempotencyKey}`, actorId: context.session!.itemId, reason: args.reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextProduct, metadata: { ...args.evidence, recallId: recall.id } });
+        if (delta !== 0 || !replaced) await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lot.id, sourceType: replaced ? 'recall_correction' : `recall_${args.evidence.disposition}`, sourceId: recall.id, idempotencyKey: `recall-disposition:${args.idempotencyKey}`, actorId: context.session!.itemId, reason: args.reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextProduct, metadata: { ...args.evidence, recallId: recall.id, ...(replaced ? { replacesIdempotencyKey: replaced.idempotencyKey, replacedDisposition: replaced.evidence.disposition } : {}) } });
       }
       if (args.action === 'close') {
         for (const lot of recall.scope.lots) {

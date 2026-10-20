@@ -11,15 +11,32 @@ import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requirePrismaSuccess, withSerializableRetry } from '../utils/serializableTransaction';
 import { requireSessionStore } from '../lib/storeScope';
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 type HandlePaymentProviderWebhookArgs = {
   providerCode: string;
   rawBody: string;
   headers?: Record<string, string> | null;
 };
 
-function normalizePaymentId(resource: any) {
-  const value = resource?.payment_intent || resource?.id;
-  return typeof value === 'string' ? value : value?.id || null;
+function providerId(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value;
+  const nested = (value as { id?: unknown } | null)?.id;
+  return typeof nested === 'string' && nested.trim() ? nested : null;
+}
+
+const REFUND_EVENT_TYPES = ['refund.succeeded', 'refund.processing', 'refund.created', 'refund.updated', 'refund.failed', 'refund.canceled', 'refund.cancelled'];
+
+/**
+ * The provider payment a verified resource belongs to. One typed contract for
+ * Stripe and Grocery-normalized remote envelopes: a refund resource names its
+ * payment by `payment_intent` (Stripe) or `paymentId` (normalized) — its own
+ * `id` is the refund and is never treated as a payment. Payment and charge
+ * resources use `payment_intent`, then `paymentId`, then their own id.
+ */
+function normalizePaymentId(resource: any, eventType?: string) {
+  if (eventType && REFUND_EVENT_TYPES.includes(eventType)) return providerId(resource?.payment_intent) || providerId(resource?.paymentId);
+  return providerId(resource?.payment_intent) || providerId(resource?.paymentId) || providerId(resource?.id);
 }
 
 function normalizePaymentStatus(eventType: string): PaymentEventStatus | null {
@@ -82,19 +99,37 @@ export async function processPaymentProviderWebhook(
       capturePaymentFunction: true, refundPaymentFunction: true, getPaymentStatusFunction: true,
       getRefundStatusFunction: true, cancelPaymentFunction: true, generatePaymentLinkFunction: true, handleWebhookFunction: true },
   }), 'payment provider configuration lookup');
-  if (!provider?.isInstalled) throw new Error(`Payment provider ${providerCode} not found or not installed`);
+  if (!provider || !isPaymentProviderInstalled(provider)) throw new Error(`Payment provider ${providerCode} not found or not installed`);
   const verified = await verifyPaymentWebhook({ provider, rawBody, headers: headers || {} });
   if (verified.isValid !== true) throw new Error('Payment webhook signature is invalid');
+  // A shared Stripe account delivers other shops' events here too. Verify
+  // first, then ignore foreign resources before creating any durable receipt.
+  if (providerCode === 'pp_stripe_default' && (verified.resource as any)?.metadata?.source !== 'openfront-grocery') {
+    const paymentId = normalizePaymentId(verified.resource, verified.type);
+    const owned = paymentId && await context.prisma.payment.findFirst({
+      where: { providerPaymentId: paymentId, paymentProviderId: provider.id }, select: { id: true },
+    });
+    if (!owned) return { success: true, ignored: true };
+  }
+  // The signature proved the delivery is fresh; the event's own time says when it
+  // happened. A known event is acknowledged as a duplicate whatever its age; an
+  // unknown old event is kept for review instead of being discarded or applied.
   const createdSeconds = Number((verified.event as any)?.created || 0);
-  if (createdSeconds && Math.abs(Date.now() - createdSeconds * 1000) > 7 * 24 * 60 * 60 * 1000) throw new Error('Payment webhook event is outside the replay window');
-  return processVerifiedPaymentEvent(providerCode, verified, createHash('sha256').update(rawBody).digest('hex'), context);
+  if (createdSeconds && createdSeconds * 1000 - Date.now() > 60 * 60 * 1000) throw new Error('Payment webhook event time is invalid');
+  const historic = Boolean(createdSeconds && Date.now() - createdSeconds * 1000 > 7 * 24 * 60 * 60 * 1000);
+  return processVerifiedPaymentEvent(providerCode, verified, createHash('sha256').update(rawBody).digest('hex'), context, undefined, { historic });
 }
 
-async function processVerifiedPaymentEvent(providerCode: string, verified: any, payloadHash: string, context: Context, expectedStoreId?: string) {
+/** Event classes Grocery acts on; anything else is recorded as ignored, not left unmatched. */
+function isSupportedEventType(eventType: string) {
+  return normalizePaymentStatus(eventType) !== null || REFUND_EVENT_TYPES.includes(eventType) || eventType === 'charge.refunded';
+}
+
+async function processVerifiedPaymentEvent(providerCode: string, verified: any, payloadHash: string, context: Context, expectedStoreId?: string, options: { historic?: boolean } = {}) {
   const eventType = verified.type;
   const providerEventId = verified.eventId;
   if (!providerEventId) throw new Error('Payment webhook event id is required');
-  const paymentId = normalizePaymentId(verified.resource);
+  const paymentId = normalizePaymentId(verified.resource, eventType);
   const status = eventType === 'charge.succeeded' && verified.resource?.captured === false ? null : normalizePaymentStatus(eventType);
   const refundStatus = normalizeRefundStatus(eventType, verified.resource);
   const replayKey = `${providerCode}:${providerEventId}`;
@@ -107,7 +142,7 @@ async function processVerifiedPaymentEvent(providerCode: string, verified: any, 
       where: { code: providerCode },
       select: { id: true, code: true, isInstalled: true },
     });
-    if (!provider?.isInstalled) {
+    if (!provider || !isPaymentProviderInstalled(provider)) {
       throw new Error(`Payment provider ${providerCode} not found or not installed`);
     }
 
@@ -157,8 +192,15 @@ async function processVerifiedPaymentEvent(providerCode: string, verified: any, 
       };
     }
 
+    if (eventRecord.claimToken === claimToken && options.historic) {
+      // First sight of an old event: keep the verified envelope for operator
+      // review against current provider facts rather than applying it blindly.
+      await tx.paymentWebhookEvent.update({ where: { id: eventRecord.id }, data: { status: 'unmatched', deadLetterAt: new Date(), nextAttemptAt: null, lastProcessingError: 'Event is older than seven days; retained for operator review', processedAt: new Date() } });
+      return { success: true, duplicate: false, retained: true, providerCode: provider.code, eventType, paymentId, updatedPaymentId: null, message: 'Historic payment webhook retained for review.' };
+    }
+
     let updatedPaymentId: string | null = null;
-    let eventProcessingStatus: 'processed' | 'ignored' | 'unmatched' = 'unmatched';
+    let eventProcessingStatus: 'processed' | 'ignored' | 'unmatched' = isSupportedEventType(eventType) ? 'unmatched' : 'ignored';
     if (knownPayment && status) {
       updatedPaymentId = knownPayment.id;
       if (paymentEventMatchesFinancials(eventType, verified.resource, knownPayment, store.currencyCode)) {
@@ -210,7 +252,7 @@ async function processVerifiedPaymentEvent(providerCode: string, verified: any, 
         const refundId = resource?.id;
         let candidate: any = null;
         try {
-          normalizeProviderRefund({ ...resource, paymentId: resource?.payment_intent || paymentId }, {
+          normalizeProviderRefund({ ...resource, paymentId: providerId(resource?.payment_intent) || providerId(resource?.paymentId) || paymentId }, {
             amountCents, currencyCode: store.currencyCode.toLowerCase(), providerPaymentId: paymentId!,
           });
           if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > knownPayment.amountCents) throw new Error('Invalid refund amount');
@@ -292,7 +334,14 @@ async function processVerifiedPaymentEvent(providerCode: string, verified: any, 
   }, { isolationLevel: 'Serializable' as any }));
 }
 
-const VERIFIED_REFUND_TYPES = ['refund.created', 'refund.updated', 'refund.failed', 'refund.canceled', 'refund.cancelled', 'charge.refunded'];
+// Every event class Grocery processes can be replayed from its verified envelope:
+// payment events that arrived before their local Payment (or before its amount
+// reconciled) as well as every admitted refund type.
+const VERIFIED_REFUND_TYPES = [...REFUND_EVENT_TYPES, 'charge.refunded',
+  'payment.succeeded', 'payment_intent.succeeded', 'charge.succeeded',
+  'payment.processing', 'payment_intent.processing', 'charge.pending',
+  'payment.failed', 'payment_intent.payment_failed', 'charge.failed',
+  'payment.cancelled', 'payment.canceled', 'payment_intent.canceled', 'payment_intent.cancelled'];
 const VERIFIED_EVENT_MAX_ATTEMPTS = 5;
 
 async function reconcileOneVerifiedEvent(context: Context, storeId: string, eventId: string) {
@@ -346,7 +395,7 @@ export async function replayPaymentWebhookEvent(_root: unknown, args: { eventId:
     const tx = tc.prisma as any;
     await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', args.eventId);
     const event = await tx.paymentWebhookEvent.findUnique({ where: { id: args.eventId } });
-    if (!event || event.storeId !== store.id || event.status !== 'unmatched' || !event.deadLetterAt || !VERIFIED_REFUND_TYPES.includes(event.eventType)) throw new Error('Only dead-lettered unmatched refunds in the active Store can be replayed');
+    if (!event || event.storeId !== store.id || event.status !== 'unmatched' || !event.deadLetterAt || !VERIFIED_REFUND_TYPES.includes(event.eventType)) throw new Error('Only dead-lettered unmatched payment events in the active Store can be replayed');
     await tx.paymentWebhookEvent.update({ where: { id: event.id }, data: { processingAttempts: 0, nextAttemptAt: null, deadLetterAt: null, lastProcessingError: '', replayAudit: [...(Array.isArray(event.replayAudit) ? event.replayAudit : []), { actorId: context.session!.itemId, reason, replayedAt: new Date().toISOString(), previousAttempts: event.processingAttempts, previousError: event.lastProcessingError ? 'Previous reconciliation details are withheld.' : '' }] } });
   });
   const reconciled = await reconcileOneVerifiedEvent(context, store.id, args.eventId);

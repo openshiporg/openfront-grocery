@@ -5,15 +5,15 @@ import { models } from "./models";
 import { statelessSessions } from "@keystone-6/core/session";
 import { extendGraphqlSchema } from "./mutations";
 import { sendPasswordResetEmail } from "./lib/mail";
+import { publicError } from "./lib/publicError";
 import { permissions } from "./access";
-import { assertProductionPaymentConfig, getCanonicalSiteUrl, getDatabaseUrl, getPublicStoreId, getSessionMaxAge, getSessionSecret, getStorageConfig, isProduction } from './lib/runtimeConfig';
+import { getCanonicalSiteUrl, getDatabaseUrl, getPublicStoreId, getSessionMaxAge, getSessionSecret, getStorageConfig, isProduction } from './lib/runtimeConfig';
 import { boundedGraphqlDepthRule, rejectIntrospectionInProduction } from './lib/graphqlSecurity';
-import { graphqlRateLimitPlugin } from './lib/graphqlRateLimit';
 import { extendPrismaClientWithErrorNormalization } from './utils/serializableTransaction';
 import { resolveApplicationOrigin } from '../../lib/applicationOrigin';
 
 const databaseURL = getDatabaseUrl();
-assertProductionPaymentConfig();
+// Optional payment providers are checked when used (discovery, new payments), not at startup.
 const publicStoreId = getPublicStoreId();
 const production = isProduction();
 const canonicalSiteUrl = production ? getCanonicalSiteUrl() : null;
@@ -68,7 +68,14 @@ const { withAuth } = createAuth({
   },
   passwordResetLink: {
     async sendToken(args) {
-      await sendPasswordResetEmail(args.token, args.identity, passwordResetOrigin(args.context));
+      // Staff reset on the dashboard; shoppers (no dashboard access) reset on the storefront.
+      const account = await args.context.prisma.user.findUnique({ where: { id: String(args.itemId) }, select: { role: { select: { canAccessDashboard: true } } } }).catch(() => null);
+      const resetPath = account?.role?.canAccessDashboard ? '/dashboard/reset' : '/account/reset';
+      try {
+        await sendPasswordResetEmail(args.token, args.identity, passwordResetOrigin(args.context), resetPath);
+      } catch {
+        throw publicError('The reset email could not be sent. Try again later or contact the store.', 'EMAIL_SEND_FAILED');
+      }
     },
   },
   sessionData: `
@@ -126,7 +133,6 @@ export default withAuth(
       cors: { origin: canonicalSiteUrl || true, credentials: true },
       apolloConfig: {
         validationRules: [boundedGraphqlDepthRule, rejectIntrospectionInProduction],
-        plugins: [graphqlRateLimitPlugin()],
       },
     },
   })

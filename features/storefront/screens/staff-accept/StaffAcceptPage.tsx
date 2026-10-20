@@ -1,8 +1,9 @@
 'use client';
 import Link from 'next/link';
 import { useEffect, useRef, useState, useTransition } from 'react';
+import { BadgeCheck, KeyRound, Link2Off } from 'lucide-react';
 import { storefrontGraphQL, throwGraphQLErrors } from '../../lib/data/graphql';
-import { UrbanButton, UrbanContainer, UrbanPageHeader, UrbanPageShell, UrbanTextInput } from '../../modules/urban/UrbanPrimitives';
+import { UrbanButton, UrbanContainer, UrbanPageShell, UrbanTextInput } from '../../modules/urban/UrbanPrimitives';
 export default function StaffAcceptPage() {
   const token = useRef('');
   const consumed = useRef(false);
@@ -15,7 +16,27 @@ export default function StaffAcceptPage() {
     const url = new URL(window.location.href); const fragment = new URLSearchParams(url.hash.slice(1)); fragment.delete('token');
     window.history.replaceState({}, '', `${url.pathname}${url.search}${fragment.size ? `#${fragment}` : ''}`);
   }, []);
-  return <UrbanPageShell><UrbanContainer className="py-8"><div className="mx-auto max-w-xl space-y-6"><UrbanPageHeader title="Accept your invitation" description="Set a password to activate the staff account you were invited to use." breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Staff invitation' }]} />
-    {complete ? <div className="sf-note"><p role="status">{message}</p><Link href="/dashboard/signin" className="mt-3 inline-flex min-h-11 items-center underline">Sign in to your staff account</Link></div> : !ready ? <p role="status">Opening your invitation…</p> : !token.current ? <div className="sf-note"><h2 className="font-semibold">An invitation link is needed</h2><p className="mt-2">Open the complete link from your invitation email. If it has expired, ask the store administrator for a new invitation.</p></div> : <form className="sf-panel space-y-4 p-5" onSubmit={(event) => { event.preventDefault(); const form = new FormData(event.currentTarget); setError(''); start(async () => { try { const response = await storefrontGraphQL<{acceptGroceryStaffInvitation: unknown}>('mutation Accept($token:String!,$password:String!){acceptGroceryStaffInvitation(token:$token,password:$password)}', { token: token.current, password: String(form.get('password') || '') }); throwGraphQLErrors(response.errors); if (!response.data?.acceptGroceryStaffInvitation) throw new Error('The invitation was not accepted. Ask the administrator for a new link.'); setComplete(true); setMessage('Your staff account is ready.'); token.current = ''; } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to accept the invitation.'); } }); }}><label className="sf-label">Choose a password<UrbanTextInput name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} disabled={pending} aria-describedby="invitation-password-help" /></label><p id="invitation-password-help" className="text-xs leading-6 text-[var(--sf-ink-muted)]">Use at least 12 characters.</p>{error ? <p role="alert" className="text-sm text-[var(--sf-danger)]">{error}</p> : null}<UrbanButton type="submit" disabled={pending}>{pending ? 'Accepting invitation…' : 'Accept invitation'}</UrbanButton></form>}
+  const state = complete ? 'complete' : !ready ? 'opening' : !token.current ? 'missing' : 'form';
+  const Icon = state === 'complete' ? BadgeCheck : state === 'missing' ? Link2Off : KeyRound;
+  return <UrbanPageShell><UrbanContainer className="py-10 sm:py-16"><div className="mx-auto max-w-md">
+    <div className="sf-panel overflow-hidden">
+      <div className="sf-dark px-6 pb-7 pt-8 sm:px-8">
+        <span className={`grid h-12 w-12 place-items-center rounded-full ${state === 'missing' ? 'bg-[var(--sf-header-2)] text-[var(--sf-header-ink)]' : 'bg-[var(--sf-tag)] text-[var(--sf-tag-ink)]'}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>
+        <p className="mt-5 text-[0.8125rem] font-medium text-[var(--sf-header-ink-muted)]">Staff invitation</p>
+        <h1 className="sf-subtitle mt-1">{state === 'complete' ? 'You’re all set.' : state === 'missing' ? 'An invitation link is needed' : 'Accept your invitation'}</h1>
+        <p className="mt-2 text-sm leading-6 text-[var(--sf-header-ink-muted)]">{state === 'missing' ? 'Open the complete link from your invitation email.' : 'Set a password to activate the staff account you were invited to use.'}</p>
+      </div>
+      <div className="p-6 sm:p-8">
+        {state === 'complete' ? <div className="space-y-4"><p role="status" className="rounded-[var(--sf-radius-md)] bg-[var(--sf-sage-light)] px-3 py-2.5 text-sm font-medium text-[var(--sf-sage)]">{message}</p><Link href="/dashboard/signin" className="inline-flex min-h-12 w-full items-center justify-center rounded-full bg-[var(--sf-ink)] px-5 text-sm font-semibold text-[var(--sf-paper)] hover:bg-[var(--sf-header-2)]">Sign in to your staff account</Link></div>
+          : state === 'opening' ? <div role="status" className="space-y-3"><span className="sr-only">Opening your invitation…</span><div aria-hidden="true" className="sf-skeleton h-4 w-32" /><div aria-hidden="true" className="sf-skeleton h-12" /><div aria-hidden="true" className="sf-skeleton h-12 rounded-full" /></div>
+          : state === 'missing' ? <p className="sf-copy">If the link has expired, ask the store administrator for a new invitation. <Link href="/" className="font-semibold text-[var(--sf-ink)] underline underline-offset-4">Back to the shop</Link></p>
+          : <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); const form = new FormData(event.currentTarget); setError(''); start(async () => { try { const response = await storefrontGraphQL<{acceptGroceryStaffInvitation: unknown}>('mutation Accept($token:String!,$password:String!){acceptGroceryStaffInvitation(token:$token,password:$password)}', { token: token.current, password: String(form.get('password') || '') }); throwGraphQLErrors(response.errors); if (!response.data?.acceptGroceryStaffInvitation) throw new Error('The invitation was not accepted. Ask the administrator for a new link.'); setComplete(true); setMessage('Your staff account is ready.'); token.current = ''; } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to accept the invitation.'); } }); }}>
+            <label className="sf-label">Choose a password<UrbanTextInput name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} disabled={pending} aria-describedby="invitation-password-help" /></label>
+            <p id="invitation-password-help" className="-mt-2 text-xs leading-6 text-[var(--sf-ink-muted)]">Use at least 12 characters.</p>
+            {error ? <p role="alert" className="rounded-[var(--sf-radius-md)] bg-[var(--sf-danger-bg)] px-3 py-2.5 text-sm font-medium text-[var(--sf-danger)]">{error}</p> : null}
+            <UrbanButton type="submit" variant="dark" size="lg" className="w-full" disabled={pending}>{pending ? 'Accepting invitation…' : 'Accept invitation'}</UrbanButton>
+          </form>}
+      </div>
+    </div>
   </div></UrbanContainer></UrbanPageShell>;
 }

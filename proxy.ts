@@ -1,35 +1,33 @@
-import { getFreshInstallRootRedirect } from "./features/platform/routing/freshInstall";
-import { handleDashboardRoutes, getAuthenticatedUser, authUnavailableResponse } from '@/features/dashboard/middleware';
-import { NextRequest, NextResponse } from 'next/server';
+import type { NextRequest } from "next/server";
+import { handleDashboardRoutes, getAuthenticatedUser } from "@/features/dashboard/middleware";
+import { handleStorefrontRoutes } from "@/features/storefront/middleware";
+import { NextResponse } from "next/server";
 
-const dashboardPath = '/dashboard';
+const dashboardPath = "/dashboard";
 
+// Main middleware function that handles all routes
 export async function proxy(request: NextRequest) {
-  const authState = await getAuthenticatedUser(request);
-  if (authState.status === 'unavailable') return authUnavailableResponse(authState.code);
-  const { user, redirectToInit } = authState;
-  const freshInstallRootRedirect = getFreshInstallRootRedirect(request.nextUrl.pathname, redirectToInit);
-  if (freshInstallRootRedirect) return NextResponse.redirect(new URL(freshInstallRootRedirect, request.url));
+  // Get authenticated user once
+  const { user, redirectToInit } = await getAuthenticatedUser(request);
 
-  // Let dashboard handler manage its routes
-  const dashboardResponse = await handleDashboardRoutes(request, user, redirectToInit);
-  if (dashboardResponse) return dashboardResponse;
-  if (redirectToInit) return NextResponse.redirect(new URL(`${dashboardPath}/init`, request.url));
+  // If redirectToInit is true (no users exist) and user is on storefront, redirect to dashboard init
+  if (redirectToInit && !request.nextUrl.pathname.startsWith(`${dashboardPath}/init`)) {
+    return NextResponse.redirect(new URL(`${dashboardPath}/init`, request.url));
+  }
 
-  return NextResponse.next();
+  // Let each handler manage its own routes and logic
+  const response = await handleDashboardRoutes(request, user, redirectToInit);
+  
+  // If dashboard handler didn't handle the route, pass to storefront
+  if (!response) {
+    return handleStorefrontRoutes(request, user);
+  }
+  
+  return response;
 }
 
 export const config = {
   matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api (API routes)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.svg (favicon file)
-     * - logo.svg and top-level /images image files (public assets, not auth queries)
-     * - manifest.webmanifest (public metadata, including before owner bootstrap)
-     */
-    '/((?!api|_next/static|_next/image|favicon.svg|logo\\.svg$|images/[^/]+\\.(?:jpg|jpeg|png|webp|avif|gif|svg)$|manifest\\.webmanifest$).*)',
+    "/((?!api|_next/static|_next/image|favicon.svg|images|assets|png|svg|jpg|jpeg|gif|webp).*)",
   ],
 };

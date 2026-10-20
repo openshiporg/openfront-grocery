@@ -4,6 +4,8 @@ import {
   ClipboardList,
   CreditCard,
   Factory,
+  Inbox,
+  Package,
   PackageCheck,
   Settings2,
   Store,
@@ -43,6 +45,7 @@ export interface GroceryPlatformNavGroup {
 
 export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
   {title:'Staff & privacy',href:'/platform/staff',description:'Invite staff, review capabilities and customer privacy requests.',icon:Users,group:'customers',capability:'canManageUsers'},
+  {title:'Customer inbox',href:'/platform/messages',description:'Read and follow up on messages shoppers send from the Help page.',icon:Inbox,group:'standalone',capability:'canManageOrders'},
   {title:'Communications',href:'/platform/communications',description:'Inspect customer messages and event retries.',icon:ClipboardList,group:'standalone',capability:'canManageOnboarding'},
   { title: 'Reports', href: '/platform/reports', description: 'Close trading periods and reconcile supplier and payment statements.', icon: ClipboardList, group: 'standalone', capability: 'canManagePayments' },
   { title: 'Recurring baskets & rewards', href: '/platform/subscriptions', description: 'Prepare scheduled baskets and manage rewards.', icon: BadgePercent, group: 'customers', capability: 'canManageOrders' },
@@ -81,7 +84,7 @@ export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
   {
     title: 'Payments',
     href: '/platform/payments',
-    description: 'Review provider truth, captured money, refunds, and recovery attention.',
+    description: 'Review payments and refunds, and resolve anything that needs attention.',
     icon: CreditCard,
     group: 'standalone',
     capability: 'canManagePayments',
@@ -89,15 +92,23 @@ export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
   {
     title: 'Settings',
     href: '/platform/settings',
-    description: 'Read Store policy, branding, tax, and fulfillment configuration.',
+    description: 'Edit store details, delivery area, logo and schedule.',
     icon: Settings2,
     group: 'standalone',
     capability: 'canManageOnboarding',
   },
   {
+    title: 'Products',
+    href: '/platform/products',
+    description: 'Create products, set prices and units, and publish them to the shop.',
+    icon: Package,
+    group: 'catalog',
+    capability: 'canManageProducts',
+  },
+  {
     title: 'Inventory',
     href: '/platform/inventory',
-    description: 'Review page-scoped lot-level stock, expiry risk, and low-stock signals.',
+    description: 'Review stock, expiry and count corrections.',
     icon: Warehouse,
     group: 'catalog',
     capability: 'canManageInventory',
@@ -113,7 +124,7 @@ export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
   {
     title: 'Purchasing',
     href: '/platform/purchasing',
-    description: 'Manage operator-created purchase orders and receiving; no reorder recommendation is provided.',
+    description: 'Create purchase orders, receive stock and match supplier invoices.',
     icon: Boxes,
     group: 'catalog',
     capability: 'canManageInventory',
@@ -163,6 +174,9 @@ export function getPlatformNavItemsForCapabilities(capabilities?: GroceryPlatfor
   return groceryPlatformNavItems.filter((item) => capabilities[item.capability] === true);
 }
 
+// Same contract as Openfront E-commerce: the shared Sidebar lists every platform entry; each page
+// enforces its own capability server-side. Pass capabilities to narrow the list for other callers.
 export function getPlatformNavItemsWithBasePath(basePath: string, capabilities?: GroceryPlatformCapabilities | null) {
-  return getPlatformNavItemsForCapabilities(capabilities).map((item) => ({ ...item, href: `${basePath}${item.href}` }));
+  const items = capabilities === undefined ? groceryPlatformNavItems : getPlatformNavItemsForCapabilities(capabilities);
+  return items.map((item) => ({ ...item, href: `${basePath}${item.href}` }));
 }

@@ -83,9 +83,18 @@ export function ownerStoreScopedFilter(ownerField = 'user') {
   };
 }
 
+/**
+ * Owner-owned records (favorites, alerts, preferences, addresses): only the
+ * signed-in owner, and only while that account is current — not erased and
+ * still a member of an active Store. A stale stateless cookie for an erased or
+ * deactivated account matches nothing.
+ */
 export function ownerScopedFilter(ownerField = 'user') {
-  return ({ session }: AccessArgs): Filter =>
-    session?.itemId ? { [ownerField]: { id: { equals: session.itemId } } } : false;
+  return async (args: AccessArgs): Promise<Filter> => {
+    const storeId = await currentMembershipStoreId(args);
+    if (!storeId || !args.session?.itemId) return false;
+    return { [ownerField]: { id: { equals: args.session.itemId }, store: { id: { equals: storeId } } } };
+  };
 }
 
 export function sameStoreInput(storeId: string | null | undefined, expectedStoreId: string | null | undefined) {

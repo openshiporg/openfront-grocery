@@ -33,7 +33,7 @@ export async function createCloseInTransaction(tx: any, actor: { store: { id: st
     readReportRows(tx.settlementMatch, { where: { storeId: actor.store.id, settledAt: range, createdAt: { lte: now } } }),
     readReportRows(tx.inventoryMovement, { where: { storeId: actor.store.id, createdAt: { lt: new Date(Math.min(period.end.getTime(), now.getTime())) } }, select: { id: true, storeId: true, inventoryLotId: true, orderId: true, sequence: true, quantityDelta: true, quantityAfter: true, createdAt: true, reason: true } }),
     readReportRows(tx.inventoryLot, { where: { storeId: actor.store.id, createdAt: { lte: now } }, select: { id: true, storeId: true, createdAt: true, costPerUnitCents: true } }),
-    readReportRows(tx.userCoupon, { where: { user: { storeId: actor.store.id }, clippedAt: { lte: now } }, select: { id: true, clippedAt: true, usedAt: true, user: { select: { storeId: true } }, coupon: { select: { id: true, code: true, discountType: true, discountValueCents: true, validTo: true } } } }),
+    readReportRows(tx.userCoupon, { where: { user: { storeId: actor.store.id }, clippedAt: { lte: now } }, select: { id: true, clippedAt: true, usedAt: true, updatedAt: true, user: { select: { storeId: true } }, coupon: { select: { id: true, code: true, discountType: true, discountValueCents: true, validTo: true, updatedAt: true } } } }),
   ]);
   // Include captured orders with missing legacy recognition evidence, even when
   // they were requested earlier. Never infer a finalization date from createdAt.
@@ -121,15 +121,17 @@ export async function groceryFinancialCloses(_root: unknown, args: { page?: numb
   const actor = await financialActor(context), page = args.page || 1, pageSize = args.pageSize || 25;
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new Error('Invalid report page');
   const tx = context.prisma as any;
-  const [closes, total, exceptions, totalExceptions] = await Promise.all([
+  const [closes, total, exceptions, totalExceptions, latestClose] = await Promise.all([
     tx.financialClose.findMany({ where: { storeId: actor.store.id }, orderBy: [{ cutoff: 'desc' }, { id: 'asc' }], skip: (page - 1) * pageSize, take: pageSize,
       select: { id: true, periodStart: true, periodEnd: true, timezone: true, cutoff: true, status: true, contentHash: true, note: true } }),
     tx.financialClose.count({ where: { storeId: actor.store.id } }),
     tx.settlementMatch.findMany({ where: { storeId: actor.store.id, status: 'unresolved' }, orderBy: [{ createdAt: 'desc' }, { id: 'asc' }], take: pageSize, skip: (page - 1) * pageSize,
       select: { id: true, statementReference: true, entryReference: true, paymentReference: true, amountCents: true, currencyCode: true, payoutReference: true, reason: true } }),
     tx.settlementMatch.count({ where: { storeId: actor.store.id, status: 'unresolved' } }),
+    // The latest close is global, whichever page of closes is being viewed.
+    tx.financialClose.findFirst({ where: { storeId: actor.store.id }, orderBy: [{ cutoff: 'desc' }, { id: 'asc' }], select: { id: true, periodStart: true, periodEnd: true, timezone: true, cutoff: true, status: true } }),
   ]);
-  return { closes, total, page, pageSize, exceptions, totalExceptions, currencyCode: actor.store.currencyCode, timezone: actor.store.timezone };
+  return { closes, total, page, pageSize, exceptions, totalExceptions, latestClose, currencyCode: actor.store.currencyCode, timezone: actor.store.timezone };
 }
 
 export async function groceryFinancialCloseExport(_root: unknown, { closeId }: { closeId: string }, context: Context) {

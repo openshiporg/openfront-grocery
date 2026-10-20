@@ -1,8 +1,9 @@
 'use server';
 
+import { randomUUID } from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 import { gql } from 'graphql-request';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { keystoneClient } from '@/features/platform/lib/platformClient';
 
 export async function updatePickupSlotState(input: {
   slotId: string;
@@ -13,14 +14,13 @@ export async function updatePickupSlotState(input: {
     mutation ConfigurePickupSlot($slotId: ID!, $isAvailable: Boolean, $maxOrders: Int, $idempotencyKey: String!) {
       configurePickupSlot(slotId: $slotId, isAvailable: $isAvailable, maxOrders: $maxOrders, idempotencyKey: $idempotencyKey) { slotId capacity currentBookings isAvailable reused }
     }
-  `, { ...input, idempotencyKey: `pickup-slot:${input.slotId}:${input.maxOrders ?? 'same'}:${input.isAvailable ?? 'same'}` });
+  `, { ...input, idempotencyKey: `pickup-slot:${input.slotId}:${input.maxOrders ?? 'same'}:${input.isAvailable ?? 'same'}:${randomUUID()}` });
 
-  if (!response.success) {
-    throw new Error(response.error);
-  }
+  // Returned, not thrown: production Next.js hides messages thrown from server actions.
+  if (!response.success) return { ok: false as const, error: response.error || 'The pickup update failed' };
 
   revalidatePath('/dashboard/platform/pickup');
-  return response.data;
+  return { ok: true as const, data: response.data };
 }
 
 export async function updateParkingSpotState(input: { spotId: string; isAvailable: boolean }) {
@@ -28,14 +28,13 @@ export async function updateParkingSpotState(input: { spotId: string; isAvailabl
     mutation ConfigureParkingSpot($spotId: ID!, $isAvailable: Boolean!, $idempotencyKey: String!) {
       configureParkingSpot(spotId: $spotId, isAvailable: $isAvailable, idempotencyKey: $idempotencyKey) { slotId isAvailable reused }
     }
-  `, { ...input, idempotencyKey: `parking-spot:${input.spotId}:${input.isAvailable}` });
+  `, { ...input, idempotencyKey: `parking-spot:${input.spotId}:${input.isAvailable}:${randomUUID()}` });
 
-  if (!response.success) {
-    throw new Error(response.error);
-  }
+  // Returned, not thrown: production Next.js hides messages thrown from server actions.
+  if (!response.success) return { ok: false as const, error: response.error || 'The pickup update failed' };
 
   revalidatePath('/dashboard/platform/pickup');
-  return response.data;
+  return { ok: true as const, data: response.data };
 }
 
 export async function completePickupOrderHandoff(input: { orderId: string }) {
@@ -53,11 +52,10 @@ export async function completePickupOrderHandoff(input: { orderId: string }) {
     orderId: input.orderId,
   });
 
-  if (!response.success) {
-    throw new Error(response.error);
-  }
+  // Returned, not thrown: production Next.js hides messages thrown from server actions.
+  if (!response.success) return { ok: false as const, error: response.error || 'The pickup update failed' };
 
   revalidatePath('/dashboard/platform/pickup');
   revalidatePath('/dashboard/platform/orders');
-  return response.data;
+  return { ok: true as const, data: response.data };
 }

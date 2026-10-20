@@ -1,5 +1,3 @@
-import { stripeCheckoutActivated } from '../../integrations/payment/stripeEnabled';
-
 const PLACEHOLDER_VALUES = new Set([
   '',
   'change-me',
@@ -23,18 +21,29 @@ export function isProduction() {
   return process.env.NODE_ENV === 'production';
 }
 
+// Grocery runs on PostgreSQL only (advisory locks, raw SQL, Serializable
+// transactions); development defaults to a local PostgreSQL database, never SQLite.
+const DEVELOPMENT_DATABASE_URL = 'postgresql://postgres:postgres@127.0.0.1:5432/openfront_grocery';
+
 export function getDatabaseUrl() {
-  if (isProduction()) {
-    const value = required('DATABASE_URL');
-    if (!/^postgres(ql)?:\/\//i.test(value)) throw new Error('DATABASE_URL must be a PostgreSQL URL in production');
-    return value;
-  }
-  return process.env.DATABASE_URL || 'file:./keystone.db';
+  const value = isProduction() ? required('DATABASE_URL') : process.env.DATABASE_URL?.trim() || DEVELOPMENT_DATABASE_URL;
+  if (!/^postgres(ql)?:\/\//i.test(value)) throw new Error('DATABASE_URL must be a PostgreSQL URL');
+  return value;
 }
 
+const DEVELOPMENT_SESSION_SECRET = 'local-development-only-session-secret';
+// Secrets published in this repository (the development fallback and the
+// documented examples) are public knowledge and never sign production sessions.
+const PUBLISHED_SESSION_SECRETS = new Set([
+  DEVELOPMENT_SESSION_SECRET,
+  'replace-with-at-least-32-random-characters',
+  'replace-with-a-random-secret-at-least-32-characters',
+]);
+
 export function getSessionSecret() {
-  const value = isProduction() ? required('SESSION_SECRET') : process.env.SESSION_SECRET || 'local-development-only-session-secret';
+  const value = isProduction() ? required('SESSION_SECRET') : process.env.SESSION_SECRET || DEVELOPMENT_SESSION_SECRET;
   if (value.length < 32) throw new Error('SESSION_SECRET must be at least 32 characters');
+  if (isProduction() && PUBLISHED_SESSION_SECRETS.has(value)) throw new Error('SESSION_SECRET must be a private random value, not a published example');
   return value;
 }
 
@@ -58,27 +67,6 @@ export function getCanonicalSiteUrl() {
   const parsed = new URL(value);
   if (isProduction() && parsed.protocol !== 'https:') throw new Error('NEXT_PUBLIC_SITE_URL must use HTTPS in production');
   return value.replace(/\/$/, '');
-}
-
-export function isStripeEnabled() {
-  const value = process.env.STRIPE_ENABLED?.trim().toLowerCase();
-  if (isProduction() && value !== 'true' && value !== 'false') {
-    throw new Error('STRIPE_ENABLED must be explicitly true or false in production');
-  }
-  return stripeCheckoutActivated();
-}
-
-export function assertProductionPaymentConfig() {
-  if (!isProduction()) return;
-  if (isStripeEnabled()) {
-    const secretKey = required('STRIPE_SECRET_KEY');
-    required('STRIPE_WEBHOOK_SECRET');
-    const publishableKey = required('NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY');
-    if (!secretKey.startsWith('sk_live_')) throw new Error('STRIPE_SECRET_KEY must be a live-mode key in production');
-    if (!publishableKey.startsWith('pk_live_')) throw new Error('NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY must be a live-mode key in production');
-  }
-  if (process.env.TRUSTED_PROXY !== 'true') throw new Error('TRUSTED_PROXY=true is required in production for Railway HTTP-edge client identity');
-  if (process.env.RAILWAY_TCP_PROXY_DOMAIN?.trim()) throw new Error('Trusted X-Real-IP rate limits require Railway HTTP ingress, not a TCP proxy');
 }
 
 export function getStorageConfig() {

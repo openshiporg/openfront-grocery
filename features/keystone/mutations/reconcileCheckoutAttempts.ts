@@ -14,6 +14,8 @@ function isSettled(status: string) {
   return ['succeeded', 'captured', 'requires_capture', 'authorized'].includes(status);
 }
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export async function checkoutRecoveryPaymentState(context: any, lease: Pick<CheckoutLease, 'paymentSessionId' | 'providerPaymentId' | 'amountCents'>, provider: any, retrieve = getPaymentStatus) {
   const session = await context.prisma.paymentSession.findUnique({ where: { id: lease.paymentSessionId } });
   const noCharge = noChargeCheckoutState(session);
@@ -47,7 +49,7 @@ export async function reconcileCheckoutAttempts(_root: unknown, { limit = 20 }: 
         capturePaymentFunction: true, refundPaymentFunction: true, getPaymentStatusFunction: true,
         getRefundStatusFunction: true, cancelPaymentFunction: true, generatePaymentLinkFunction: true, handleWebhookFunction: true },
     });
-    if (!provider?.isInstalled) continue;
+    if (!provider || !isPaymentProviderInstalled(provider)) continue;
 
     const action = attempt.status === 'compensation_required' || attempt.status === 'compensation_processing' ? 'compensate' : 'finalize';
     const lease = await context.transaction(async (transactionContext) => claimCheckoutAttempt(transactionContext.prisma, attempt.id, action));

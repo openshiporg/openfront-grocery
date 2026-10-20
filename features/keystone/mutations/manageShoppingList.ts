@@ -1,49 +1,49 @@
 import type { Context } from '.keystone/types';
 
-import { requireSessionStore } from '../lib/storeScope';
-import { addToCart } from './cartOperations';
+import { lockCurrentCustomer } from '../lib/storeScope';
+import { publicError } from '../lib/publicError';
+import { exactWholeConversion, measureDimension, normalizeMeasureUnit } from '../lib/fulfillmentActuals';
+import { addCartBatch } from './cartOperations';
 
-// Helper to get shopping list with authorization check
-async function getShoppingListForUser(
-  context: Context,
-  listId: string
-): Promise<any> {
-  const sudoContext = context.sudo();
-
-  if (!context.session?.itemId) {
-    throw new Error('Must be logged in to manage shopping lists');
+const LIST_QUERY = `
+  id
+  name
+  isDefault
+  user { id }
+  items {
+    id
+    product
+    productRef { id }
+    quantity
+    unit
+    checked
+    notes
+    addedAt
   }
+`;
 
-  const list = await sudoContext.query.ShoppingList.findOne({
-    where: { id: listId },
-    query: `
-      id
-      name
-      isDefault
-      user { id }
-      items {
-        id
-        product
-        productRef { id }
-        quantity
-        unit
-        checked
-        notes
-        addedAt
-      }
-    `,
+/**
+ * Every list change runs here: one transaction holding the customer's row lock
+ * (re-checking erasure and active Store membership, in erasure's lock order)
+ * and then the list's row lock, so additions, quantity changes and deletion of
+ * the same list are serialized and never interleave into partial state.
+ */
+async function withOwnedList<T>(context: Context, listId: string, operation: (transactionContext: Context, list: any, store: { id: string }) => Promise<T>) {
+  if (!context.session?.itemId) throw new Error('Must be logged in to manage shopping lists');
+  return context.transaction(async (transactionContext) => {
+    const store = await lockCurrentCustomer(transactionContext);
+    await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "ShoppingList" WHERE "id" = $1 FOR UPDATE', listId);
+    const list = await transactionContext.sudo().query.ShoppingList.findOne({ where: { id: listId }, query: LIST_QUERY });
+    if (!list) throw new Error('Shopping list not found');
+    if (list.user?.id !== context.session!.itemId) throw new Error('Not authorized to access this shopping list');
+    return operation(transactionContext, list, store);
   });
+}
 
-  if (!list) {
-    throw new Error('Shopping list not found');
-  }
-
-  // Verify ownership
-  if (list.user?.id !== context.session.itemId) {
-    throw new Error('Not authorized to access this shopping list');
-  }
-
-  return list;
+async function reloadList(transactionContext: Context, listId: string) {
+  const list = await transactionContext.sudo().query.ShoppingList.findOne({ where: { id: listId }, query: LIST_QUERY });
+  if (!list) throw new Error('Shopping list not found');
+  return formatShoppingListResponse(list);
 }
 
 // Format shopping list response
@@ -66,74 +66,91 @@ function formatShoppingListResponse(list: any) {
   };
 }
 
+/**
+ * The exact catalog product a list entry refers to: an explicit product ID
+ * first, then a unique handle, then an exact title. A title shared by several
+ * products (different packs or SKUs) is never resolved by picking one.
+ */
+async function resolveListProduct(transactionContext: Context, storeId: string, { productId, product }: { productId?: string | null; product?: string | null }) {
+  const sudoContext = transactionContext.sudo();
+  const published = { store: { id: { equals: storeId } }, status: { equals: 'published' as const } };
+  const query = 'id title handle sku variantLabel unitOfMeasure pricingMethod';
+  if (productId) {
+    const found = await sudoContext.query.Product.findMany({ where: { ...published, id: { equals: productId } }, query, take: 1 });
+    if (!found[0]) throw publicError('That product is no longer available in the shop.');
+    return found[0];
+  }
+  const text = String(product || '').trim();
+  if (!text) throw publicError('Choose a product to add.');
+  const byHandle = await sudoContext.query.Product.findMany({ where: { ...published, handle: { equals: text } }, query, take: 1 });
+  if (byHandle[0]) return byHandle[0];
+  const byTitle = await sudoContext.query.Product.findMany({ where: { ...published, title: { equals: text, mode: 'insensitive' as const } }, query, take: 6 });
+  if (!byTitle.length) throw publicError(`No product named “${text.slice(0, 80)}” is in the shop. Check the name, or save it from its product page.`);
+  if (byTitle.length > 1) {
+    const choices = byTitle.slice(0, 5).map((option: any) => [option.title, option.variantLabel, option.sku].filter(Boolean).join(' · ')).join('; ');
+    throw publicError(`Several products are named “${text.slice(0, 80)}” (${choices}). Open the one you want and use “Save to a shopping list”.`, 'PRODUCT_CHOICE_REQUIRED');
+  }
+  return byTitle[0];
+}
+
+/** The unit a list entry is kept in: the product's own unit unless a compatible measure was chosen. */
+function listUnitFor(productUnit: string, requested?: string | null) {
+  const native = normalizeMeasureUnit(productUnit) || 'each';
+  if (!requested || !String(requested).trim()) return native;
+  const unit = normalizeMeasureUnit(requested);
+  if (!unit) throw publicError(`“${String(requested).slice(0, 20)}” is not a unit the shop supports. Use ${native}.`);
+  if (measureDimension(unit) !== measureDimension(native)) throw publicError(`This product is sold by ${native}; ${unit} cannot be converted to it.`);
+  return unit;
+}
+
 // Add item to shopping list
 export async function addToList(
   root: any,
   {
     listId,
     product,
+    productId,
     quantity,
     unit,
     notes,
+    mode,
   }: {
     listId: string;
-    product: string;
-    quantity?: number;
-    unit?: string;
-    notes?: string;
+    product?: string | null;
+    productId?: string | null;
+    quantity?: number | null;
+    unit?: string | null;
+    notes?: string | null;
+    mode?: string | null;
   },
   context: Context
 ) {
-  const sudoContext = context.sudo();
-
-  const store = await requireSessionStore(context);
-  // Resolve the display snapshot to a published product identity inside the owner's Store.
-  const matchingProducts = await sudoContext.query.Product.findMany({
-    where: { AND: [{ store: { id: { equals: store.id } } }, { status: { equals: 'published' } }, { OR: [{ id: { equals: product } }, { handle: { equals: product } }, { title: { equals: product } }] }] },
-    query: 'id title handle store { id }',
-    take: 2,
+  const amount = quantity ?? 1;
+  if (!Number.isInteger(amount) || amount < 1 || amount > 999) throw publicError('List quantities are whole numbers from 1 to 999.');
+  if (mode && mode !== 'add' && mode !== 'set') throw new Error('Unsupported list quantity mode');
+  return withOwnedList(context, listId, async (transactionContext, list, store) => {
+    const productRecord = await resolveListProduct(transactionContext, store.id, { productId, product });
+    const listUnit = listUnitFor(productRecord.unitOfMeasure, unit);
+    const prisma = transactionContext.prisma;
+    // One line per product identity: the saved title is only a display snapshot.
+    const existingItem = list.items.find((item: any) => item.productRef?.id === productRecord.id);
+    if (existingItem) {
+      const sameUnit = (normalizeMeasureUnit(existingItem.unit) || listUnit) === listUnit;
+      if (!sameUnit && mode !== 'set') throw publicError(`${productRecord.title} is already on this list in ${existingItem.unit}. Change that line instead.`);
+      const nextQuantity = mode === 'set' ? amount : existingItem.quantity + amount;
+      if (nextQuantity > 999) throw publicError('List quantities are whole numbers from 1 to 999.');
+      await prisma.shoppingListItem.update({
+        where: { id: existingItem.id },
+        data: { quantity: nextQuantity, unit: listUnit, ...(notes && notes !== existingItem.notes ? { notes: notes.slice(0, 500) } : {}) },
+      });
+    } else {
+      if (list.items.length >= 200) throw publicError('A list can hold up to 200 products.');
+      await prisma.shoppingListItem.create({
+        data: { listId, product: productRecord.title, productRefId: productRecord.id, quantity: amount, unit: listUnit, notes: (notes || '').slice(0, 500), checked: false, addedAt: new Date() },
+      });
+    }
+    return reloadList(transactionContext, listId);
   });
-  const productRecord = matchingProducts[0];
-  if (!productRecord) throw new Error('Shopping-list items must reference a catalog product');
-
-  // Get and verify list ownership
-  const list = await getShoppingListForUser(context, listId);
-
-  // Check if product already exists in list
-  const existingItem = list.items.find(
-    (item: any) => item.product.toLowerCase() === product.toLowerCase()
-  );
-
-  if (existingItem) {
-    const requestedQuantity = quantity || 1;
-    await sudoContext.query.ShoppingListItem.updateOne({
-      where: { id: existingItem.id },
-      data: {
-        quantity: requestedQuantity,
-        ...(unit && { unit }),
-        ...(notes && notes !== existingItem.notes ? { notes } : {}),
-        productRef: { connect: { id: productRecord.id } },
-      },
-    });
-  } else {
-    // Create new item
-    await sudoContext.query.ShoppingListItem.createOne({
-      data: {
-        list: { connect: { id: listId } },
-        product: productRecord.title,
-        productRef: { connect: { id: productRecord.id } },
-        quantity: quantity || 1,
-        unit: unit || 'each',
-        notes: notes || '',
-        checked: false,
-        addedAt: new Date().toISOString(),
-      },
-    });
-  }
-
-  // Return updated list
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 
 // Remove item from shopping list
@@ -142,81 +159,42 @@ export async function removeFromList(
   { listId, itemId }: { listId: string; itemId: string },
   context: Context
 ) {
-  const sudoContext = context.sudo();
-
-  // Verify list ownership
-  await getShoppingListForUser(context, listId);
-
-  // Get the item to verify it belongs to this list
-  const item = await sudoContext.query.ShoppingListItem.findOne({
-    where: { id: itemId },
-    query: 'id list { id }',
+  return withOwnedList(context, listId, async (transactionContext, list) => {
+    if (list.items.some((item: any) => item.id === itemId)) await transactionContext.prisma.shoppingListItem.delete({ where: { id: itemId } });
+    else {
+      const elsewhere = await transactionContext.prisma.shoppingListItem.findUnique({ where: { id: itemId }, select: { listId: true } });
+      if (elsewhere) throw new Error('Item does not belong to this shopping list');
+    }
+    return reloadList(transactionContext, listId);
   });
-
-  if (!item) {
-    const updatedList = await getShoppingListForUser(context, listId);
-    return formatShoppingListResponse(updatedList);
-  }
-
-  if (item.list?.id !== listId) {
-    throw new Error('Item does not belong to this shopping list');
-  }
-
-  // Delete the item
-  await sudoContext.query.ShoppingListItem.deleteOne({
-    where: { id: itemId },
-  });
-
-  // Return updated list
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 
-// Update item quantity in shopping list
+/**
+ * Set a line's quantity. When the client says which quantity it last saw
+ * (`expectedQuantity`), a change made meanwhile elsewhere is reported instead
+ * of silently overwritten.
+ */
 export async function updateListItemQuantity(
   root: any,
   {
     listId,
     itemId,
     quantity,
-  }: { listId: string; itemId: string; quantity: number },
+    expectedQuantity,
+  }: { listId: string; itemId: string; quantity: number; expectedQuantity?: number | null },
   context: Context
 ) {
-  const sudoContext = context.sudo();
-
-  // Verify list ownership
-  await getShoppingListForUser(context, listId);
-
-  // Get the item to verify it belongs to this list
-  const item = await sudoContext.query.ShoppingListItem.findOne({
-    where: { id: itemId },
-    query: 'id list { id }',
+  if (!Number.isInteger(quantity) || quantity > 999) throw publicError('List quantities are whole numbers from 1 to 999.');
+  return withOwnedList(context, listId, async (transactionContext, list) => {
+    const item = list.items.find((entry: any) => entry.id === itemId);
+    if (!item) throw new Error('Item does not belong to this shopping list');
+    if (expectedQuantity !== null && expectedQuantity !== undefined && item.quantity !== expectedQuantity) {
+      throw publicError('This item was changed in another window. Your list has been refreshed; try again.', 'LIST_CHANGED');
+    }
+    if (quantity <= 0) await transactionContext.prisma.shoppingListItem.delete({ where: { id: itemId } });
+    else await transactionContext.prisma.shoppingListItem.update({ where: { id: itemId }, data: { quantity } });
+    return reloadList(transactionContext, listId);
   });
-
-  if (!item) {
-    throw new Error('Item not found');
-  }
-
-  if (item.list?.id !== listId) {
-    throw new Error('Item does not belong to this shopping list');
-  }
-
-  if (quantity <= 0) {
-    // Remove item if quantity is 0 or negative
-    await sudoContext.query.ShoppingListItem.deleteOne({
-      where: { id: itemId },
-    });
-  } else {
-    // Update quantity
-    await sudoContext.query.ShoppingListItem.updateOne({
-      where: { id: itemId },
-      data: { quantity },
-    });
-  }
-
-  // Return updated list
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 
 // Toggle item checked status
@@ -225,103 +203,25 @@ export async function toggleListItemChecked(
   { listId, itemId }: { listId: string; itemId: string },
   context: Context
 ) {
-  const sudoContext = context.sudo();
-
-  // Verify list ownership
-  await getShoppingListForUser(context, listId);
-
-  // Get the item to verify it belongs to this list
-  const item = await sudoContext.query.ShoppingListItem.findOne({
-    where: { id: itemId },
-    query: 'id list { id } checked',
+  return withOwnedList(context, listId, async (transactionContext, list) => {
+    const item = list.items.find((entry: any) => entry.id === itemId);
+    if (!item) throw new Error('Item does not belong to this shopping list');
+    await transactionContext.prisma.shoppingListItem.update({ where: { id: itemId }, data: { checked: !item.checked } });
+    return reloadList(transactionContext, listId);
   });
-
-  if (!item) {
-    throw new Error('Item not found');
-  }
-
-  if (item.list?.id !== listId) {
-    throw new Error('Item does not belong to this shopping list');
-  }
-
-  // Toggle checked status
-  await sudoContext.query.ShoppingListItem.updateOne({
-    where: { id: itemId },
-    data: { checked: !item.checked },
-  });
-
-  // Return updated list
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 
-// Add all unchecked items from shopping list to cart
+/**
+ * Add the list's unchecked items to the basket as one replay-safe batch. The
+ * same `requestKey` (kept by the client across an uncertain response) returns
+ * the original result instead of adding the items again; a new deliberate
+ * action uses a new key.
+ */
 export async function addListToCart(
   root: any,
-  { listId, sessionId }: { listId: string; sessionId?: string },
+  { listId, sessionId, requestKey }: { listId: string; sessionId?: string; requestKey?: string | null },
   context: Context
 ) {
-  const sudoContext = context.sudo();
-  const store = await requireSessionStore(context);
-
-  // Verify list ownership
-  const list = await getShoppingListForUser(context, listId);
-
-  // Get unchecked items
-  const uncheckedItems = list.items.filter((item: any) => !item.checked);
-
-  if (uncheckedItems.length === 0) {
-    return {
-      success: true,
-      message: 'No unchecked items to add to cart',
-      addedCount: 0,
-      skippedCount: 0,
-      skippedItems: [],
-    };
-  }
-
-  let addedCount = 0;
-  const skippedItems: string[] = [];
-
-  for (const item of uncheckedItems) {
-    // A saved identity is never replaced by a coincidentally similar title.
-    const products = await sudoContext.query.Product.findMany({
-      where: {
-        AND: [
-          { store: { id: { equals: store.id } } },
-          { status: { equals: 'published' } },
-          item.productRef?.id
-            ? { id: { equals: item.productRef.id } }
-            : { title: { equals: item.product, mode: 'insensitive' } },
-        ],
-      },
-      query: 'id title store { id }',
-      take: 2,
-    });
-
-    if (products.length !== 1) {
-      skippedItems.push(item.product);
-      continue;
-    }
-
-    const product = products[0];
-    try {
-      // Delegate every write to the replica-safe canonical Cart contract. The
-      // list action intentionally reports per-item skips rather than bypassing
-      // identity, row-lock, Store, quantity, and exact-total invariants.
-      await addToCart(null, { productId: product.id, quantity: item.quantity, sessionId }, context);
-      addedCount++;
-    } catch (error) {
-      skippedItems.push(`${item.product} (${error instanceof Error ? error.message : 'unavailable'})`);
-    }
-  }
-
-
-  return {
-    success: true,
-    message: `Added ${addedCount} items to cart${skippedItems.length > 0 ? `, skipped ${skippedItems.length}` : ''}`,
-    addedCount,
-    skippedCount: skippedItems.length,
-    skippedItems,
-  };
+  if (!context.session?.itemId) throw new Error('Must be logged in to manage shopping lists');
+  return addCartBatch(context, { requestKey: requestKey || null, source: 'list', sourceId: listId, sessionId });
 }

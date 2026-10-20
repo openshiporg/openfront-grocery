@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { ListChecks } from 'lucide-react';
 import MarketAccountNav from '../modules/market/MarketAccountNav';
 
 import { getShoppingLists } from '@/features/storefront/lib/data/lists';
@@ -22,19 +23,18 @@ export async function ShoppingListsPage() {
 
   return (
     <UrbanPageShell>
-      <UrbanContainer className="space-y-8 py-8 sm:py-10">
+      <UrbanContainer className="space-y-7 py-8 sm:py-10">
         <UrbanPageHeader
-          breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Lists' }]}
+          breadcrumb={[{ label: 'Account', href: '/account' }, { label: 'Shopping lists' }]}
           title="Shopping lists"
-          description="Reusable grocery runs you can send straight to your basket."
-
+          description="Reusable grocery runs: tick things off as you go, then send everything unchecked to your basket."
         />
 
         <MarketAccountNav active="lists" />
         {user ? (
           <ListManager initialLists={typedLists} />
         ) : (
-          <UrbanEmptyState title="Sign in to manage lists" actionHref="/dashboard/signin?from=/lists" actionLabel="Sign in">
+          <UrbanEmptyState icon={ListChecks} title="Sign in to manage lists" actionHref="/account/sign-in?from=%2Flists" actionLabel="Sign in">
             Save weekly staples and send entire lists into your basket.
           </UrbanEmptyState>
         )}

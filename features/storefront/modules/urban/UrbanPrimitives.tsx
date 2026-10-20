@@ -1,10 +1,11 @@
 import Link from 'next/link';
 import type { ComponentType, ReactNode } from 'react';
-import { ArrowRight, Search } from 'lucide-react';
+import { ArrowRight, ChevronRight, Search, ShoppingBasket } from 'lucide-react';
 
 import type { GroceryCart, GroceryDepartment, GroceryProduct } from '@/features/storefront/types';
+import { formatMoney } from '../../lib/marketFormatting';
 
-export { formatMoney, formatCents } from '../../lib/marketFormatting';
+export { formatMoney, formatCents, formatSlotDay, formatSlotRange, timezoneLabel } from '../../lib/marketFormatting';
 
 export function formatUnit(unit?: string | null) {
   if (!unit) return 'each';
@@ -29,53 +30,45 @@ export function totalCartLines(cart?: GroceryCart | null) {
 
 export function UrbanPageShell({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <main id="storefront-main" tabIndex={-1} className={`flex-1 min-w-0 bg-[var(--sf-paper)] text-[var(--sf-ink)] ${className}`}>
+    <main id="storefront-main" tabIndex={-1} className={`min-w-0 flex-1 text-[var(--sf-ink)] outline-none ${className}`}>
       {children}
     </main>
   );
 }
 
 export function UrbanContainer({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 ${className}`}>{children}</div>;
+  return <div className={`mx-auto w-full max-w-[84rem] px-4 sm:px-6 lg:px-8 ${className}`}>{children}</div>;
 }
 
 export function UrbanKicker({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <p className={`text-[0.7rem] font-semibold uppercase tracking-[0.16em] text-[var(--sf-ink-faint)] ${className}`}>
-      {children}
-    </p>
-  );
+  return <p className={`sf-eyebrow ${className}`}>{children}</p>;
 }
 
 export function UrbanHeadline({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <h1
-      className={`max-w-4xl font-[family-name:var(--sf-font-display)] text-[length:var(--sf-text-display)] font-semibold leading-[1.05] tracking-[-0.02em] text-[var(--sf-ink)] [overflow-wrap:anywhere] min-w-0 ${className}`}
-    >
-      {children}
-    </h1>
-  );
+  return <h1 className={`sf-title min-w-0 max-w-4xl text-[var(--sf-ink)] [overflow-wrap:anywhere] ${className}`}>{children}</h1>;
 }
 
 export function UrbanLead({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <p className={`max-w-2xl text-base leading-7 text-[var(--sf-ink-muted)] sm:text-[1.05rem] ${className}`}>{children}</p>;
+  return <p className={`max-w-2xl text-base leading-7 text-[var(--sf-ink-muted)] sm:text-[1.0625rem] ${className}`}>{children}</p>;
 }
 
 export function UrbanBreadcrumb({ items }: { items: Array<{ label: string; href?: string }> }) {
   return (
-    <nav aria-label="Breadcrumb" className="text-sm text-[var(--sf-ink-faint)]">
-      {items.map((item, index) => (
-        <span key={`${item.label}-${index}`}>
-          {index > 0 ? <span className="mx-2 text-[var(--sf-rule-strong)]">/</span> : null}
-          {item.href ? (
-            <Link prefetch={false} href={item.href} className="transition-colors hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]">
-              {item.label}
-            </Link>
-          ) : (
-            <span className="text-[var(--sf-ink)]">{item.label}</span>
-          )}
-        </span>
-      ))}
+    <nav aria-label="Breadcrumb" className="min-w-0 text-[0.8125rem] text-[var(--sf-ink-faint)]">
+      <ol className="flex min-w-0 flex-wrap items-center gap-y-1">
+        {items.map((item, index) => (
+          <li key={`${item.label}-${index}`} className="flex min-w-0 items-center">
+            {index > 0 ? <ChevronRight className="mx-1 h-3.5 w-3.5 shrink-0 text-[var(--sf-rule-strong)]" aria-hidden="true" /> : null}
+            {item.href ? (
+              <Link prefetch={false} href={item.href} className="inline-flex min-h-8 items-center font-medium transition-colors hover:text-[var(--sf-ink)]">
+                {item.label}
+              </Link>
+            ) : (
+              <span aria-current="page" className="truncate font-medium text-[var(--sf-ink)]">{item.label}</span>
+            )}
+          </li>
+        ))}
+      </ol>
     </nav>
   );
 }
@@ -86,30 +79,30 @@ export function UrbanSectionTitle({
   actionHref,
   actionLabel,
   children,
+  id,
 }: {
   eyebrow?: string;
   title: string;
   actionHref?: string;
   actionLabel?: string;
   children?: ReactNode;
+  id?: string;
 }) {
   return (
-    <div className="mb-6 flex flex-col gap-4 border-b border-[var(--sf-rule)] pb-4 md:flex-row md:items-end md:justify-between">
+    <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
-        {eyebrow ? <UrbanKicker>{eyebrow}</UrbanKicker> : null}
-        <h2 className="mt-1 font-[family-name:var(--sf-font-display)] text-[length:var(--sf-text-title)] font-semibold leading-[1.08] tracking-[-0.02em] text-[var(--sf-ink)] [overflow-wrap:anywhere] min-w-0">
-          {title}
-        </h2>
-        {children ? <div className="mt-2 max-w-2xl text-sm leading-6 text-[var(--sf-ink-muted)]">{children}</div> : null}
+        {eyebrow ? <UrbanKicker className="mb-1.5">{eyebrow}</UrbanKicker> : null}
+        <h2 id={id} className="sf-subtitle min-w-0 text-[var(--sf-ink)] [overflow-wrap:anywhere] sm:text-[1.75rem]">{title}</h2>
+        {children ? <div className="mt-1.5 max-w-2xl text-sm leading-6 text-[var(--sf-ink-muted)]">{children}</div> : null}
       </div>
       {actionHref && actionLabel ? (
         <Link
           prefetch={false}
           href={actionHref}
-          className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-4 py-2.5 text-sm font-medium text-[var(--sf-ink)] transition hover:border-[var(--sf-accent)] hover:text-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)]"
+          className="group inline-flex min-h-10 shrink-0 items-center gap-1.5 self-start whitespace-nowrap text-sm font-semibold text-[var(--sf-ink)] sm:self-auto"
         >
-          {actionLabel}
-          <ArrowRight className="h-4 w-4" />
+          <span className="underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-[6px] transition-colors group-hover:decoration-[var(--sf-accent)]">{actionLabel}</span>
+          <ArrowRight className="h-4 w-4 transition-transform duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] group-hover:translate-x-0.5" aria-hidden="true" />
         </Link>
       ) : null}
     </div>
@@ -117,15 +110,11 @@ export function UrbanSectionTitle({
 }
 
 export function UrbanPanel({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`border border-[var(--sf-rule)] bg-[var(--sf-paper)] ${className}`}>
-      {children}
-    </div>
-  );
+  return <div className={`sf-panel ${className}`}>{children}</div>;
 }
 
 export function UrbanInset({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`border border-[var(--sf-rule)] bg-[var(--sf-paper-2)] ${className}`}>{children}</div>;
+  return <div className={`sf-panel-soft ${className}`}>{children}</div>;
 }
 
 export function UrbanMetric({
@@ -138,15 +127,25 @@ export function UrbanMetric({
   icon?: ComponentType<{ className?: string }>;
 }) {
   return (
-    <div className="border-t border-[var(--sf-rule)] pt-3">
+    <div className="rounded-[var(--sf-radius-md)] bg-[var(--sf-paper-2)] p-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-[var(--sf-ink-muted)]">{label}</p>
         {Icon ? <Icon className="h-4 w-4 text-[var(--sf-sage)]" /> : null}
       </div>
-      <p className="mt-2 font-[family-name:var(--sf-font-display)] text-2xl font-semibold tracking-[-0.02em] text-[var(--sf-ink)]">{value}</p>
+      <p className="mt-2 font-[family-name:var(--sf-font-display)] text-2xl font-bold tracking-[-0.03em] text-[var(--sf-ink)] tabular-nums">{value}</p>
     </div>
   );
 }
+
+const badgeTones = {
+  primary: 'bg-[var(--sf-sage-light)] text-[var(--sf-sage)]',
+  orange: 'bg-[var(--sf-tag)] text-[var(--sf-tag-ink)]',
+  blue: 'bg-[var(--sf-info-bg)] text-[var(--sf-info)]',
+  muted: 'bg-[var(--sf-paper-2)] text-[var(--sf-ink-muted)] ring-1 ring-inset ring-[var(--sf-rule)]',
+  danger: 'bg-[var(--sf-danger-bg)] text-[var(--sf-danger)]',
+  accent: 'bg-[var(--sf-accent-soft)] text-[var(--sf-accent-hover)]',
+  dark: 'bg-[var(--sf-header)] text-[var(--sf-header-ink)]',
+};
 
 export function UrbanBadge({
   children,
@@ -154,46 +153,51 @@ export function UrbanBadge({
   className = '',
 }: {
   children: ReactNode;
-  tone?: 'primary' | 'orange' | 'blue' | 'muted' | 'danger';
+  tone?: keyof typeof badgeTones;
   className?: string;
 }) {
-  const tones = {
-    primary: 'border-[var(--sf-sage-light)] bg-[var(--sf-sage-light)] text-[var(--sf-sage)]',
-    orange: 'border-[var(--sf-warn-bg)] bg-[var(--sf-warn-bg)] text-[var(--sf-warn)]',
-    blue: 'border-[var(--sf-info-bg)] bg-[var(--sf-info-bg)] text-[var(--sf-info)]',
-    muted: 'border-[var(--sf-rule)] bg-[var(--sf-paper-2)] text-[var(--sf-ink-muted)]',
-    danger: 'border-[var(--sf-danger-bg)] bg-[var(--sf-danger-bg)] text-[var(--sf-danger)]',
-  };
-
   return (
-    <span className={`inline-flex items-center gap-1.5 border px-2 py-1 text-[0.7rem] font-semibold uppercase tracking-[0.04em] ${tones[tone]} ${className}`}>
+    <span className={`inline-flex min-h-6 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold ${badgeTones[tone]} ${className}`}>
       {children}
     </span>
   );
+}
+
+type ButtonVariant = 'primary' | 'ghost' | 'dark' | 'soft';
+type ButtonSize = 'sm' | 'md' | 'lg';
+
+const buttonVariants: Record<ButtonVariant, string> = {
+  primary: 'bg-[var(--sf-accent)] text-[var(--sf-accent-ink)] hover:bg-[var(--sf-accent-hover)] disabled:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
+  dark: 'bg-[var(--sf-ink)] text-[var(--sf-paper)] hover:bg-[var(--sf-header-2)] disabled:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
+  ghost: 'bg-[var(--sf-card)] text-[var(--sf-ink)] ring-1 ring-inset ring-[var(--sf-rule-strong)] hover:ring-[var(--sf-ink)] disabled:text-[var(--sf-ink-faint)] disabled:ring-[var(--sf-rule)]',
+  soft: 'bg-[var(--sf-paper-2)] text-[var(--sf-ink)] hover:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
+};
+
+const buttonSizes: Record<ButtonSize, string> = {
+  sm: 'min-h-9 px-3.5 text-[0.8125rem]',
+  md: 'min-h-11 px-5 text-sm',
+  lg: 'min-h-13 px-6 text-[0.9375rem]',
+};
+
+function buttonClasses(variant: ButtonVariant, size: ButtonSize, className: string) {
+  return `inline-flex select-none items-center justify-center gap-2 rounded-full font-semibold whitespace-nowrap transition-[background-color,color,box-shadow,transform] duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] active:scale-[0.98] disabled:active:scale-100 ${buttonVariants[variant]} ${buttonSizes[size]} ${className}`;
 }
 
 export function UrbanButtonLink({
   href,
   children,
   variant = 'primary',
+  size = 'md',
   className = '',
 }: {
   href: string;
   children: ReactNode;
-  variant?: 'primary' | 'ghost';
+  variant?: ButtonVariant;
+  size?: ButtonSize;
   className?: string;
 }) {
-  const classes =
-    variant === 'primary'
-      ? 'border-[var(--sf-accent)] bg-[var(--sf-accent)] text-white hover:bg-[var(--sf-accent-hover)] hover:border-[var(--sf-accent-hover)]'
-      : 'border-[var(--sf-rule-strong)] bg-transparent text-[var(--sf-ink)] hover:border-[var(--sf-accent)] hover:text-[var(--sf-accent)]';
-
   return (
-    <Link
-      prefetch={false}
-      href={href}
-      className={`inline-flex items-center justify-center gap-2 min-h-11 rounded-md border px-4 py-2.5 text-sm font-semibold transition duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] ${classes} ${className}`}
-    >
+    <Link prefetch={false} href={href} className={buttonClasses(variant, size, className)}>
       {children}
     </Link>
   );
@@ -202,69 +206,65 @@ export function UrbanButtonLink({
 export function UrbanButton({
   children,
   variant = 'primary',
+  size = 'md',
   className = '',
   ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'ghost' }) {
-  const classes =
-    variant === 'primary'
-      ? 'border-[var(--sf-accent)] bg-[var(--sf-accent)] text-white hover:bg-[var(--sf-accent-hover)] hover:border-[var(--sf-accent-hover)] disabled:border-[var(--sf-rule)] disabled:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]'
-      : 'border-[var(--sf-rule-strong)] bg-transparent text-[var(--sf-ink)] hover:border-[var(--sf-accent)] hover:text-[var(--sf-accent)] disabled:text-[var(--sf-ink-faint)]';
-
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant; size?: ButtonSize }) {
   return (
-    <button
-      {...props}
-      className={`inline-flex items-center justify-center gap-2 min-h-11 rounded-md border px-4 py-2.5 text-sm font-semibold transition duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sf-focus)] disabled:cursor-not-allowed ${classes} ${className}`}
-    >
+    <button {...props} className={buttonClasses(variant, size, className)}>
       {children}
     </button>
   );
 }
 
 export function UrbanTextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      {...props}
-      className={`h-11 w-full border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-3 text-sm text-[var(--sf-ink)] outline-none placeholder:text-[var(--sf-ink-faint)] focus:border-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-[var(--sf-focus)] ${props.className || ''}`}
-    />
-  );
+  return <input {...props} className={`sf-field ${props.className || ''}`} />;
 }
 
 export function UrbanTextarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      {...props}
-      className={`w-full border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-3 py-2.5 text-sm text-[var(--sf-ink)] outline-none placeholder:text-[var(--sf-ink-faint)] focus:border-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-[var(--sf-focus)] ${props.className || ''}`}
-    />
-  );
+  return <textarea {...props} className={`sf-field ${props.className || ''}`} />;
 }
 
 export function UrbanSelect(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      {...props}
-      className={`h-11 w-full border border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-3 text-sm text-[var(--sf-ink)] outline-none focus:border-[var(--sf-accent)] focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-[var(--sf-focus)] ${props.className || ''}`}
-    />
-  );
+  return <select {...props} className={`sf-field ${props.className || ''}`} />;
 }
 
 export function UrbanSearchStrip({
   placeholder = 'Search produce, pantry, dairy, frozen…',
   action = '/products',
   defaultValue,
+  size = 'md',
+  tone = 'sunken',
+  id,
 }: {
   placeholder?: string;
   action?: string;
   defaultValue?: string;
+  size?: 'md' | 'lg';
+  /** sunken sits on paper; raised sits on a tinted panel. */
+  tone?: 'sunken' | 'raised';
+  id?: string;
 }) {
+  const tall = size === 'lg';
   return (
-    <form action={action} method="get" role="search" className="flex min-w-0 items-stretch gap-0 border border-[var(--sf-rule-strong)]">
-      <div className="relative min-w-0 flex-1">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--sf-ink-faint)]" />
-        <UrbanTextInput type="search" name="search" aria-label="Search products" defaultValue={defaultValue} placeholder={placeholder} className="h-12 border-0 pl-10 focus-visible:outline-2" />
-      </div>
-      <UrbanButton type="submit" className="shrink-0 rounded-none border-0 border-l border-[var(--sf-rule-strong)]">
+    <form action={action} method="get" role="search" className="group relative flex min-w-0 items-center">
+      <Search className={`pointer-events-none absolute left-4 h-[1.125rem] w-[1.125rem] text-[var(--sf-ink-faint)] transition-colors group-focus-within:text-[var(--sf-ink)]`} aria-hidden="true" />
+      <input
+        id={id}
+        type="search"
+        name="search"
+        aria-label="Search products"
+        defaultValue={defaultValue}
+        placeholder={placeholder}
+        enterKeyHint="search"
+        className={`w-full min-w-0 rounded-full border border-transparent ${tone === 'raised' ? 'bg-[var(--sf-card)] shadow-[var(--sf-shadow-1)]' : 'bg-[var(--sf-paper-2)]'} pl-11 pr-[5.5rem] text-[0.9375rem] text-[var(--sf-ink)] outline-none transition-[background-color,border-color,box-shadow] duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] placeholder:text-[var(--sf-ink-faint)] hover:border-[var(--sf-rule-strong)] focus:border-[var(--sf-ink)] focus:bg-[var(--sf-card)] focus:shadow-[0_0_0_3px_color-mix(in_oklch,var(--sf-focus)_20%,transparent)] focus-visible:outline-none ${tall ? 'h-14' : 'h-12'}`}
+      />
+      <button
+        type="submit"
+        className={`absolute right-1.5 inline-flex items-center justify-center rounded-full bg-[var(--sf-ink)] px-4 text-[0.8125rem] font-semibold text-[var(--sf-paper)] transition-colors hover:bg-[var(--sf-header-2)] ${tall ? 'h-11' : 'h-9'}`}
+      >
         Search
-      </UrbanButton>
+      </button>
     </form>
   );
 }
@@ -274,20 +274,25 @@ export function UrbanEmptyState({
   children,
   actionHref,
   actionLabel,
+  icon: Icon = ShoppingBasket,
+  className = '',
 }: {
   title: string;
   children?: ReactNode;
   actionHref?: string;
   actionLabel?: string;
+  icon?: ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>;
+  className?: string;
 }) {
   return (
-    <UrbanInset className="p-8 text-center sm:p-10">
-      <h2 className="mx-auto max-w-xl font-[family-name:var(--sf-font-display)] text-[length:var(--sf-text-subtitle)] font-semibold tracking-[-0.02em] text-[var(--sf-ink)]">
-        {title}
-      </h2>
-      {children ? <div className="mx-auto mt-3 max-w-lg text-sm leading-6 text-[var(--sf-ink-muted)]">{children}</div> : null}
-      {actionHref && actionLabel ? <UrbanButtonLink href={actionHref} className="mt-6">{actionLabel}</UrbanButtonLink> : null}
-    </UrbanInset>
+    <div className={`sf-panel-soft flex flex-col items-center px-6 py-12 text-center sm:py-16 ${className}`}>
+      <span className="mb-5 grid h-14 w-14 place-items-center rounded-full bg-[var(--sf-card)] text-[var(--sf-sage)] shadow-[var(--sf-shadow-1)]">
+        <Icon className="h-6 w-6" aria-hidden="true" />
+      </span>
+      <h2 className="sf-subtitle mx-auto max-w-xl text-[var(--sf-ink)]">{title}</h2>
+      {children ? <div className="mx-auto mt-2.5 max-w-md text-sm leading-6 text-[var(--sf-ink-muted)]">{children}</div> : null}
+      {actionHref && actionLabel ? <UrbanButtonLink href={actionHref} variant="dark" className="mt-6">{actionLabel}</UrbanButtonLink> : null}
+    </div>
   );
 }
 
@@ -295,32 +300,55 @@ export function UrbanProductArtwork({
   product,
   className = '',
   priorityLabel,
+  eager = false,
 }: {
   product?: Pick<GroceryProduct, 'name' | 'department' | 'imageUrl' | 'thumbnailUrl'> | null;
   className?: string;
   priorityLabel?: string;
+  eager?: boolean;
 }) {
   const image = productImage(product);
 
   if (image) {
-    return <img loading="lazy" decoding="async" src={image} alt={product?.name || 'Product image'} className={`h-full w-full object-cover ${className}`} />;
+    return (
+      <img
+        loading={eager ? 'eager' : 'lazy'}
+        decoding="async"
+        src={image}
+        alt={product?.name || 'Product image'}
+        className={`h-full w-full object-cover ${className}`}
+      />
+    );
   }
 
   const name = product?.name || 'Grocery item';
-  const department = product?.department?.name || priorityLabel || 'Market pick';
+  const department = product?.department?.name || priorityLabel || 'Groceries';
 
   return (
     <div
-      className={`flex h-full w-full flex-col justify-between bg-[var(--sf-paper-2)] p-4 text-[var(--sf-ink)] ${className}`}
+      role="img"
+      aria-label={`${name} — image not provided`}
+      className={`flex h-full w-full flex-col items-center justify-center gap-2 bg-[var(--sf-paper-3)] p-3 text-center text-[var(--sf-ink-muted)] ${className}`}
     >
-      <UrbanBadge tone="muted" className="self-start">
-        {department}
-      </UrbanBadge>
-      <div>
-        <p className="max-w-[12ch] font-[family-name:var(--sf-font-display)] text-xl font-semibold leading-[1.05] tracking-[-0.02em]">{name}</p>
-        <p className="mt-1 text-xs text-[var(--sf-ink-muted)]">Image unavailable</p>
-      </div>
+      <span aria-hidden="true" className="font-[family-name:var(--sf-font-display)] text-4xl font-bold leading-none tracking-[-0.04em] text-[var(--sf-ink-faint)]">
+        {name.slice(0, 1).toUpperCase()}
+      </span>
+      <span aria-hidden="true" className="text-[0.6875rem] font-semibold">{department}</span>
     </div>
+  );
+}
+
+/** Shelf-edge price: whole units large, cents raised — read at a glance like a store label. */
+export function UrbanPrice({ value, className = '' }: { value?: number | null; className?: string }) {
+  const formatted = formatMoney(value);
+  const match = /^\$(\d+)\.(\d{2})$/.exec(formatted);
+  if (!match) return <span className={`sf-price ${className}`}>{formatted}</span>;
+  return (
+    <span className={`sf-price ${className}`} aria-label={formatted}>
+      <span aria-hidden="true" className="sf-price-symbol">$</span>
+      <span aria-hidden="true">{match[1]}</span>
+      <span aria-hidden="true" className="sf-price-cents">{match[2]}</span>
+    </span>
   );
 }
 
@@ -329,22 +357,48 @@ export function UrbanPageHeader({
   description,
   breadcrumb,
   aside,
+  className = '',
 }: {
   title: string;
-  description?: string;
+  description?: ReactNode;
   breadcrumb?: Array<{ label: string; href?: string }>;
   aside?: ReactNode;
+  className?: string;
 }) {
   return (
-    <header className="border-b border-[var(--sf-rule)] pb-6">
+    <header className={className}>
       {breadcrumb ? <UrbanBreadcrumb items={breadcrumb} /> : null}
-      <div className={`grid gap-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end ${breadcrumb ? 'mt-4' : ''}`}>
+      <div className={`grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end ${breadcrumb ? 'mt-3' : ''}`}>
         <div className="min-w-0">
           <UrbanHeadline>{title}</UrbanHeadline>
           {description ? <UrbanLead className="mt-3">{description}</UrbanLead> : null}
         </div>
-        {aside ? <div className="min-w-0 lg:max-w-xs">{aside}</div> : null}
+        {aside ? <div className="min-w-0 lg:max-w-sm">{aside}</div> : null}
       </div>
     </header>
+  );
+}
+
+/** Previous / next pagination shared by catalog, history and favorites pages. */
+export function UrbanPager({
+  label,
+  page,
+  totalPages,
+  previousHref,
+  nextHref,
+}: {
+  label: string;
+  page: number;
+  totalPages: number;
+  previousHref?: string;
+  nextHref?: string;
+}) {
+  const link = 'inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 text-sm font-semibold ring-1 ring-inset ring-[var(--sf-rule-strong)] transition-shadow hover:ring-[var(--sf-ink)]';
+  return (
+    <nav aria-label={label} className="flex items-center justify-between gap-3 pt-4">
+      {previousHref && page > 1 ? <Link prefetch={false} href={previousHref} className={link}><span aria-hidden="true">←</span> Previous</Link> : <span className={`${link} pointer-events-none opacity-40`} aria-hidden="true">← Previous</span>}
+      <p className="text-sm tabular-nums text-[var(--sf-ink-muted)]">Page {page} of {totalPages}</p>
+      {nextHref && page < totalPages ? <Link prefetch={false} href={nextHref} className={link}>Next <span aria-hidden="true">→</span></Link> : <span className={`${link} pointer-events-none opacity-40`} aria-hidden="true">Next →</span>}
+    </nav>
   );
 }

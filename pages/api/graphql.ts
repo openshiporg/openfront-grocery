@@ -1,11 +1,10 @@
-import { GraphQLError, print } from 'graphql';
+import { GraphQLError } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 // @ts-ignore graphql-upload does not publish declarations for this subpath.
 import processRequest from 'graphql-upload/processRequest.js';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { keystoneContext } from '../../features/keystone/context';
-import { enforceGraphqlRateLimit } from '../../features/keystone/lib/graphqlRateLimit';
 import {
   boundedGraphqlDepthRule,
   MAX_GRAPHQL_QUERY_LENGTH,
@@ -100,15 +99,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         if (query.length > MAX_GRAPHQL_QUERY_LENGTH) {
           throw new GraphQLError('GraphQL request is too large', { extensions: { code: 'QUERY_TOO_LARGE' } });
         }
-      },
-      async onExecute({ args }: any) {
-        await enforceGraphqlRateLimit({
-          prisma: args.contextValue?.prisma,
-          headers,
-          remoteAddress: req.socket.remoteAddress,
-          identity: args.contextValue?.session?.itemId,
-          query: print(args.document),
-        });
       },
     }],
   });

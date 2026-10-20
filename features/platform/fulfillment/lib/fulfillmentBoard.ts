@@ -15,6 +15,7 @@ export interface FulfillmentOrder {
   displayId: number;
   email: string;
   status: string;
+  deliveryDate?: string | null;
   deliveryTimeWindow?: string | null;
   substitutionPreference?: string | null;
   metadata?: Record<string, unknown> | null;

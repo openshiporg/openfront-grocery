@@ -6,6 +6,8 @@ import { withSerializableRetry } from '../utils/serializableTransaction';
 import { assertOrderHandoffPayment } from '../lib/fulfillmentPayment';
 import { assertOrderInventoryEligible } from '../lib/inventorySafety';
 import { assertDeliveryRouteComplete, resolveDeliveryStopInTransaction, type DeliveryStopInput } from '../lib/deliveryStops';
+import { publicError } from '../lib/publicError';
+import { zonedDateTimeForDateKey } from '../lib/storeTime';
 
 type CreateDeliveryRouteArgs = {
   deliveryDate: string;
@@ -345,9 +347,22 @@ export async function updateDeliveryRouteWorkflow(
   }, { isolationLevel: 'ReadCommitted' as any }));
 }
 
-export async function resolveDeliveryStop(_root: unknown, input: DeliveryStopInput, context: Context) {
+/**
+ * `retryLocalTime` ("YYYY-MM-DDTHH:mm") is the agreed retry as Store wall-clock
+ * time; it is converted here in the Store's timezone, whatever the browser's.
+ */
+export async function resolveDeliveryStop(_root: unknown, { retryLocalTime, ...rawInput }: DeliveryStopInput & { retryLocalTime?: string | null }, context: Context) {
   await assertCanManageDelivery(context);
   const store = await requireSessionStore(context);
+  let input: DeliveryStopInput = rawInput;
+  if (retryLocalTime) {
+    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(retryLocalTime.trim());
+    if (!match) throw publicError('Enter the retry date and time.');
+    let instant: Date;
+    try { instant = zonedDateTimeForDateKey(match[1], match[2], store.timezone); }
+    catch { throw publicError(`That time does not exist in ${store.timezone} (a daylight-saving change). Choose another time.`); }
+    input = { ...rawInput, retryAt: instant.toISOString() };
+  }
   return withSerializableRetry(() => context.transaction(tx =>
     resolveDeliveryStopInTransaction(tx, { storeId: store.id, userId: context.session!.itemId }, input),
   { isolationLevel: 'ReadCommitted' as any }));

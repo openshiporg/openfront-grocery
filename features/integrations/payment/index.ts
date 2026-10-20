@@ -1,6 +1,8 @@
+import { isPaymentProviderInstalled } from './stripeEnabled';
+
 import * as stripe from './stripe';
 import * as test from './test';
-import { stripeCheckoutActivated } from './stripeEnabled';
+import { stripeConfigurationProblem } from './stripeEnabled';
 import type { PaymentProviderAdapter, PaymentProviderOperation, PaymentProviderRecord } from './types';
 
 export const STRIPE_PROVIDER_CODE = 'pp_stripe_default' as const;
@@ -136,7 +138,7 @@ export function assertProviderCredentials(providerOrCode: PaymentProviderRecord 
   }
   // configuredSelector already checks the deployment allowlist and forbids
   // HTTP, credentials in URLs, query strings, fragments, and redirects.
-  if (!provider || !provider.isInstalled) throw new Error('External payment provider is not installed');
+  if (!provider || !isPaymentProviderInstalled(provider)) throw new Error('External payment provider is not installed');
   const credentials = provider.credentials;
   if (credentials !== undefined && credentials !== null && (typeof credentials !== 'object' || Array.isArray(credentials))) {
     throw new Error('External payment credentials must be a JSON object');
@@ -145,7 +147,7 @@ export function assertProviderCredentials(providerOrCode: PaymentProviderRecord 
 }
 
 export function isPaymentProviderConfigured(provider: PaymentProviderRecord) {
-  if (!provider?.isInstalled) return false;
+  if (!isPaymentProviderInstalled(provider)) return false;
   try {
     for (const operation of PAYMENT_OPERATIONS) assertProviderCredentials(provider, operation);
     return true;
@@ -171,27 +173,38 @@ export function assertIdempotentCaptureProvider(providerOrCode: PaymentProviderR
   }
 }
 
+/**
+ * New Stripe payments are gated by the adapter a provider actually resolves to,
+ * not only by the built-in record's code: a custom record that selects the
+ * local Stripe adapter is Stripe too. Existing-payment operations (status,
+ * refunds, voids, webhooks) do not pass through this gate.
+ */
+function createsStripePayments(provider: PaymentProviderRecord | null, code: string) {
+  if (code === STRIPE_PROVIDER_CODE) return true;
+  if (!provider) return false;
+  try { return configuredSelector(provider, 'createPaymentFunction') === 'stripe'; } catch { return false; }
+}
+
 export function isPublicPaymentProviderEnabled(providerOrCode: PaymentProviderRecord | string): boolean {
   const provider = typeof providerOrCode === 'string' ? null : providerOrCode;
   const definition = typeof providerOrCode === 'string' ? getPaymentProviderDefinition(providerOrCode) : paymentProviderDefinitions[providerOrCode.code as SupportedPaymentProviderCode];
   const code = provider?.code || String(providerOrCode);
   const persistedOptIn = provider ? provider.publicCheckout === true : definition?.publicCheckout === true;
-  return persistedOptIn && (code !== STRIPE_PROVIDER_CODE || stripeCheckoutActivated());
+  return persistedOptIn && (!createsStripePayments(provider, code) || stripeConfigurationProblem() === null);
 }
 
 export function assertPublicPaymentProvider(providerOrCode: PaymentProviderRecord | string): void {
   const provider = typeof providerOrCode === 'string' ? null : providerOrCode;
   const definition = typeof providerOrCode === 'string' ? getPaymentProviderDefinition(providerOrCode) : paymentProviderDefinitions[providerOrCode.code as SupportedPaymentProviderCode];
   const code = provider?.code || String(providerOrCode);
-  if (code === STRIPE_PROVIDER_CODE && !stripeCheckoutActivated()) {
-    throw new Error('Stripe checkout is disabled for new payments unless STRIPE_ENABLED=true');
-  }
+  const stripeProblem = createsStripePayments(provider, code) ? stripeConfigurationProblem() : null;
+  if (stripeProblem) throw new Error(stripeProblem);
   if (!isPublicPaymentProviderEnabled(providerOrCode)) {
     throw new Error(`Payment provider ${code} is not enabled for public checkout`);
   }
   if (!provider && !definition) throw new Error(`Unsupported payment provider: ${code}`);
   if (provider) {
-    if (!provider.isInstalled || !isPaymentProviderConfigured(provider)) throw new Error(`Payment provider ${code} is not configured for public checkout`);
+    if (!isPaymentProviderInstalled(provider) || !isPaymentProviderConfigured(provider)) throw new Error(`Payment provider ${code} is not configured for public checkout`);
     assertIdempotentCaptureProvider(provider);
   }
 }

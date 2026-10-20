@@ -11,9 +11,10 @@ export function refundReceiptSnapshot(refund:any,order:any) {
 }
 export function communicationAllowed(type:string,preference:any) {
   // Requested access links and material transaction receipts are required service messages.
-  if (['order.rescheduled','order.adjustment.requested','order.confirmed','order.access.requested','order.finalized','payment.refunded','inventory.recall.notice'].includes(type)) return true;
+  if (['order.substitution.proposed','order.rescheduled','order.adjustment.requested','order.confirmed','order.access.requested','order.finalized','payment.refunded','inventory.recall.notice'].includes(type)) return true;
   if (preference && Array.isArray(preference.channels) && !preference.channels.includes('email')) return false;
   if(type==='product.back_in_stock') return preference?.backInStock!==false;
+  if(type==='product.price_drop') return preference?.priceDrops!==false;
   if(type==='order.dispatched') return preference?.deliveryAlerts!==false;
   return preference?.orderUpdates!==false;
 }
@@ -35,8 +36,8 @@ export function orderMessage(type:string,order:any,origin:string,event:any={}) {
   const sale=order.metadata?.finalSale?.status==='finalized'?order.metadata.finalSale:null;
   const lines=sale?.actuals || order.lineItems || [];
   const items=lines.map((l:any)=>`${l.productTitle || l.title}: ${l.quantityMilli!==undefined?l.quantityMilli/1000:l.quantity} ${l.unitOfMeasure || ''} — ${((l.subtotalCents ?? Number(l.unitPriceCents)*Number(l.quantity))/100).toFixed(2)}`).join('\n');
-  const names:Record<string,string>={'order.rescheduled':'Delivery rescheduled','order.cancelled':'Order cancelled','inventory.recall.notice':'Safety recall notice','order.adjustment.requested':'Approval needed for picked amount','order.confirmed':'Order authorized','order.ready':'Ready for pickup','order.dispatched':'Out for delivery','order.finalized':'Final receipt','payment.refunded':'Refund recorded','order.access.requested':'Your order access'};
+  const names:Record<string,string>={'order.substitution.proposed':'Replacement needs your answer','order.rescheduled':'Delivery rescheduled','order.cancelled':'Order cancelled','inventory.recall.notice':'Safety recall notice','order.adjustment.requested':'Approval needed for picked amount','order.confirmed':'Order authorized','order.ready':'Ready for pickup','order.dispatched':'Out for delivery','order.finalized':'Final receipt','payment.refunded':'Refund recorded','order.access.requested':'Your order access'};
   const window = (promise:any) => { const slot=promise?.selectedFulfillmentSlot; return slot ? `${String(slot.date || '').slice(0,10)} ${String(slot.startTime || '')}–${String(slot.endTime || '')}` : 'See your order for the original window'; };
-  const reschedule = type==='order.rescheduled' ? `Previous delivery window: ${window(event.before)}\nNew delivery window: ${window(event.after)}\n` : '';
+  const reschedule = type==='order.rescheduled' ? `Previous delivery window: ${window(event.before)}\nNew delivery window: ${window(event.after)}\n` : type==='order.substitution.proposed' ? `${String(event.originalTitle || 'An item')} is unavailable. Proposed replacement: ${String(event.productTitle || '')}, ${Number(event.quantityMilli || 0)/1000} ${String(event.unitOfMeasure || '')}, estimated ${(Number(event.estimatedSubtotalCents || 0)/100).toFixed(2)} ${order.currencyCode}. Approve or decline it on your order page.\n` : '';
   return {subject:`${names[type] || 'Order update'} #${order.displayId}`,text:`${names[type] || 'Order update'} #${order.displayId}\n${reschedule}${type==='inventory.recall.notice' ? 'Do not consume affected goods. Contact the store. '+String(event.reason || '')+'\n' : ''}${type==='payment.refunded' ? 'Refund amount: '+(Number(event.amountCents || 0)/100).toFixed(2)+' '+order.currencyCode+'\n' : ''}${items}\nSubtotal: ${((sale?.subtotalCents ?? order.subtotalCents)/100).toFixed(2)}\nDiscount: ${((sale?.discountCents ?? order.discountCents)/100).toFixed(2)}\nTax: ${((sale?.taxCents ?? order.taxCents)/100).toFixed(2)}\nFees: ${((sale?.feeCents ?? order.deliveryFeeCents)/100).toFixed(2)}\nTotal (${order.currencyCode}): ${((sale?.totalCents ?? order.totalCents)/100).toFixed(2)}\n${new URL(path,url).toString()}`};
 }

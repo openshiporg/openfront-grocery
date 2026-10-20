@@ -1,16 +1,44 @@
 import Link from 'next/link';
+import { Store, Truck } from 'lucide-react';
 import { getStore } from '../lib/data/store';
 import { getCheckoutFulfillmentWindows } from '../lib/data/delivery';
+import type { DeliveryWindow } from '../types';
 import { MarketModeChoice } from '../modules/market/MarketMode';
-import { UrbanBadge, UrbanContainer, UrbanPageHeader, UrbanPageShell, formatMoney } from '../modules/urban/UrbanPrimitives';
+import { UrbanContainer, UrbanPageHeader, UrbanPageShell, formatMoney, formatSlotDay, formatSlotRange, timezoneLabel } from '../modules/urban/UrbanPrimitives';
 export const metadata = { title: 'Delivery & pickup', description: 'Explore delivery and pickup availability.' };
+
+function byDay(windows: DeliveryWindow[]) {
+  const days = new Map<string, DeliveryWindow[]>();
+  for (const window of windows) days.set(window.date, [...(days.get(window.date) || []), window]);
+  return [...days.entries()];
+}
+
 export default async function FulfillmentPage() {
   const [store, availability] = await Promise.all([getStore(), getCheckoutFulfillmentWindows()]);
-  return <UrbanPageShell><UrbanContainer className="space-y-6 py-8"><UrbanPageHeader title="Groceries, on your schedule." description="Explore the next available times, then choose your exact slot at checkout." breadcrumb={[{ label: 'Shop', href: '/products' }, { label: 'Delivery & pickup' }]} />
-    <p className="sf-note">Times are shown in {store.timezone || 'the store’s local timezone'}. Availability can change; viewing a time does not reserve it. Delivery eligibility and fees are confirmed with your postal code at checkout.</p>
-    <div className="grid items-start gap-5 md:grid-cols-2">{(['delivery', 'pickup'] as const).map((mode) => { const windows = mode === 'delivery' ? availability.deliveryWindows : availability.pickupWindows; return <section key={mode} className="sf-panel p-5 sm:p-6"><UrbanBadge tone={mode === 'delivery' ? 'blue' : 'primary'}>{mode === 'delivery' ? 'To your door' : 'At the store'}</UrbanBadge><h2 className="mt-3 font-[family-name:var(--sf-font-display)] text-3xl font-semibold">{mode === 'delivery' ? 'Home delivery' : 'Store pickup'}</h2><p className="mt-3 text-sm leading-6 text-[var(--sf-ink-muted)]">{mode === 'delivery' ? 'Choose a delivery window and share any access instructions when you check out.' : store.address || 'Contact the store to confirm the pickup location.'}</p>
-      <ul className="my-5 divide-y divide-[var(--sf-rule)]">{windows.filter((window) => window.available).slice(0, 8).map((window) => <li key={window.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-3 text-sm"><span><span className="block font-medium">{new Date(`${window.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</span><span className="mt-1 block text-xs">{window.startTime}–{window.endTime}</span></span><span className="text-xs text-[var(--sf-ink-muted)]">{window.fee ? `${formatMoney(window.fee)} slot fee` : 'No slot fee'}</span></li>)}</ul>
-      {!windows.some((window) => window.available) ? <p className="sf-note mb-4">No {mode} times are currently available. Check the other option or <Link href="/support" className="underline">contact the store</Link>.</p> : null}<MarketModeChoice mode={mode} />
-    </section>; })}</div><p className="text-sm leading-6 text-[var(--sf-ink-muted)]">Already ordered? <Link href="/account/orders" className="underline">View your order</Link> for its confirmed details, or <Link href="/order-access" className="underline">find a guest order</Link>.</p>
+  return <UrbanPageShell><UrbanContainer className="space-y-8 py-8 sm:py-10">
+    <UrbanPageHeader title="Groceries, on your schedule." description="The week ahead at a glance. Pick your exact time at checkout — viewing a time here doesn’t reserve it." breadcrumb={[{ label: 'Shop', href: '/products' }, { label: 'Delivery & pickup' }]} />
+    <p className="sf-note">Times are shown in {store.timezone ? `${timezoneLabel(store.timezone)} (${store.timezone})` : 'the store’s local timezone'}. Availability can change. Delivery eligibility and fees are confirmed with your postal code at checkout.</p>
+    <div className="grid items-start gap-5 lg:grid-cols-2">{(['delivery', 'pickup'] as const).map((mode) => {
+      const windows = mode === 'delivery' ? availability.deliveryWindows : availability.pickupWindows;
+      const days = byDay(windows).filter(([, entries]) => entries.some((window) => window.available));
+      const Icon = mode === 'delivery' ? Truck : Store;
+      return <section key={mode} aria-labelledby={`${mode}-times`} className="sf-panel overflow-hidden">
+        <div className={`flex items-start gap-4 p-6 sm:p-7 ${mode === 'delivery' ? 'sf-dark' : 'bg-[var(--sf-paper-2)]'}`}>
+          <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-full ${mode === 'delivery' ? 'bg-[var(--sf-header-2)]' : 'bg-[var(--sf-card)] text-[var(--sf-sage)]'}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>
+          <div className="min-w-0">
+            <h2 id={`${mode}-times`} className="sf-subtitle">{mode === 'delivery' ? 'Home delivery' : 'Store pickup'}</h2>
+            <p className={`mt-1 text-sm leading-6 ${mode === 'delivery' ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-muted)]'}`}>{mode === 'delivery' ? 'Choose a delivery window and share any access instructions when you check out.' : store.address || 'Contact the store to confirm the pickup location.'}</p>
+          </div>
+        </div>
+        <div className="p-6 sm:p-7">
+          {days.length ? <ul className="space-y-5">{days.map(([date, entries]) => <li key={date}>
+            <p className="mb-2 text-sm font-semibold">{formatSlotDay(date, 'long')}</p>
+            <ul className="flex flex-wrap gap-2">{entries.filter((window) => window.available).map((window) => <li key={window.id} className="rounded-[var(--sf-radius-sm)] border border-[var(--sf-rule)] px-3 py-2"><span className="block font-[family-name:var(--sf-font-display)] font-bold tracking-[-0.02em]">{formatSlotRange(window.startTime, window.endTime)}</span><span className="block text-xs text-[var(--sf-ink-faint)]">{window.fee ? `${formatMoney(window.fee)} slot fee` : 'No slot fee'}</span></li>)}</ul>
+          </li>)}</ul> : <p className="sf-note">No {mode} times are currently available. Check the other option or <Link href="/support" className="font-semibold underline">contact the store</Link>.</p>}
+          <MarketModeChoice mode={mode} className="mt-6 w-full sm:w-auto" />
+        </div>
+      </section>;
+    })}</div>
+    <p className="text-sm leading-6 text-[var(--sf-ink-muted)]">Already ordered? <Link href="/account/orders" className="font-semibold text-[var(--sf-ink)] underline underline-offset-4">View your order</Link> for its confirmed details, or <Link href="/order-access" className="font-semibold text-[var(--sf-ink)] underline underline-offset-4">find a guest order</Link>.</p>
   </UrbanContainer></UrbanPageShell>;
 }

@@ -174,13 +174,24 @@ function extractUniqueViews(jsonData: any) {
     viewsArray.push((viewMappings as any)[modulePath] || fallbackType || modulePath);
   };
 
+  // Mirror Keystone's createAdminMeta traversal: omitted lists, fields with
+  // every GraphQL operation disabled and relations to omitted lists receive no
+  // view index. The injected `id` field view is index 0 and is prepended by
+  // getFieldTypeFromViewsIndex, so it is not emitted here.
+  const omittedLists = new Set(
+    Object.keys(jsonData).filter((key) => jsonData[key]?.graphql?.isEnabled?.query === false)
+  );
+
   for (const key in jsonData) {
     if (jsonData.hasOwnProperty(key)) {
+      if (omittedLists.has(key)) continue;
       const fields = jsonData[key].fields;
       if (fields) {
         for (const fieldKey in fields) {
           if (fields.hasOwnProperty(fieldKey)) {
             const field = fields[fieldKey];
+            if (field.dbField?.kind === 'relation' && omittedLists.has(field.dbField.list)) continue;
+            if (Object.values(field.graphql?.isEnabled ?? {}).every((enabled) => enabled === false)) continue;
             const baseType = (viewMappings as any)[field.views] || field.views;
             addViewModule(field.views, baseType);
             // Keystone assigns every distinct custom-view module its own global

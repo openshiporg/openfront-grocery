@@ -1,68 +1,53 @@
 import Link from 'next/link';
 import { getDepartmentsList } from '@/features/storefront/lib/data/departments';
 import { getStore } from '@/features/storefront/lib/data/store';
+import { UrbanStoreLogo } from './UrbanStoreLogo';
+
+const groups = [
+  { title: 'Shop', links: [['/products', 'All groceries'], ['/departments', 'Aisles'], ['/deals', 'Specials'], ['/fulfillment', 'Delivery & pickup']] },
+  { title: 'Your shopping', links: [['/account/orders', 'Orders'], ['/lists', 'Lists'], ['/favorites', 'Favorites'], ['/subscriptions', 'Recurring & rewards']] },
+  { title: 'Help', links: [['/support', 'Help & contact'], ['/order-access', 'Find a guest order'], ['/policies', 'How orders work'], ['/account/privacy', 'Privacy']] },
+] as const;
 
 export default async function UrbanFooter() {
   const [store, { departments }] = await Promise.all([getStore(), getDepartmentsList(0, 8).catch(() => ({ departments: [] }))]);
-  const storeName = store.name;
   const year = new Date().getFullYear();
+  const link = 'inline-flex min-h-9 items-center text-[var(--sf-header-ink-muted)] transition-colors hover:text-[var(--sf-header-ink)]';
 
   return (
-    <footer className="mt-auto border-t border-[var(--sf-rule-strong)] bg-[var(--sf-paper-2)]">
-      <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6 lg:px-8">
-        <div className="grid gap-10 md:grid-cols-[1.2fr_1fr] md:gap-16">
-          <div>
-            <p className="font-[family-name:var(--sf-font-display)] text-2xl font-semibold tracking-[-0.02em] text-[var(--sf-ink)]">
-              {storeName}
-            </p>
-            {store.homepageDescription ? (
-              <p className="mt-3 max-w-md text-sm leading-6 text-[var(--sf-ink-muted)]">
-                {store.homepageDescription}
-              </p>
-            ) : null}
-            <address className="mt-4 not-italic text-sm leading-6 text-[var(--sf-ink-muted)]">
-              {store.address ? <p>{store.address}</p> : null}
-              {store.contactPhone ? <p><a href={`tel:${store.contactPhone}`} className="hover:text-[var(--sf-accent)]">{store.contactPhone}</a></p> : null}
-              {store.contactEmail ? <p><a href={`mailto:${store.contactEmail}`} className="hover:text-[var(--sf-accent)]">{store.contactEmail}</a></p> : null}
+    <footer className="sf-dark mt-auto">
+      <div className="mx-auto max-w-[84rem] px-4 pb-8 pt-14 sm:px-6 lg:px-8 lg:pt-20">
+        <div className="grid gap-12 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-20">
+          <div className="min-w-0">
+            <div className="flex items-start gap-2.5">
+              <UrbanStoreLogo name={store.name} logoUrl={store.logoUrl} logoIcon={store.logoIcon} logoColor={store.logoColor} />
+              <p className="min-w-0 font-[family-name:var(--sf-font-display)] text-[clamp(2.75rem,1.5rem+5vw,5.5rem)] font-bold leading-[0.9] tracking-[-0.05em] [overflow-wrap:anywhere]">{store.name}</p>
+            </div>
+            {store.homepageDescription ? <p className="mt-5 max-w-md text-[0.9375rem] leading-7 text-[var(--sf-header-ink-muted)]">{store.homepageDescription}</p> : null}
+            <address className="mt-6 grid gap-1 text-[0.9375rem] not-italic leading-7">
+              {store.address ? <span>{store.address}</span> : null}
+              {store.contactPhone ? <a href={`tel:${store.contactPhone}`} className="w-fit underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">{store.contactPhone}</a> : null}
+              {store.contactEmail ? <a href={`mailto:${store.contactEmail}`} className="w-fit underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">{store.contactEmail}</a> : null}
             </address>
           </div>
-
-          <div className="grid grid-cols-2 gap-8 sm:grid-cols-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Shop</p>
-              <ul className="mt-3 space-y-2 text-sm">
-                <li><Link prefetch={false} href="/products" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">All products</Link></li>
-                <li><Link prefetch={false} href="/departments" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Departments</Link></li>
-                <li><Link prefetch={false} href="/deals" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Specials</Link></li>
-              </ul>
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Aisles</p>
-              <ul className="mt-3 space-y-2 text-sm">
-                {departments.slice(0, 4).map((dept) => (
-                  <li key={dept.id}>
-                    <Link prefetch={false} href={`/departments/${dept.handle}`} className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">
-                      {dept.name}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--sf-ink-faint)]">Account</p>
-              <ul className="mt-3 space-y-2 text-sm">
-                <li><Link prefetch={false} href="/account/orders" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Orders</Link></li>
-                <li><Link prefetch={false} href="/subscriptions" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Recurring baskets & rewards</Link></li>
-                <li><Link prefetch={false} href="/order-access" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Recover an order</Link></li>
-                <li><Link prefetch={false} href="/lists" className="text-[var(--sf-ink-muted)] hover:text-[var(--sf-accent)]">Lists</Link></li>
-              </ul>
-            </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-10 text-sm sm:grid-cols-3">
+            {groups.map((group) => (
+              <div key={group.title}>
+                <p className="mb-2 font-semibold text-[var(--sf-header-ink)]">{group.title}</p>
+                <ul>{group.links.map(([href, label]) => <li key={href}><Link prefetch={false} href={href} className={link}>{label}</Link></li>)}</ul>
+              </div>
+            ))}
+            {departments.length ? (
+              <div className="col-span-2 sm:col-span-3">
+                <p className="mb-2 font-semibold text-[var(--sf-header-ink)]">Aisles</p>
+                <ul className="flex flex-wrap gap-x-5">{departments.map((department) => <li key={department.id}><Link prefetch={false} href={`/departments/${department.handle}`} className={link}>{department.name}</Link></li>)}</ul>
+              </div>
+            ) : null}
           </div>
         </div>
-
-        <div className="mt-10 flex flex-col gap-2 border-t border-[var(--sf-rule)] pt-6 text-xs text-[var(--sf-ink-faint)] sm:flex-row sm:items-center sm:justify-between">
-          <p>© {year} {storeName}</p>
-          <nav aria-label="Store information" className="flex flex-wrap gap-x-5 gap-y-2"><Link prefetch={false} href="/fulfillment" className="inline-flex min-h-11 items-center">Delivery & pickup</Link><Link prefetch={false} href="/support" className="inline-flex min-h-11 items-center">Help & contact</Link><Link prefetch={false} href="/policies" className="inline-flex min-h-11 items-center">Order information</Link><Link prefetch={false} href="/account/privacy" className="inline-flex min-h-11 items-center">Privacy</Link></nav>
+        <div className="mt-14 flex flex-col gap-2 border-t border-[var(--sf-header-2)] pt-6 text-xs text-[var(--sf-header-ink-muted)] sm:flex-row sm:items-center sm:justify-between">
+          <p>© {year} {store.name}</p>
+          <p>Prices, availability and fees are confirmed at checkout.</p>
         </div>
       </div>
     </footer>

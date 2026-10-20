@@ -22,11 +22,13 @@ function decimalHundredths(value: unknown) {
   if (!match) throw new Error('Invalid coupon decimal amount');
   return cents(Number(BigInt(match[1]) * BigInt(100) + BigInt((match[2] || '').padEnd(2, '0'))));
 }
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export function priceActualSale(order: any, actuals: any[]) {
   const coupon = order.metadata?.coupon;
   const subtotal = actuals.reduce((sum, line) => cents(sum + cents(line.subtotalCents)), 0);
   for (const line of actuals) { cents(line.quantityMilli); cents(line.unitPriceCents); }
-  const eligible = actuals.filter(line => isCouponLineEligible({ id: line.productId, department: line.evidence?.department }, coupon));
+  const eligible = actuals.filter(line => isCouponLineEligible({ id: line.productId, department: line.evidence?.department, departmentHandle: line.evidence?.departmentHandle }, coupon));
   const eligibleCents = eligible.reduce((sum, line) => cents(sum + line.subtotalCents), 0);
   let discountCents = 0;
   if (coupon && subtotal >= cents(coupon.minPurchaseCents ?? decimalHundredths(coupon.minPurchase ?? 0))) {
@@ -42,7 +44,7 @@ export function priceActualSale(order: any, actuals: any[]) {
   }
   const feeCents = actuals.some(line => line.quantityMilli > 0) ? cents(order.deliveryFeeCents || 0) : 0;
   return priceCommercialLines(actuals.map(line => ({ id: line.lineItemId, subtotalCents: line.subtotalCents, taxRateBasisPoints: line.taxRateBasisPoints,
-    discountEligible: isCouponLineEligible({ id: line.productId, department: line.evidence?.department }, coupon) })), discountCents, feeCents, Number(order.metadata?.deliveryPolicySnapshot?.feeTaxRateBasisPoints || 0));
+    discountEligible: isCouponLineEligible({ id: line.productId, department: line.evidence?.department, departmentHandle: line.evidence?.departmentHandle }, coupon) })), discountCents, feeCents, Number(order.metadata?.deliveryPolicySnapshot?.feeTaxRateBasisPoints || 0));
 }
 function canonical(value: any): any {
   if (value instanceof Date) return value.toISOString();
@@ -111,7 +113,7 @@ export function makeFinalizeGroceryOrderActuals(overrides: Partial<typeof defaul
       const payments = await tx.payment.findMany({ where: { orderId }, include: { paymentProvider: true, refunds: true }, orderBy: { id: 'asc' } });
       const candidates = payments.filter((payment: any) => ['authorized', 'succeeded', 'partially_refunded'].includes(payment.status));
       const payment = prior?.providerEvidence?.originalPaymentId ? payments.find((payment: any) => payment.id === prior.providerEvidence.originalPaymentId) : candidates.length === 1 ? candidates[0] : null;
-      if (!payment || payment.storeId !== store.id || !payment.providerPaymentId || !payment.paymentProvider?.isInstalled) throw new Error('Order requires one unambiguous original payment before finalization');
+      if (!payment || payment.storeId !== store.id || !payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw new Error('Order requires one unambiguous original payment before finalization');
       assertIdempotentCaptureProvider(payment.paymentProvider);
       for (const row of payments) { checkVoid(row); refundsCents(row.refunds || []); }
       const budget = cents(payment.amountCents) - refundsCents(payment.refunds || []);

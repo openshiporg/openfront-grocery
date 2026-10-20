@@ -3,23 +3,9 @@
  */
 
 import { getAuthHeaders } from '@/features/dashboard/lib/cookies';
-import { GraphQLClient, ClientError } from 'graphql-request';
-import {graphqlErrorSummary} from './graphqlErrorSummary';
+import { GraphQLClient } from 'graphql-request';
+import { PUBLIC_REQUEST_ERROR, safeErrorSummary } from './security';
 import { getGraphQLEndpoint } from '@/features/dashboard/lib/getBaseUrl';
-import { getInternalGraphQLEndpoint } from '@/features/keystone/lib/internalTransport';
-
-async function getGraphQLRequestHeaders(): Promise<Record<string, string>> {
-  const authHeaders = await getAuthHeaders();
-  delete authHeaders['x-real-ip'];
-  delete authHeaders['x-grocery-proxy-identity'];
-  if (typeof window === 'undefined' && getInternalGraphQLEndpoint()) {
-    const { headers } = await import('next/headers');
-    const { trustedClientIp } = await import('@/features/keystone/lib/clientIp');
-    const clientIp = trustedClientIp(await headers());
-    if (clientIp) authHeaders['x-real-ip'] = clientIp;
-  }
-  return authHeaders;
-}
 
 // Define response type for keystoneClient
 export type KeystoneResponse<T = any> =
@@ -31,18 +17,12 @@ export type KeystoneResponse<T = any> =
  */
 async function createGraphQLClient(): Promise<GraphQLClient> {
   const endpoint = await getGraphQLEndpoint();
-  const authHeaders = await getGraphQLRequestHeaders();
+  const authHeaders = await getAuthHeaders();
   return new GraphQLClient(endpoint, {
     credentials: 'include',
+    redirect: 'error',
     headers: authHeaders || {},
   });
-}
-
-/**
- * Format GraphQL error messages in a more readable way
- */
-function formatGraphQLErrors(error: ClientError): { message: string; errors?: any[] } {
-  return graphqlErrorSummary(error);
 }
 
 /**
@@ -80,21 +60,8 @@ export async function keystoneClient<T = any>(
     };
 
   } catch (error) {
-    console.error("GraphQL request failed", { category: error instanceof ClientError ? "graphql" : "transport" });
-
-    if (error instanceof ClientError) {
-      const { message, errors } = formatGraphQLErrors(error);
-      return {
-        success: false,
-        error: message,
-        errors
-      };
-    }
-
-    return {
-      success: false,
-      error: 'The request could not be completed. Please try again.'
-    };
+    console.error("Error fetching GraphQL data:", safeErrorSummary(error));
+    return { success: false, error: PUBLIC_REQUEST_ERROR };
   }
 }
 
@@ -108,7 +75,7 @@ async function _fetchGraphQLWithFiles(
 ): Promise<any> {
   try {
     const endpoint = await getGraphQLEndpoint();
-    const authHeaders = await getGraphQLRequestHeaders();
+    const authHeaders = await getAuthHeaders();
 
     // Clone the variables to avoid modifying the original
     const variablesCopy = structuredClone(variables);
@@ -152,24 +119,22 @@ async function _fetchGraphQLWithFiles(
       method: "POST",
       headers,
       credentials: "include",
+      redirect: "error",
       body: formData,
     });
 
     if (!response.ok) {
       return {
         success: false,
-        error: `GraphQL request failed: ${response.statusText}`
+        error: PUBLIC_REQUEST_ERROR
       };
     }
 
     const json = await response.json();
 
     if (json.errors) {
-      console.error("GraphQL upload rejected");
-      return {
-        success: false,
-        error: graphqlErrorSummary({response:json}).message
-      };
+      console.error("GraphQL Errors:", safeErrorSummary({ response: { errors: json.errors } }));
+      return { success: false, error: PUBLIC_REQUEST_ERROR };
     }
 
     return {
@@ -177,11 +142,8 @@ async function _fetchGraphQLWithFiles(
       data: json.data
     };
   } catch (error) {
-    console.error("GraphQL upload failed");
-    return {
-      success: false,
-      error: 'The request could not be completed. Please try again.'
-    };
+    console.error("Error uploading files:", safeErrorSummary(error));
+    return { success: false, error: PUBLIC_REQUEST_ERROR };
   }
 }
 

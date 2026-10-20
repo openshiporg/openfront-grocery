@@ -3,7 +3,8 @@ import type { Prisma } from '@prisma/client';
 
 export const CHECKOUT_RECONCILIATION_LEASE_MS = 30_000;
 
-type DbClient = Prisma.TransactionClient | { $queryRawUnsafe: Function };
+/** Any Prisma client or transaction client: only raw queries are used here. */
+type DbClient = Pick<Prisma.TransactionClient, '$queryRawUnsafe'>;
 
 export type CheckoutLease = {
   id: string;
@@ -80,7 +81,8 @@ export async function claimCheckoutAttempt(
            "leaseToken" = $2,
            "leaseExpiresAt" = NOW() + ($4 * INTERVAL '1 millisecond'),
            "fencingToken" = ca."fencingToken" + 1,
-           "attempts" = ca."attempts" + 1
+           "attempts" = ca."attempts" + 1,
+           "updatedAt" = NOW()
        FROM "Cart" c
        WHERE ca."id" = $1 AND ca."cart" = c."id" AND ca."order" IS NULL
          AND ca."status" = 'finalizing'
@@ -96,7 +98,8 @@ export async function claimCheckoutAttempt(
            "leaseToken" = $3,
            "leaseExpiresAt" = NOW() + ($4 * INTERVAL '1 millisecond'),
            "fencingToken" = ca."fencingToken" + 1,
-           "attempts" = ca."attempts" + 1
+           "attempts" = ca."attempts" + 1,
+           "updatedAt" = NOW()
        FROM "Cart" c
        WHERE ca."id" = $1 AND ca."cart" = c."id" AND ca."order" IS NULL
          AND ca."status" IN ('pending', 'settled_pending_finalize', 'finalizing')
@@ -111,7 +114,8 @@ export async function claimCheckoutAttempt(
            "leaseToken" = $3,
            "leaseExpiresAt" = NOW() + ($4 * INTERVAL '1 millisecond'),
            "fencingToken" = ca."fencingToken" + 1,
-           "attempts" = ca."attempts" + 1
+           "attempts" = ca."attempts" + 1,
+           "updatedAt" = NOW()
        FROM "Cart" c
        WHERE ca."id" = $1 AND ca."cart" = c."id" AND ca."order" IS NULL
          AND ca."status" IN ('compensation_required', 'compensation_processing')
@@ -139,7 +143,7 @@ export async function assertFinalizationLease(db: DbClient, lease: CheckoutLease
 export async function refreshFinalizationSettlement(db: DbClient, lease: CheckoutLease, amountCents: number, currencyCode: string) {
   const rows = await db.$queryRawUnsafe<any[]>(
     `UPDATE "CheckoutAttempt"
-     SET "amountCents" = $2, "currencyCode" = $3, "settledAt" = COALESCE("settledAt", NOW())
+     SET "amountCents" = $2, "currencyCode" = $3, "settledAt" = COALESCE("settledAt", NOW()), "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'finalizing' AND "order" IS NULL
        AND "leaseToken" = $4 AND "fencingToken" = $5
      RETURNING "id"`,
@@ -152,7 +156,7 @@ export async function finalizeCheckoutAttempt(db: DbClient, lease: CheckoutLease
   const rows = await db.$queryRawUnsafe<any[]>(
     `UPDATE "CheckoutAttempt"
      SET "status" = 'finalized', "finalizedAt" = NOW(), "order" = $2,
-         "leaseToken" = NULL, "leaseExpiresAt" = NULL
+         "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'finalizing' AND "order" IS NULL
        AND "leaseToken" = $3 AND "fencingToken" = $4
      RETURNING "id"`,
@@ -164,7 +168,7 @@ export async function finalizeCheckoutAttempt(db: DbClient, lease: CheckoutLease
 export async function markCheckoutAttemptFailed(db: DbClient, lease: CheckoutLease, message: string) {
   const rows = await db.$queryRawUnsafe<any[]>(
     `UPDATE "CheckoutAttempt"
-     SET "status" = 'failed', "lastError" = $2, "leaseToken" = NULL, "leaseExpiresAt" = NULL
+     SET "status" = 'failed', "lastError" = $2, "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'finalizing' AND "order" IS NULL
        AND "leaseToken" = $3 AND "fencingToken" = $4
      RETURNING "id"`,
@@ -193,7 +197,7 @@ export async function completeCompensation(
     `UPDATE "CheckoutAttempt"
      SET "status" = $2::"CheckoutAttemptStatusType",
          "compensationAt" = CASE WHEN $2 = 'compensated' THEN NOW() ELSE "compensationAt" END,
-         "lastError" = $3, "leaseToken" = NULL, "leaseExpiresAt" = NULL
+         "lastError" = $3, "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'compensation_processing' AND "order" IS NULL
        AND "leaseToken" = $4 AND "fencingToken" = $5
      RETURNING "id"`,

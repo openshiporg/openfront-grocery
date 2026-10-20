@@ -1,3 +1,4 @@
+import { publicError } from './publicError';
 import { createHash } from 'node:crypto';
 
 function pointsInteger(value: unknown) { const valueNumber = Number(value); if (!Number.isSafeInteger(valueNumber) || Math.abs(valueNumber) > 2147483647) throw new Error('Loyalty points must fit an integer journal amount'); return valueNumber; }
@@ -47,7 +48,7 @@ export async function reconcileOrderLoyalty(tx: any, input: { storeId: string; o
 export async function validateLoyaltyCoupon(tx: any, couponId: string, userId: string | null | undefined, storeId: string) {
   const redemption = await tx.loyaltyRedemption.findFirst({ where: { couponId } });
   if (!redemption) return null;
-  if (!userId || redemption.storeId !== storeId || redemption.userId !== userId || redemption.status !== 'issued') throw new Error('Loyalty coupon belongs to another customer or is no longer available');
+  if (!userId || redemption.storeId !== storeId || redemption.userId !== userId || redemption.status !== 'issued') throw publicError('This reward coupon belongs to another account or is no longer available. Remove it to continue.', 'COUPON_INVALID');
   return redemption;
 }
 export async function markLoyaltyRedemptionUsed(tx: any, couponId: string, orderId: string, storeId: string) {

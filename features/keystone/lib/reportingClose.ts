@@ -108,7 +108,7 @@ export function compileFinancialClose(storeId: string, currencyCode: string, per
   currencyCode = currencyCode.toUpperCase();
   const rows: Record<string, unknown>[] = [], exceptions: Array<{ sourceType: string; sourceId: string; reason: string }> = [];
   const totals = { requestedGrossCents: 0, actualGrossCents: 0, discountsCents: 0, taxCents: 0, feesCents: 0, actualTotalCents: 0,
-    refundedGoodsCents: 0, refundedTaxCents: 0, reversedDiscountCents: 0, netTaxCents: 0, capturedCents: 0, refundedCents: 0, netPaymentsCents: 0, providerFeesCents: 0, statementNetCents: 0, knownStockValueCents: 0, unknownStockLots: 0, fixedCouponExposureCents: 0, percentageCouponCount: 0 };
+    refundedGoodsCents: 0, refundedTaxCents: 0, reversedDiscountCents: 0, allocatedReversalCents: 0, netCommercialTotalCents: 0, netTaxCents: 0, capturedCents: 0, refundedCents: 0, netPaymentsCents: 0, providerFeesCents: 0, statementNetCents: 0, knownStockValueCents: 0, unknownStockLots: 0, fixedCouponExposureCents: 0, percentageCouponCount: 0 };
   const owns = (entry: any, source: string) => { if (entry.storeId !== storeId) throw new Error(`${source} contains a record outside the active store`); };
   const inPeriod = (value: any) => { const time = new Date(value).getTime(); return time >= period.start.getTime() && time < period.end.getTime() && time <= period.cutoff.getTime(); };
   for (const order of sources.orders) {
@@ -160,6 +160,7 @@ export function compileFinancialClose(storeId: string, currencyCode: string, per
     if(amount && reversal?.kind==='final_sale_line_refund') {
       if(Number(reversal.totalCents)!==amount || String(reversal.currencyCode).toUpperCase()!==currencyCode)throw new Error('Commercial refund does not match cash/currency evidence');
       totals.refundedGoodsCents+=Number(reversal.netGoodsCents);totals.refundedTaxCents+=Number(reversal.taxCents);totals.reversedDiscountCents+=Number(reversal.discountCents);
+      totals.allocatedReversalCents+=amount;
       for(const line of reversal.lines || [])rows.push({sourceType:'refund_line',sourceId:line.id,refundId:refund.id,orderId:refund.payment.orderId,lineItemId:line.lineItemId,quantityMilli:line.quantityMilli,netGoodsReversedCents:line.netGoodsCents,taxReversedCents:line.taxCents,discountReversedCents:line.discountCents,refundedCents:line.totalCents,disposition:line.disposition,currency:currencyCode});
     }
     if (amount && !refund.providerData?.commercialAdjustments) exceptions.push({ sourceType: 'refund', sourceId: refund.id, reason: 'Cash refund has no item/tax allocation snapshot; tax reversal requires review' });
@@ -193,7 +194,17 @@ export function compileFinancialClose(storeId: string, currencyCode: string, per
   for (const clipped of sources.coupons) {
     owns(clipped.user, 'Coupon customer');
     const coupon = clipped.coupon;
-    if (new Date(clipped.clippedAt) >= asOf || (clipped.usedAt && new Date(clipped.usedAt) < asOf) || (coupon.validTo && new Date(coupon.validTo) < asOf)) continue;
+    if (new Date(clipped.clippedAt) >= asOf) continue;
+    // Exposure must reflect the offer and clip as they stood at the cutoff. A clip
+    // or offer changed after the cutoff (edited terms, a consumption or release)
+    // has no versioned history here, so it is reported as unknown, never guessed
+    // from today's state.
+    const changedAfterCutoff = (value: any) => value && new Date(value).getTime() > asOf.getTime();
+    if (changedAfterCutoff(clipped.updatedAt) || changedAfterCutoff(coupon.updatedAt)) {
+      exceptions.push({ sourceType: 'coupon_exposure', sourceId: clipped.id, reason: 'Offer or clip changed after the cutoff; its state at the cutoff is unknown and needs review' });
+      continue;
+    }
+    if ((clipped.usedAt && new Date(clipped.usedAt) < asOf) || (coupon.validTo && new Date(coupon.validTo) < asOf)) continue;
     const amount = coupon.discountType === 'fixed' ? Number(coupon.discountValueCents || 0) : null;
     if (amount === null) totals.percentageCouponCount++; else totals.fixedCouponExposureCents += amount;
     rows.push({ sourceType: 'coupon_exposure', sourceId: clipped.id, couponId: coupon.id, code: coupon.code, currency: currencyCode, conditionalFaceValueCents: amount,
@@ -201,8 +212,12 @@ export function compileFinancialClose(storeId: string, currencyCode: string, per
   }
   totals.netTaxCents = totals.taxCents-totals.refundedTaxCents;
   totals.netPaymentsCents = totals.capturedCents - totals.refundedCents;
-  if (totals.actualTotalCents !== totals.netPaymentsCents) exceptions.push({ sourceType: 'period', sourceId: `${period.startDate}:${period.endDate}`,
-    reason: `Final sales and period net cash differ by ${totals.actualTotalCents - totals.netPaymentsCents} cents; review capture/refund timing and order exceptions` });
+  // Gross final sales less refunds allocated to their sale lines is the commercial
+  // amount net cash should match; unallocated or amount-only refunds and timing
+  // differences still surface as exceptions.
+  totals.netCommercialTotalCents = totals.actualTotalCents - totals.allocatedReversalCents;
+  if (totals.netCommercialTotalCents !== totals.netPaymentsCents) exceptions.push({ sourceType: 'period', sourceId: `${period.startDate}:${period.endDate}`,
+    reason: `Final sales net of allocated refunds and period net cash differ by ${totals.netCommercialTotalCents - totals.netPaymentsCents} cents; review capture/refund timing and order exceptions` });
   if (totals.netPaymentsCents - totals.providerFeesCents !== totals.statementNetCents) exceptions.push({ sourceType: 'period', sourceId: `${period.startDate}:${period.endDate}`,
     reason: 'Net payments less provider fees do not equal the imported settlement net; review settlement timing and missing entries' });
   for (const [key, amount] of Object.entries(totals)) if (!Number.isSafeInteger(amount)) throw new Error(`Invalid report total: ${key}`);

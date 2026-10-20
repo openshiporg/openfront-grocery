@@ -1,4 +1,5 @@
 import { validateLoyaltyCoupon } from "../lib/loyaltyAccounting";
+import { findStoreCouponByCode } from '../lib/couponLookup';
 import type { Context } from '.keystone/types';
 import { requireSessionStore } from '../lib/storeScope';
 
@@ -49,9 +50,7 @@ export async function clipCoupon(
       `,
     });
   } else if (couponCode) {
-    const coupons = await sudoContext.query.Coupon.findMany({
-      where: { code: { equals: couponCode } },
-      query: `
+    coupon = await findStoreCouponByCode(sudoContext, couponCode, store.id, `
         id
         store { id }
         code
@@ -64,14 +63,16 @@ export async function clipCoupon(
         discountValue
         minPurchase
         productCategories
-      `,
-    });
-    coupon = coupons[0];
+      `);
   } else {
     throw new Error('You must provide either a couponId or couponCode');
   }
 
   if (!coupon || coupon.store?.id !== store.id) {
+    throw new Error('Coupon is not available in the active store');
+  }
+  // Loyalty rewards are issued to one customer and are already on that account.
+  if (await context.prisma.loyaltyRedemption.count({ where: { couponId: coupon.id } })) {
     throw new Error('Coupon is not available in the active store');
   }
 
@@ -163,19 +164,22 @@ export async function clipCoupon(
  */
 export async function getClippedCoupons(
   root: any,
-  args: {},
+  args: Record<string, never>,
   context: Context
 ) {
   if (!context.session?.itemId) {
     return [];
   }
 
+  // The account must still be current (not erased, active Store) to read its clips.
+  const store = await requireSessionStore(context);
   const sudoContext = context.sudo();
 
   const userCoupons = await sudoContext.query.UserCoupon.findMany({
     where: {
       user: { id: { equals: context.session.itemId } },
       used: { equals: false },
+      coupon: { store: { id: { equals: store.id } } },
     },
     query: `
       id

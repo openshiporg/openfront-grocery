@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { gql } from 'graphql-request';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { keystoneClient } from '@/features/platform/lib/platformClient';
 
 export async function advanceOrderStatus(input: {
   orderId: string;
@@ -17,7 +17,8 @@ export async function advanceOrderStatus(input: {
       : input.currentStatus === 'packed' && input.fulfillmentMethod === 'pickup' && !input.readyForPickup
         ? 'ready_for_pickup'
         : null;
-  if (!target) throw new Error(`No fulfillment transition is available from ${input.currentStatus}`);
+  // Return business errors: production Next.js hides messages thrown from server actions.
+  if (!target) return { ok: false as const, error: `No fulfillment transition is available from ${input.currentStatus}` };
 
   const response = await keystoneClient(gql`
     mutation AdvanceFulfillmentOrder($orderId: ID!, $target: String!) {
@@ -30,14 +31,12 @@ export async function advanceOrderStatus(input: {
     }
   `, { orderId: input.orderId, target });
 
-  if (!response.success) {
-    throw new Error(response.error);
-  }
+  if (!response.success) return { ok: false as const, error: response.error || 'This order could not be moved' };
 
   revalidatePath('/dashboard/platform/fulfillment');
   revalidatePath('/dashboard/platform/orders');
 
-  return response.data;
+  return { ok: true as const, data: response.data };
 }
 
 export async function saveOrderItemSubstitution(input: {
@@ -70,9 +69,9 @@ export async function saveOrderItemSubstitution(input: {
     }
   `, input);
 
-  if (!response.success) throw new Error(response.error);
+  if (!response.success) return { ok: false as const, error: response.error || 'Substitution evidence could not be recorded' };
 
   revalidatePath('/dashboard/platform/fulfillment');
   revalidatePath('/dashboard/platform/orders');
-  return response.data;
+  return { ok: true as const, data: response.data };
 }

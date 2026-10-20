@@ -9,7 +9,8 @@ import { priceCommercialLines, isCouponLineEligible } from '../lib/commercialPri
 import { randomUUID } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { createGuestOrderToken } from '../utils/guestOrderToken';
-import { getPaymentStatus, refundPayment, cancelPayment } from '../utils/paymentProviderAdapter';
+import { getPaymentStatus, getRefundStatus, refundPayment, cancelPayment } from '../utils/paymentProviderAdapter';
+import { assertRefundCreationWindow, normalizeProviderRefund } from '../lib/refundRecovery';
 import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { calculateCouponDiscount } from '../lib/couponPricing';
@@ -25,6 +26,11 @@ import {
   refreshFinalizationSettlement,
   type CheckoutLease,
 } from '../utils/checkoutAttemptLease';
+
+import { checkoutContactProblem } from '../../lib/checkoutContact';
+import { findStoreCouponByCode } from '../lib/couponLookup';
+import { latestInformationVersionIds, materialInformationSnapshot } from '../lib/materialInformation';
+import { publicError } from '../lib/publicError';
 
 export type SubmitOrderData = {
   cartId: string;
@@ -105,7 +111,7 @@ async function markCheckoutAttemptSettled(context: Context, attemptId: string, s
     const rows = await transactionContext.prisma.$queryRawUnsafe<Array<{ id: string; status: string; orderId: string | null }>>(
       `UPDATE "CheckoutAttempt"
        SET "status" = 'settled_pending_finalize', "amountCents" = $2, "currencyCode" = $3,
-           "settledAt" = COALESCE("settledAt", NOW())
+           "settledAt" = COALESCE("settledAt", NOW()), "updatedAt" = NOW()
        WHERE "id" = $1 AND "order" IS NULL
          AND "status" IN ('pending', 'settled_pending_finalize')
        RETURNING "id", "status", "order" AS "orderId"`,
@@ -139,15 +145,9 @@ function assertCartOwnership(cart: any, data: SubmitOrderData, sessionUserId: st
 }
 
 function assertFulfillmentInput(data: SubmitOrderData) {
-  if (!/^\S+@\S+\.\S+$/.test(data.email.trim()) || data.email.length > 320) throw new Error('A valid checkout email is required');
-  for (const [label, value] of [['first name', data.deliveryAddress.firstName], ['last name', data.deliveryAddress.lastName], ['phone', data.deliveryAddress.phone]] as const) {
-    if (value.trim().length < 2 || value.length > 200) throw new Error(`A valid delivery ${label} is required`);
-  }
-  if (data.fulfillmentMethod === 'delivery') {
-    for (const [label, value] of [['address', data.deliveryAddress.address1], ['city', data.deliveryAddress.city], ['province', data.deliveryAddress.province], ['postal code', data.deliveryAddress.postalCode]] as const) {
-      if (value.trim().length < 2 || value.length > 200) throw new Error(`A valid delivery ${label} is required`);
-    }
-  }
+  // The same contact contract as payment initiation and recovery.
+  const contactProblem = checkoutContactProblem({ email: data.email, fulfillmentMethod: data.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery', deliveryAddress: data.deliveryAddress });
+  if (contactProblem) throw publicError(contactProblem, 'CHECKOUT_DETAILS');
   if (data.fulfillmentMethod === 'delivery' && !data.deliverySlotId) {
     throw new Error('Delivery orders require a delivery slot');
   }
@@ -181,6 +181,12 @@ async function loadCart(sudoContext: Context, cartId: string) {
           pricingMethod
           unitOfMeasure
           department
+          departmentRef { handle }
+          allergens
+          nutrition
+          variantLabel
+          packBaseUnitsMilli
+          informationSource
           imageUrl
           status
           store { id }
@@ -239,23 +245,73 @@ export async function compensateFailedCheckout({
     where: { id: claim.paymentSessionId },
     select: { data: true },
   });
-  const fullRefund = forceFullRefund === true || (paymentSessionBeforeRefund?.data as Record<string, unknown> | null)?.compensationFullRefund === true;
+  const sessionData = ((paymentSessionBeforeRefund?.data as Record<string, any> | null) || {});
+  const fullRefund = forceFullRefund === true || sessionData.compensationFullRefund === true;
+  const store = await context.prisma.store.findUnique({ where: { id: claim.storeId }, select: { currencyCode: true } });
+  const currency = String(store?.currencyCode || '').toLowerCase();
+  // The reversal's identity is durable before any provider call: first request
+  // time, the original idempotency key, the expected amount/currency and, once
+  // known, the provider refund ID. Retries poll a known refund instead of
+  // creating another, and never create one after the safe replay window.
+  const prior = (sessionData.compensationReversal || null) as null | { requestKey: string; firstRequestedAt: string; expectedAmountCents: number; currency: string; kind: 'refund' | 'void'; providerRefundId?: string | null };
+  const reversalSessionId = claim.paymentSessionId;
+  async function recordReversal(patch: Record<string, unknown>) {
+    const current = await context.prisma.paymentSession.findUnique({ where: { id: reversalSessionId }, select: { data: true } });
+    const data = ((current?.data as Record<string, any> | null) || {});
+    await context.prisma.paymentSession.update({ where: { id: reversalSessionId }, data: { data: { ...data, compensationReversal: { ...(data.compensationReversal || {}), ...patch } } } });
+  }
   let compensation: { status: string; providerRefundId?: string; refundedAmountCents?: number; error?: string };
   try {
     const noCharge = noChargeCheckoutState({id:claim.paymentSessionId,amountCents:claim.amountCents,data:paymentSessionBeforeRefund?.data});
-    const state = noCharge || await getPaymentStatus({ provider, paymentId: claim.providerPaymentId });
-    const isAuthorization = ['requires_capture', 'authorized', 'canceled', 'cancelled'].includes(state.status);
-    const result = noCharge ? {status:'succeeded',amount:0,data:{id:claim.providerPaymentId}} : isAuthorization ? await cancelPayment({ provider, paymentId: claim.providerPaymentId, idempotencyKey: eventKey }) : await refundPayment({
-      provider,
-      paymentId: claim.providerPaymentId,
-      amount: fullRefund ? undefined : claim.amountCents,
-      idempotencyKey: eventKey,
-    });
-    compensation = {
-      status: ['succeeded', 'canceled', 'cancelled'].includes(result.status) ? 'refunded' : 'refund_required',
-      providerRefundId: result.data?.id,
-      refundedAmountCents: Number.isInteger(Number(result.amount)) ? Number(result.amount) : undefined,
-    };
+    const knownRefundId = prior?.providerRefundId || (typeof sessionData.compensationProviderRefundId === 'string' ? sessionData.compensationProviderRefundId : null);
+    if (noCharge) {
+      // Server-owned, validated no-charge checkout: nothing was authorized or captured.
+      compensation = { status: 'refunded', refundedAmountCents: 0 };
+    } else if (knownRefundId) {
+      // A refund already exists for this compensation: poll it, never create another.
+      const expectedAmountCents = prior?.expectedAmountCents ?? (fullRefund ? null : Number(claim.amountCents));
+      if (expectedAmountCents === null) throw new Error('Known compensation refund needs operator reconciliation of its expected amount');
+      const refund = normalizeProviderRefund(await getRefundStatus({ provider, refundId: knownRefundId }), {
+        amountCents: expectedAmountCents, currencyCode: prior?.currency || currency, providerPaymentId: claim.providerPaymentId, providerRefundId: knownRefundId,
+      });
+      compensation = refund.status === 'succeeded'
+        ? { status: 'refunded', providerRefundId: refund.id, refundedAmountCents: expectedAmountCents }
+        : { status: 'refund_required', providerRefundId: refund.id, error: `Compensation refund is ${refund.status}; it is polled, never re-created` };
+    } else {
+      const state = await getPaymentStatus({ provider, paymentId: claim.providerPaymentId });
+      if (!currency || String(state.currency || '').toLowerCase() !== currency) throw new Error('Provider payment currency does not match the Store');
+      const statePaymentId = state.data?.id ?? state.id;
+      if (statePaymentId && statePaymentId !== claim.providerPaymentId) throw new Error('Provider payment identity does not match the checkout');
+      if (['requires_capture', 'authorized', 'canceled', 'cancelled'].includes(state.status)) {
+        if (!prior) await recordReversal({ requestKey: eventKey, firstRequestedAt: new Date().toISOString(), expectedAmountCents: 0, currency, kind: 'void' });
+        const result = ['canceled', 'cancelled'].includes(state.status) ? state : await cancelPayment({ provider, paymentId: claim.providerPaymentId, idempotencyKey: prior?.requestKey || eventKey });
+        const resultPaymentId = result.data?.id ?? result.id;
+        // A void is proof only for this authorization, canceled, with nothing captured, in the Store currency.
+        const proven = ['canceled', 'cancelled'].includes(result.status)
+          && Number(result.capturedAmountCents ?? result.amountCents ?? result.amount) === 0
+          && String(result.currency || '').toLowerCase() === currency
+          && (!resultPaymentId || resultPaymentId === claim.providerPaymentId);
+        compensation = proven
+          ? { status: 'refunded', refundedAmountCents: 0 }
+          : { status: 'refund_required', error: 'Provider did not prove an uncaptured authorization void' };
+      } else {
+        const capturedCents = Number(state.capturedAmountCents ?? state.amountCents ?? state.amount);
+        const expectedAmountCents = fullRefund ? capturedCents : Number(claim.amountCents);
+        if (!Number.isSafeInteger(expectedAmountCents) || expectedAmountCents < 1 || !Number.isSafeInteger(capturedCents) || expectedAmountCents > capturedCents) {
+          throw new Error('Captured amount does not support the compensation refund');
+        }
+        const firstRequestedAt = prior?.firstRequestedAt || new Date().toISOString();
+        assertRefundCreationWindow(firstRequestedAt, null);
+        const requestKey = prior?.requestKey || eventKey;
+        if (!prior) await recordReversal({ requestKey, firstRequestedAt, expectedAmountCents, currency, kind: 'refund' });
+        const result = await refundPayment({ provider, paymentId: claim.providerPaymentId, amount: fullRefund ? undefined : expectedAmountCents, idempotencyKey: requestKey });
+        const refund = normalizeProviderRefund(result, { amountCents: prior?.expectedAmountCents ?? expectedAmountCents, currencyCode: currency, providerPaymentId: claim.providerPaymentId });
+        await recordReversal({ providerRefundId: refund.id });
+        compensation = refund.status === 'succeeded'
+          ? { status: 'refunded', providerRefundId: refund.id, refundedAmountCents: expectedAmountCents }
+          : { status: 'refund_required', providerRefundId: refund.id, error: `Compensation refund is ${refund.status}` };
+      }
+    }
   } catch (refundError) {
     compensation = { status: 'refund_required', error: refundError instanceof Error ? refundError.message : 'Compensation refund failed' };
   }
@@ -395,6 +451,9 @@ export async function commitGroceryOrder(
 ) {
   const sessionUserId = sessionUserIdOverride === undefined ? context.session?.itemId || null : sessionUserIdOverride;
   const fulfillmentMethod = data.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery';
+  // Recovery commits apply the same contact contract as browser submission.
+  const contactProblem = checkoutContactProblem({ email: data.email, fulfillmentMethod, deliveryAddress: data.deliveryAddress });
+  if (contactProblem) throw publicError(contactProblem, 'CHECKOUT_DETAILS');
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
@@ -460,10 +519,7 @@ export async function commitGroceryOrder(
     let coupon: any = null;
     let discount = 0;
     if (data.couponCode?.trim()) {
-      coupon = await sudoContext.query.Coupon.findOne({
-        where: { code: data.couponCode.trim().toUpperCase() },
-        query: 'id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts store { id }',
-      });
+      coupon = await findStoreCouponByCode(sudoContext, data.couponCode, storeId, 'id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts categoryTaxonomy store { id }');
       if (!coupon || coupon.store?.id !== storeId) throw new Error('Coupon is not available for this store');
       await validateLoyaltyCoupon(tx, coupon.id, sessionUserId, storeId);
       discount = calculateCouponDiscount(coupon, cart.items);
@@ -504,7 +560,7 @@ export async function commitGroceryOrder(
 
     const paymentProvider = selectedSession.paymentProvider;
     const providerPaymentId = selectedSession.data?.paymentIntentId || data.paymentIntentId;
-    if (!paymentProvider?.isInstalled || paymentProvider.code !== settledPayment.providerCode) {
+    if (!paymentProvider || !isPaymentProviderInstalled(paymentProvider) || paymentProvider.code !== settledPayment.providerCode) {
       throw new Error('Payment provider does not match the settled payment');
     }
     if (!providerPaymentId || providerPaymentId !== settledPayment.providerPaymentId) {
@@ -571,7 +627,7 @@ export async function commitGroceryOrder(
           deliverySlotId: data.deliverySlotId || null,
           pickupSlotId: data.pickupSlotId || null,
           ...totals,
-          coupon: coupon ? { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discount, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents } : null,
+          coupon: coupon ? { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discount, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, categoryTaxonomy: coupon.categoryTaxonomy, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents } : null,
           lineItemsSnapshot,
           selectedFulfillmentSlot: selectedSlot
             ? { date: selectedSlot.date, startTime: selectedSlot.startTime, endTime: selectedSlot.endTime }
@@ -584,6 +640,8 @@ export async function commitGroceryOrder(
       },
     });
 
+    // Material grocery information (allergens, nutrition, variant/pack) as shown at checkout.
+    const informationVersions = await latestInformationVersionIds(tx, cart.items.map((item: any) => item.product?.id).filter(Boolean));
     for (const item of cart.items) {
       const product = item.product;
       const plannedAllocations = planSellableLotAllocation(
@@ -630,6 +688,7 @@ export async function commitGroceryOrder(
             },
             substitutionPreference: item.substitutionPreference || null,
             inventoryAllocations,
+            materialInformation: materialInformationSnapshot(product, informationVersions.get(product.id) || null),
           },
         },
       });
@@ -739,6 +798,8 @@ export async function commitGroceryOrder(
   }));
 }
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export default async function submitGroceryOrder(
   _root: unknown,
   { data }: SubmitOrderArgs,
@@ -780,7 +841,7 @@ export default async function submitGroceryOrder(
   }
   assertCartOwnership(cart, data, sessionUserId);
   const paymentProvider = selectedSession.paymentProvider;
-  if (!paymentProvider?.isInstalled) throw new Error('Payment provider missing from payment session');
+  if (!paymentProvider || !isPaymentProviderInstalled(paymentProvider)) throw new Error('Payment provider missing from payment session');
   const providerPaymentId = selectedSession.data?.paymentIntentId || data.paymentIntentId;
   if (!providerPaymentId) throw new Error('Payment session is missing provider payment id');
   const attempt = await ensureCheckoutAttempt(context, data, cart, selectedSession, providerPaymentId) as CheckoutAttemptRecord;

@@ -79,6 +79,9 @@ export const User = list({
       validation: { isRequired: true },
       isIndexed: "unique",
       label: "Email",
+      // The sign-in identity changes only through updateActiveUser, which
+      // requires the current password.
+      access: { update: () => false },
     }),
     password: password({
       validation: {
@@ -87,7 +90,9 @@ export const User = list({
       },
       access: {
         read: denyAll,
-        update: ({ session, item }) => session?.itemId === item.id,
+        // Password changes go through updateActiveUserPassword (current password
+        // required) or the emailed reset token.
+        update: () => false,
       },
     }),
     store: relationship({
@@ -116,6 +121,9 @@ export const User = list({
       ],
       defaultValue: "not_started",
       label: "Onboarding Status",
+      // Transitions are owned by updateActiveUser (capability-checked) and
+      // runGroceryOnboarding (completion after verified setup).
+      access: { update: () => false },
     }),
     staffAccessEvents: relationship({ ref: 'StaffAccessEvent.subject', many: true, access: { update: () => false } }),
     privacyErasedAt: timestamp({ db: { isNullable: true }, access: { create: () => false, update: () => false } }),

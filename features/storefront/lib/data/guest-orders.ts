@@ -62,10 +62,20 @@ export async function checkInOwnedPickupOrder(input: {
 }
 
 export async function getGuestOrderById(orderId: string): Promise<GroceryOrder | null> {
+  const result = await readGuestOrderById(orderId);
+  return result.status === 'found' ? result.order : null;
+}
+
+/**
+ * Read a guest order through this browser's proof cookies. No proof, or a proof
+ * the store does not accept, is "not found" (nothing private is revealed); a
+ * failed read is "unavailable", so a real order is never shown as missing.
+ */
+export async function readGuestOrderById(orderId: string): Promise<{ status: 'found'; order: GroceryOrder } | { status: 'not_found' } | { status: 'unavailable' }> {
   const cookieStore = await cookies();
   const sessionId = cookieStore.get(`grocery_order_session_${orderId}`)?.value || cookieStore.get(GUEST_CART_COOKIE)?.value;
   const token = cookieStore.get(`${GUEST_ORDER_COOKIE_PREFIX}${orderId}`)?.value;
-  if (!sessionId || !token) return null;
+  if (!sessionId || !token) return { status: 'not_found' };
 
   try {
     const { data, errors } = await storefrontGraphQL<{ guestGroceryOrder: any | null }>(
@@ -74,6 +84,7 @@ export async function getGuestOrderById(orderId: string): Promise<GroceryOrder |
           guestGroceryOrder(orderId: $orderId, sessionId: $sessionId, token: $token) {
             id
             displayId
+            currencyCode
             status
             email
             taxRate
@@ -100,15 +111,16 @@ export async function getGuestOrderById(orderId: string): Promise<GroceryOrder |
       { orderId, sessionId, token },
       { cache: 'no-store' }
     );
+    if (errors?.some((error) => /guest order not found/i.test(error.message || ''))) return { status: 'not_found' };
     throwGraphQLErrors(errors);
-    if (!data?.guestGroceryOrder) return null;
+    if (!data?.guestGroceryOrder) return { status: 'not_found' };
 
     const lineItems = Array.isArray(data.guestGroceryOrder.metadata?.lineItemsSnapshot)
       ? data.guestGroceryOrder.metadata.lineItemsSnapshot
       : [];
-    return mapStorefrontOrder({ ...data.guestGroceryOrder, lineItems });
+    return { status: 'found', order: mapStorefrontOrder({ ...data.guestGroceryOrder, lineItems }) };
   } catch (error) {
-    console.error('Error fetching guest order:', error);
-    return null;
+    console.error('Guest order read unavailable:', error instanceof Error ? error.message : 'unknown error');
+    return { status: 'unavailable' };
   }
 }

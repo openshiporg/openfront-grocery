@@ -154,25 +154,39 @@ export async function getFeaturedProducts(limit: number = 8) {
   return { products };
 }
 
-export async function requestBackInStockAlert(productId: string) {
+export async function requestBackInStockAlert(productId: string, options: { enableEmail?: boolean } = {}) {
   const { data, errors } = await storefrontGraphQL<{
     requestGroceryBackInStockAlert: {
       requested: boolean;
       reused: boolean;
       productId: string;
+      emailDisabled: boolean;
       message: string;
     };
   }>(`
-    mutation RequestGroceryBackInStockAlert($productId: ID!) {
-      requestGroceryBackInStockAlert(productId: $productId) {
+    mutation RequestGroceryBackInStockAlert($productId: ID!, $enableEmail: Boolean) {
+      requestGroceryBackInStockAlert(productId: $productId, enableEmail: $enableEmail) {
         requested
         reused
         productId
+        emailDisabled
         message
       }
     }
-  `, { productId }, { cache: 'no-store' });
+  `, { productId, enableEmail: options.enableEmail === true }, { cache: 'no-store' });
   throwGraphQLErrors(errors);
   if (!data?.requestGroceryBackInStockAlert) throw new Error('Back-in-stock alert was not confirmed');
   return data.requestGroceryBackInStockAlert;
+}
+
+/** Ask to be emailed when the product's price drops to `targetPrice` or less. */
+export async function requestPriceAlert(productId: string, targetPrice: string, options: { enableEmail?: boolean } = {}) {
+  const { data, errors } = await storefrontGraphQL<{ requestGroceryPriceAlert: { requested: boolean; emailDisabled: boolean; message: string } }>(`
+    mutation RequestGroceryPriceAlert($productId: ID!, $targetPrice: String!, $enableEmail: Boolean) {
+      requestGroceryPriceAlert(productId: $productId, targetPrice: $targetPrice, enableEmail: $enableEmail) { requested emailDisabled message }
+    }
+  `, { productId, targetPrice, enableEmail: options.enableEmail === true }, { cache: 'no-store' });
+  throwGraphQLErrors(errors);
+  if (!data?.requestGroceryPriceAlert) throw new Error('The price alert was not confirmed');
+  return data.requestGroceryPriceAlert;
 }

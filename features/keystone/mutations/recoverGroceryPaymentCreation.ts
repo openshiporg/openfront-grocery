@@ -13,6 +13,8 @@ type RecoveryPorts = typeof defaults;
 const reviewMessage = 'Payment remains held. The provider reference could not be safely attached; review its original metadata and checkout evidence.';
 
 /** Attach a retrieved identity only; this operation never creates, charges or refunds a payment. */
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export async function recoverPaymentCreationWithDependencies(_root: unknown, input: RecoveryInput, context: any, ports: RecoveryPorts = defaults) {
   const args = { paymentSessionId: input.paymentSessionId.trim(), providerPaymentId: input.providerPaymentId.trim(), reason: input.reason.trim() };
   if (!args.paymentSessionId || args.paymentSessionId.length > 180 || !/^pi_[A-Za-z0-9_]{1,180}$/.test(args.providerPaymentId)
@@ -41,7 +43,7 @@ export async function recoverPaymentCreationWithDependencies(_root: unknown, inp
     await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentSession" WHERE "id"=$1 FOR UPDATE', args.paymentSessionId);
     const session = await tx.paymentSession.findUnique({ where: { id: args.paymentSessionId }, include: { cart: true, paymentProvider: true } });
     if (!session?.cart || session.cart.id !== identity.cart.id || session.cart.storeId !== store.id || session.cart.customerId !== ownerId) throw new Error('Checkout ownership changed during recovery');
-    if (session.data?.noCharge || session.paymentProvider?.code !== STRIPE_PROVIDER_CODE || !session.paymentProvider?.isInstalled) throw new Error('Checkout provider is unavailable for reference recovery');
+    if (session.data?.noCharge || session.paymentProvider?.code !== STRIPE_PROVIDER_CODE || !isPaymentProviderInstalled(session.paymentProvider)) throw new Error('Checkout provider is unavailable for reference recovery');
     return session;
   }
   const claim: any = await context.transaction(async (tc: any) => {

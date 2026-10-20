@@ -1,3 +1,4 @@
+import { calendarKey, legacyWindowTimes } from '../marketFormatting';
 import { mapStorefrontOrder } from './order-mappers';
 import type { GroceryOrder } from '../../types';
 import { clearCart, getSessionId } from './cart';
@@ -237,29 +238,8 @@ export async function submitOrder(orderData: {
       shippingAddress: orderData.deliveryAddress,
       fulfillmentMethod: orderData.fulfillmentMethod,
       deliverySlot: {
-        date: orderData.deliveryDate,
-        startTime: orderData.deliveryTimeWindow.startsWith('time_8')
-          ? '08:00'
-          : orderData.deliveryTimeWindow.startsWith('time_10')
-          ? '10:00'
-          : orderData.deliveryTimeWindow.startsWith('time_12')
-          ? '12:00'
-          : orderData.deliveryTimeWindow.startsWith('time_14')
-          ? '14:00'
-          : orderData.deliveryTimeWindow.startsWith('time_16')
-          ? '16:00'
-          : '18:00',
-        endTime: orderData.deliveryTimeWindow.endsWith('10')
-          ? '10:00'
-          : orderData.deliveryTimeWindow.endsWith('12')
-          ? '12:00'
-          : orderData.deliveryTimeWindow.endsWith('14')
-          ? '14:00'
-          : orderData.deliveryTimeWindow.endsWith('16')
-          ? '16:00'
-          : orderData.deliveryTimeWindow.endsWith('18')
-          ? '18:00'
-          : '20:00',
+        date: calendarKey(orderData.deliveryDate) || '',
+        ...legacyWindowTimes(orderData.deliveryTimeWindow),
       },
       deliveryInstructions: orderData.deliveryInstructions,
       substitutionPreference:

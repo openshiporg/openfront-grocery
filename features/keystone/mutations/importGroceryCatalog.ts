@@ -50,7 +50,9 @@ export async function importGroceryCatalog(_root: unknown, args: ImportArgs, con
       else {
         if (!next.departmentId) delete data.departmentRef;
         if (!next.supplierId) delete data.supplier;
-        product = await productDb.createOne({ data: { ...data, status: 'draft', handle: `import-${catalogHash([store.id, next.sku]).slice(0, 32)}` } });
+        // Product.store is non-null on create; the resolveInput hook rejects any
+        // Store other than the actor's, so this only satisfies GraphQL input.
+        product = await productDb.createOne({ data: { ...data, store: { connect: { id: store.id } }, status: 'draft', handle: `import-${catalogHash([store.id, next.sku]).slice(0, 32)}` } });
       }
       const persisted = await tx.product.findUnique({ where: { id: product.id } });
       if (!persisted || persisted.storeId !== store.id || Number(persisted.priceCents) !== next.priceCents) throw new Error('Product source hooks did not preserve imported Store and price authority');

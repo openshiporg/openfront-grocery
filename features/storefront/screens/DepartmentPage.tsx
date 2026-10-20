@@ -7,7 +7,8 @@ import { getDepartmentByHandle, getProductsByDepartment } from '@/features/store
 import { catalogPageHref, catalogTotalPages, parseCatalogPage } from '@/features/storefront/lib/catalogPagination';
 import { storefrontMetadata } from '@/features/storefront/lib/metadata';
 import UrbanProductGrid from '@/features/storefront/modules/urban/UrbanProductGrid';
-import { UrbanButtonLink, UrbanContainer, UrbanPageHeader, UrbanPageShell } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { Search } from 'lucide-react';
+import { UrbanBreadcrumb, UrbanButtonLink, UrbanContainer, UrbanPageShell, UrbanPager } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 type Props = {
   params: Promise<{ handle: string; countryCode?: string }>;
@@ -40,68 +41,45 @@ export async function DepartmentPage(props: Props) {
   const pathname = `/departments/${department.handle}`;
   if (page > totalPages) redirect(catalogPageHref(pathname, { sortBy: searchParams.sortBy }, totalPages));
 
+  const sorts = [['name', 'Name A–Z'], ['price-asc', 'Price: low to high'], ['price-desc', 'Price: high to low']] as const;
+  const activeSort = searchParams.sortBy || 'name';
+
   return (
     <UrbanPageShell>
-      <UrbanContainer className="space-y-8 py-8 sm:py-10">
-        <UrbanPageHeader
-          breadcrumb={[
-            { label: 'Home', href: '/' },
-            { label: 'Departments', href: '/departments' },
-            { label: department.name },
-          ]}
-          title={department.name}
-          description={department.description || 'Browse all products from this aisle, including out-of-stock items.'}
+      <UrbanContainer className="space-y-8 py-6 sm:py-8">
+        <UrbanBreadcrumb items={[{ label: 'Home', href: '/' }, { label: 'Aisles', href: '/departments' }, { label: department.name }]} />
 
-        />
-
-        {department.imageUrl ? (
-          <div className="h-32 overflow-hidden rounded-lg border sm:h-44 border-[var(--sf-rule-strong)] bg-[var(--sf-paper-3)]">
-            <img src={department.imageUrl} alt={`${department.name} department`} className="h-full w-full object-cover" />
+        <header className="relative isolate overflow-hidden rounded-[28px] bg-[var(--sf-header)] text-[var(--sf-header-ink)]">
+          {department.imageUrl ? <img src={department.imageUrl} alt="" fetchPriority="high" className="absolute inset-0 -z-10 h-full w-full object-cover" /> : null}
+          <span aria-hidden="true" className="absolute inset-0 -z-10 bg-[linear-gradient(100deg,oklch(18%_0.035_182/0.92)_10%,oklch(18%_0.035_182/0.55)_55%,oklch(18%_0.035_182/0.15))]" />
+          <div className="flex min-h-[13rem] flex-col justify-end gap-3 p-6 sm:min-h-[17rem] sm:p-10">
+            <h1 className="sf-hero-title max-w-[14ch] text-[clamp(2.25rem,1.4rem+3.2vw,4rem)]">{department.name}</h1>
+            <p className="max-w-xl text-[0.9375rem] leading-7 text-[var(--sf-header-ink-muted)] sm:text-base">{department.description || 'Every product in this aisle, including items that are currently sold out.'}</p>
+            <p className="text-sm font-semibold tabular-nums">{totalCount} {totalCount === 1 ? 'product' : 'products'}</p>
           </div>
-        ) : null}
+        </header>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--sf-rule)] pb-4">
-          <UrbanButtonLink href={`/products?department=${department.handle}&availability=all`} variant="ghost">Search this aisle</UrbanButtonLink>
-          <div className="flex flex-wrap gap-2">
-            {['name', 'price-asc', 'price-desc'].map((sort) => (
-              <Link
-                prefetch={false}
-                key={sort}
-                href={catalogPageHref(pathname, { sortBy: sort }, 1)}
-                aria-current={searchParams.sortBy === sort || (!searchParams.sortBy && sort === 'name') ? 'page' : undefined}
-                className={`inline-flex min-h-11 items-center rounded-full border px-4 py-2 text-sm font-medium transition ${searchParams.sortBy === sort || (!searchParams.sortBy && sort === 'name') ? 'border-[var(--sf-accent)] bg-[var(--sf-accent)] text-white' : 'border-[var(--sf-rule)] text-[var(--sf-ink-muted)] hover:border-[var(--sf-accent)]'}`}
-              >
-                {{name: 'Name A–Z', 'price-asc': 'Price: low to high', 'price-desc': 'Price: high to low'}[sort]}
-              </Link>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <nav aria-label="Sort products" className="sf-scroll-row sf-bleed-row sm:mx-0 sm:px-0">
+            {sorts.map(([sort, label]) => (
+              <Link prefetch={false} key={sort} href={catalogPageHref(pathname, { sortBy: sort }, 1)} aria-current={activeSort === sort ? 'true' : undefined} className="sf-chip">{label}</Link>
             ))}
-          </div>
+          </nav>
+          <UrbanButtonLink href={`/products?department=${department.handle}&availability=all`} variant="ghost" size="sm" className="self-start sm:self-auto"><Search className="h-4 w-4" aria-hidden="true" />Search & filter this aisle</UrbanButtonLink>
         </div>
 
-        <p className="text-sm text-[var(--sf-ink-muted)]">{totalCount} products in this aisle</p>
         <UrbanProductGrid products={products} featuredFirst={page === 1} />
 
         {totalPages > 1 ? (
-          <nav aria-label={`${department.name} product pages`} className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--sf-rule)] pt-5">
-            <Link
-              prefetch={false}
-              href={catalogPageHref(pathname, { sortBy: searchParams.sortBy }, Math.max(1, page - 1))}
-              aria-disabled={page <= 1}
-              tabIndex={page <= 1 ? -1 : undefined}
-              className={`border px-4 py-2 text-sm font-medium ${page <= 1 ? 'pointer-events-none opacity-40' : 'hover:border-[var(--sf-accent)]'}`}
-            >
-              Previous
-            </Link>
-            <span className="text-sm text-[var(--sf-ink-muted)]">Page {page} of {totalPages}</span>
-            <Link
-              prefetch={false}
-              href={catalogPageHref(pathname, { sortBy: searchParams.sortBy }, Math.min(totalPages, page + 1))}
-              aria-disabled={page >= totalPages}
-              tabIndex={page >= totalPages ? -1 : undefined}
-              className={`border px-4 py-2 text-sm font-medium ${page >= totalPages ? 'pointer-events-none opacity-40' : 'hover:border-[var(--sf-accent)]'}`}
-            >
-              Next
-            </Link>
-          </nav>
+          <div className="border-t border-[var(--sf-rule)]">
+            <UrbanPager
+              label={`${department.name} product pages`}
+              page={page}
+              totalPages={totalPages}
+              previousHref={catalogPageHref(pathname, { sortBy: searchParams.sortBy }, Math.max(1, page - 1))}
+              nextHref={catalogPageHref(pathname, { sortBy: searchParams.sortBy }, Math.min(totalPages, page + 1))}
+            />
+          </div>
         ) : null}
       </UrbanContainer>
     </UrbanPageShell>

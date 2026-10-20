@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { keystoneClient } from '@/features/platform/lib/platformClient';
 
 export type OnboardingStatus = 'not_started' | 'in_progress' | 'completed' | 'dismissed';
 
@@ -10,12 +10,13 @@ export async function runGroceryOnboardingAction(seed: unknown) {
   if (!started.success) return { success: false as const, error: started.error };
 
   const response = await keystoneClient<{
-    runGroceryOnboarding: { completed: boolean; reused: boolean; counts: Record<string, number> };
+    runGroceryOnboarding: { completed: boolean; reused: boolean; missing: string[]; counts: Record<string, number> };
   }>(`
     mutation RunGroceryOnboarding($seed: JSON!) {
       runGroceryOnboarding(seed: $seed) {
         completed
         reused
+        missing
         counts
       }
     }

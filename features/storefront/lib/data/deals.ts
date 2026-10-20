@@ -9,6 +9,7 @@ type PublicCoupon = {
   minPurchase: number;
   validTo?: string | null;
   productCategories: string[];
+  excludedProductNames: string[];
 };
 
 export async function getDeals(): Promise<GroceryDeal[]> {
@@ -26,6 +27,7 @@ export async function getDeals(): Promise<GroceryDeal[]> {
             minPurchase
             validTo
             productCategories
+            excludedProductNames
           }
         }
       `,
@@ -46,6 +48,7 @@ export async function getDeals(): Promise<GroceryDeal[]> {
           : 'Savings applied to eligible items at checkout.',
       minimumPurchase: coupon.minPurchase,
       expiresAt: coupon.validTo || undefined,
+      excludedProductNames: coupon.excludedProductNames || [],
     }));
   } catch (error) {
     console.error('Error fetching grocery coupons:', error);

@@ -82,8 +82,11 @@ export interface GroceryOrder {
   requestedItems?: GroceryOrderItem[];
   receiptStage?: 'requested' | 'proposed' | 'final';
   finalSale?: {status:string;totalCents:number};
+  substitutionProposals?: GroceryOrderSubstitutionProposal[];
   deliveryOutcome?: {status:string;reason?:string;custody?:string};
   id: string;
+  /** ISO currency the order was placed in; receipts never re-denominate it. */
+  currencyCode?: string;
   orderNumber: string;
   status: 'pending' | 'confirmed' | 'processing' | 'picking' | 'ready_for_pickup' | 'out_for_delivery' | 'delivered' | 'cancelled' | 'delivery_failed' | 'delivery_refused' | 'returned';
   email?: string;
@@ -125,6 +128,8 @@ export interface GroceryAddress {
 export interface GroceryStore {
   id: string;
   name: string;
+  /** True while the merchant has not given the store a real name. */
+  setupIncomplete?: boolean;
   tagline?: string;
   homepageTitle?: string;
   homepageDescription?: string;
@@ -132,12 +137,17 @@ export interface GroceryStore {
   contactPhone?: string;
   address?: string;
   logoUrl?: string;
+  logoIcon?: string | null;
+  logoColor?: string | null;
   brandHue: number | null;
   effectiveBrandHue: number;
   currencyCode?: string;
   locale?: string;
   timezone?: string;
   countryCode?: string;
+  /** Weekly hours, Monday first; an empty ranges list means closed that day. */
+  openingHours?: Array<{ day: string; ranges: Array<{ start: string; end: string }> }>;
+  policyNotes?: string | null;
 }
 
 export interface ShippingAddress {
@@ -153,9 +163,11 @@ export interface ShippingAddress {
 }
 
 export interface DeliverySlot {
+  /** Store-local calendar date, YYYY-MM-DD. */
   date: string;
-  startTime: string;
-  endTime: string;
+  /** Recorded window times; null when the order recorded none. */
+  startTime: string | null;
+  endTime: string | null;
 }
 
 export interface GroceryOrderItem {
@@ -171,6 +183,20 @@ export interface GroceryOrderItem {
   product?: { id: string; handle: string };
   substitutionPreference?: string | null;
   substitution?: GroceryOrderSubstitution;
+}
+
+/** A replacement the store offered for one line; the customer approves or declines it online. */
+export interface GroceryOrderSubstitutionProposal {
+  id: string;
+  lineItemId: string;
+  originalTitle: string;
+  productTitle: string;
+  quantity: number;
+  unitOfMeasure: string;
+  estimatedSubtotalCents: number;
+  reason?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  decidedAt?: string | null;
 }
 
 export interface GroceryOrderSubstitution {
@@ -230,6 +256,8 @@ export interface GroceryDeal {
   description?: string;
   minimumPurchase?: number;
   expiresAt?: string;
+  /** Products this offer never discounts, as enforced at checkout. */
+  excludedProductNames?: string[];
   product?: GroceryProduct;
   categories?: { id: string; name: string; handle: string }[];
 }

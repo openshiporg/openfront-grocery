@@ -9,6 +9,8 @@ import { refundPayment, getRefundStatus } from '../utils/paymentProviderAdapter'
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { assertRefundBudget, assertRefundCreationWindow, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export const REFUND_RECONCILIATION_LEASE_MS = 30_000;
 export const REFUND_RECONCILIATION_MAX_ATTEMPTS = 5;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
@@ -36,26 +38,34 @@ function retryDelayMs(attempts: number) {
   return Math.min(5 * 60_000, 10_000 * (2 ** Math.max(0, attempts - 1)));
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Payment provider reconciliation timed out')), timeoutMs); }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+// The provider request deadline stays well inside the claim lease, so a claim
+// can never expire (and be re-claimed) while its own request is still running.
+function providerDeadlineMs() {
+  const configured = Math.max(25, Number(process.env.REFUND_RECONCILIATION_PROVIDER_TIMEOUT_MS || DEFAULT_PROVIDER_TIMEOUT_MS));
+  return Math.min(configured, REFUND_RECONCILIATION_LEASE_MS - 5_000);
 }
 
 async function claimNextRefund(context: Context, owner: string, storeId: string, currencyCode: string): Promise<RefundWorkerClaim | null> {
   const token = randomUUID();
+  // A refund whose worker kept dying after claiming it has used its attempts:
+  // quarantine it for operator review before any further provider call.
+  await context.prisma.$executeRawUnsafe(
+    `UPDATE "PaymentRefund" r
+        SET "reconciliationDeadLetterAt" = NOW(), "reconciliationOwner" = NULL, "reconciliationToken" = NULL,
+            "reconciliationLeaseExpiresAt" = NULL, "reconciliationNextAttemptAt" = NULL, "updatedAt" = NOW(),
+            "reconciliationLastError" = 'Refund reconciliation attempts exhausted after interrupted workers; operator review required'
+      WHERE r."status" = 'processing' AND r."reconciliationDeadLetterAt" IS NULL AND r."reconciliationAttempts" >= $2
+        AND (r."reconciliationLeaseExpiresAt" IS NULL OR r."reconciliationLeaseExpiresAt" <= NOW())
+        AND EXISTS (SELECT 1 FROM "Payment" scoped_payment WHERE scoped_payment."id" = r."payment" AND scoped_payment."store" = $1)`,
+    storeId, REFUND_RECONCILIATION_MAX_ATTEMPTS,
+  );
   const rows = await context.prisma.$queryRawUnsafe<any[]>(
     `WITH candidate AS (
        SELECT r."id"
        FROM "PaymentRefund" r
        WHERE r."status" = 'processing'
          AND r."reconciliationDeadLetterAt" IS NULL
+         AND r."reconciliationAttempts" < $5
          AND (r."reconciliationNextAttemptAt" IS NULL OR r."reconciliationNextAttemptAt" <= NOW())
          AND (r."reconciliationLeaseExpiresAt" IS NULL OR r."reconciliationLeaseExpiresAt" <= NOW())
          AND EXISTS (SELECT 1 FROM "Payment" scoped_payment WHERE scoped_payment."id" = r."payment" AND scoped_payment."store" = $4)
@@ -68,7 +78,8 @@ async function claimNextRefund(context: Context, owner: string, storeId: string,
          "reconciliationToken" = $2,
          "reconciliationLeaseExpiresAt" = NOW() + ($3 * INTERVAL '1 millisecond'),
          "reconciliationAttempts" = r."reconciliationAttempts" + 1,
-         "reconciliationLastError" = NULL
+         "reconciliationLastError" = NULL,
+         "updatedAt" = NOW()
      FROM candidate c, "Payment" p, "PaymentProvider" pp
      WHERE r."id" = c."id" AND p."id" = r."payment" AND pp."id" = p."paymentProvider"
      RETURNING r."id", r."payment" AS "paymentId", p."store" AS "storeId", r."providerCode",
@@ -80,7 +91,7 @@ async function claimNextRefund(context: Context, owner: string, storeId: string,
        pp."refundPaymentFunction" AS "providerRefundPaymentFunction", pp."getPaymentStatusFunction" AS "providerGetPaymentStatusFunction",
        pp."getRefundStatusFunction" AS "providerGetRefundStatusFunction", pp."cancelPaymentFunction" AS "providerCancelPaymentFunction",
        pp."generatePaymentLinkFunction" AS "providerGeneratePaymentLinkFunction", pp."handleWebhookFunction" AS "providerHandleWebhookFunction"`,
-    owner, token, REFUND_RECONCILIATION_LEASE_MS, storeId,
+    owner, token, REFUND_RECONCILIATION_LEASE_MS, storeId, REFUND_RECONCILIATION_MAX_ATTEMPTS,
   );
   const row = rows[0];
   if (!row) return null;
@@ -186,7 +197,7 @@ export async function runRefundReconciliationOnce(context: Context, { limit = 20
   for (let index = 0; index < boundedLimit; index += 1) {
     const claim = await claimNextRefund(context, owner, store.id, store.currencyCode.toLowerCase());
     if (!claim) break;
-    if (!claim.provider.isInstalled) {
+    if (!isPaymentProviderInstalled(claim.provider)) {
       results.push({ refundId: claim.id, status: await releaseForRetry(context, claim, 'Refund provider is unavailable') });
       continue;
     }
@@ -201,8 +212,12 @@ export async function runRefundReconciliationOnce(context: Context, { limit = 20
         claim.providerRefundId = current.providerRefundId || null;
       });
       assertRefundCreationWindow(claim.requestedAt, claim.providerRefundId);
-      const providerTimeoutMs = Math.max(25, Number(process.env.REFUND_RECONCILIATION_PROVIDER_TIMEOUT_MS || DEFAULT_PROVIDER_TIMEOUT_MS));
-      const response = await withTimeout(claim.providerRefundId ? getRefundStatus({ provider: claim.provider, refundId: claim.providerRefundId }) : refundPayment({ provider: claim.provider, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey }), providerTimeoutMs);
+      // A timed-out request is an unknown outcome: the claim is released for retry
+      // with the same idempotency key / provider ID, never treated as "no refund".
+      const timeoutMs = providerDeadlineMs();
+      const response = claim.providerRefundId
+        ? await getRefundStatus({ provider: claim.provider, refundId: claim.providerRefundId, timeoutMs })
+        : await refundPayment({ provider: claim.provider, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey, timeoutMs });
       results.push({ refundId: claim.id, status: await completeClaim(context, claim, response) });
     } catch (error) {
       results.push({ refundId: claim.id, status: await releaseForRetry(context, claim, error instanceof Error ? error.message : 'Refund provider failed') });

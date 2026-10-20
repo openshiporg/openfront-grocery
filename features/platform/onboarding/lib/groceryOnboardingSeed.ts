@@ -3,6 +3,12 @@ import { z } from 'zod';
 const nonEmpty = z.string().trim().min(1);
 const money = z.number().finite().nonnegative();
 const wholeNumber = z.number().int().nonnegative();
+// Physical stock uses the same three-decimal contract as receiving and counts (0.5 lb, 1.25 L).
+const physicalQuantity = z.number().finite().nonnegative().max(9_999_999).refine(
+  (value) => Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-6,
+  'Use at most three decimal places',
+);
+const minutes = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
 
 const fulfillmentWindowSchema = z.object({
   startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -20,6 +26,9 @@ export const groceryOnboardingSeedSchema = z.object({
     contactPhone: nonEmpty,
     address: nonEmpty,
     logoUrl: nonEmpty,
+    // A logo-library icon id (for example "kintsugi") or an SVG document; sanitized on write.
+    logoIcon: z.string().trim().max(200_000).optional(),
+    logoColor: z.string().regex(/^-?\d{1,3}(\.\d+)?$/).optional(),
     brandHue: z.number().int().min(0).max(359),
     currencyCode: z.literal('USD'),
     taxRateBps: z.number().int().min(0).max(10_000),
@@ -40,6 +49,9 @@ export const groceryOnboardingSeedSchema = z.object({
         })).min(1),
       }),
     }).passthrough(),
+    // Delivery service area and minimums, validated by the same normalizer as the settings screen.
+    deliveryPolicy: z.record(z.unknown()).optional(),
+    policyNotes: z.string().max(5000).optional(),
     isActive: z.literal(true),
   }),
   departments: z.array(z.object({
@@ -56,7 +68,8 @@ export const groceryOnboardingSeedSchema = z.object({
     contactName: nonEmpty,
     email: z.string().email(),
     phone: nonEmpty,
-    paymentTerms: z.enum(['cod', 'net_15', 'net_30', 'net_60']),
+    // The Supplier model supports exactly these terms.
+    paymentTerms: z.enum(['cod', 'net_30', 'net_60']),
     deliveryDays: z.array(z.enum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'])),
     minimumOrder: money,
   })).min(1),
@@ -89,8 +102,8 @@ export const groceryOnboardingSeedSchema = z.object({
     supplierEmail: z.string().email(),
     expirationOffsetDays: z.number().int().positive(),
     receivedOffsetDays: z.number().int(),
-    quantity: wholeNumber,
-    quantityRemaining: wholeNumber,
+    quantity: physicalQuantity,
+    quantityRemaining: physicalQuantity,
     costPerUnit: money,
     location: nonEmpty,
   })),
@@ -168,6 +181,19 @@ export const groceryOnboardingSeedSchema = z.object({
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['products', index, 'supplierEmail'], message: `Unknown supplier ${product.supplierEmail}` });
     }
   });
+
+  // Dated windows: same-day, start before end, and no duplicate day/start/end tuples.
+  for (const [label, slots] of [['deliverySlots', seed.deliverySlots], ['pickupSlots', seed.pickupSlots]] as const) {
+    const seen = new Set<string>();
+    slots.forEach((slot, index) => {
+      if (minutes(slot.endTime) <= minutes(slot.startTime)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [label, index, 'endTime'], message: 'A window must end after it starts on the same day' });
+      }
+      const key = `${slot.dayOffset}|${slot.startTime}|${slot.endTime}`;
+      if (seen.has(key)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [label, index], message: 'Duplicate window for the same day and times' });
+      seen.add(key);
+    });
+  }
 
   seed.inventoryLots.forEach((lot, index) => {
     if (lot.quantityRemaining > lot.quantity) {

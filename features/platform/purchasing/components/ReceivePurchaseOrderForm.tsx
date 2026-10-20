@@ -1,50 +1,107 @@
 'use client';
 
-import { useState, useTransition, type FormEvent } from 'react';
+import { useRef, useState, useTransition, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { receivePurchaseOrderTask } from '@/features/platform/lib/taskActions';
+import { PackageCheck } from 'lucide-react';
+import { receivePurchaseOrderTask, type PurchaseReceiptLine } from '@/features/platform/lib/taskActions';
+import { PlatformFeedback, PlatformField } from '@/features/platform/components/PlatformForm';
+import { platformButton, platformInput, platformSelect } from '@/features/platform/components/platformStyles';
 
 type ReceiveItem = { id: string; productTitle?: string; productSku?: string; quantity: number; quantityReceived?: number };
+type LineEntry = { quantity: string; lotNumber: string; expirationDate: string; conditionStatus: string; inspectionNote: string; location: string };
 
-export function ReceivePurchaseOrderForm({ order }: { order: { id: string; items: ReceiveItem[] } }) {
+const blankLine: LineEntry = { quantity: '', lotNumber: '', expirationDate: '', conditionStatus: 'accepted', inspectionNote: '', location: '' };
+
+/**
+ * Each line records what physically arrived for that product: its own
+ * supplier batch, expiry, condition and inspection. Batch and expiry start
+ * blank; they are read off the delivery, never filled in for the operator.
+ */
+export function ReceivePurchaseOrderForm({ order, awaitingConfirmation = false }: { order: { id: string; items: ReceiveItem[] }; awaitingConfirmation?: boolean }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
-  const [lotNumber, setLotNumber] = useState(`LOT-${order.id.slice(-6)}`);
-  const [expirationDate, setExpirationDate] = useState(() => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
   const [minimumExpirationDate] = useState(() => new Date(Date.now() + 86400000).toISOString().slice(0, 10));
-  const [location, setLocation] = useState('');
-  const [conditionStatus, setConditionStatus] = useState('accepted');
-  const [inspectionNote, setInspectionNote] = useState('');
   const [deliveryReference, setDeliveryReference] = useState('');
-  const [quantities, setQuantities] = useState<Record<string, number>>(() => Object.fromEntries(order.items.map((item) => [item.id, Math.max(0, item.quantity - (item.quantityReceived || 0))])));
+  const [entries, setEntries] = useState<Record<string, LineEntry>>({});
+  // Keys for the exact submitted receipt, reused when it is resubmitted unchanged after an uncertain response.
+  const receiptKeys = useRef(new Map<string, string>());
+
+  const entryFor = (itemId: string) => entries[itemId] || blankLine;
+  const update = (itemId: string, patch: Partial<LineEntry>) => setEntries((current) => ({ ...current, [itemId]: { ...(current[itemId] || blankLine), ...patch } }));
+  const receiving = order.items.filter((item) => Number(entryFor(item.id).quantity) > 0);
 
   function submit(event: FormEvent) {
     event.preventDefault(); setMessage(null); setFailed(false);
+    const receipts: PurchaseReceiptLine[] = receiving.map((item) => {
+      const entry = entryFor(item.id);
+      const line = { poItemId: item.id, targetQuantityReceived: (item.quantityReceived || 0) + Number(entry.quantity), lotNumber: entry.lotNumber.trim(), expirationDate: entry.expirationDate,
+        location: entry.location.trim() || undefined, conditionStatus: entry.conditionStatus, inspectionNote: entry.inspectionNote.trim(), deliveryReference: deliveryReference.trim() };
+      const fingerprint = JSON.stringify(line);
+      const receiptKey = receiptKeys.current.get(fingerprint) || `platform-receipt:${crypto.randomUUID()}`;
+      receiptKeys.current.set(fingerprint, receiptKey);
+      return { ...line, receiptKey };
+    });
+    const summary = receiving.map((item) => `${item.productTitle || 'item'} × ${Number(entryFor(item.id).quantity)}`).join(', ');
     startTransition(async () => {
-      try {
-        const receipts = order.items.map((item) => ({ poItemId: item.id, targetQuantityReceived: (item.quantityReceived || 0) + Math.max(0, Number(quantities[item.id] || 0)), lotNumber, expirationDate, location: location || undefined, conditionStatus, inspectionNote, deliveryReference }));
-        const result = await receivePurchaseOrderTask(order.id, receipts);
-        if (!result.ok) {
-          setFailed(true);
-          setMessage(result.error);
-          return;
-        }
-        setMessage(result.data?.receivePurchaseOrder?.message || 'Receipt recorded.');
-        router.refresh();
-      } catch {
+      let result: Awaited<ReturnType<typeof receivePurchaseOrderTask>>;
+      try { result = await receivePurchaseOrderTask(order.id, receipts); }
+      catch {
         setFailed(true);
-        setMessage('Receipt could not be recorded. Refresh the purchase order and retry.');
+        setMessage('We couldn’t confirm whether this receipt was recorded. Submit it again unchanged; it won’t be counted twice.');
+        return;
       }
+      if (!result.ok) { setFailed(true); setMessage(result.error); return; }
+      // Confirmed: clear "Receive now" so a second press can't record the same delivery again.
+      receiptKeys.current.clear();
+      setEntries({}); setDeliveryReference('');
+      setMessage(`Receipt recorded: ${summary}.`);
+      router.refresh();
     });
   }
 
-  return <form onSubmit={submit} aria-busy={pending} className="rounded-lg border bg-background p-4">
-    <div><h3 className="text-sm font-semibold">Receive inventory</h3><p className="mt-1 text-xs text-muted-foreground">Enter cumulative receipt targets. A future expiry is required and receipt creates real lot/stock evidence.</p></div>
-    <div className="mt-3 grid gap-3 sm:grid-cols-3"><label className="grid gap-1 text-xs font-medium text-muted-foreground">Supplier batch number<input required maxLength={120} className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={lotNumber} onChange={(event) => setLotNumber(event.target.value)} /></label><label className="grid gap-1 text-xs font-medium text-muted-foreground">Expiration<input required type="date" min={minimumExpirationDate} className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={expirationDate} onChange={(event) => setExpirationDate(event.target.value)} /></label><label className="grid gap-1 text-xs font-medium text-muted-foreground">Location<input maxLength={120} placeholder="Optional shelf or cooler" className="h-10 rounded-md border bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={location} onChange={(event) => setLocation(event.target.value)} /></label></div>
-    <div className="mt-3 grid gap-3 sm:grid-cols-3"><label className="grid gap-1 text-xs">Condition<select className="h-10 rounded border px-3" value={conditionStatus} onChange={event => setConditionStatus(event.target.value)}><option value="accepted">Accepted</option><option value="inspection_pending">Quarantine for inspection</option><option value="rejected">Rejected / quarantined</option></select></label><label className="grid gap-1 text-xs">Inspection evidence<input required={conditionStatus !== 'accepted'} className="h-10 rounded border px-3" value={inspectionNote} onChange={event => setInspectionNote(event.target.value)} /></label><label className="grid gap-1 text-xs">Delivery reference<input className="h-10 rounded border px-3" value={deliveryReference} onChange={event => setDeliveryReference(event.target.value)} /></label></div>
-    <div className="mt-4 overflow-x-auto rounded-lg border"><table className="w-full min-w-[34rem] text-left text-sm"><thead className="bg-muted/40 text-xs text-muted-foreground"><tr><th className="px-3 py-2 font-medium">Product</th><th className="px-3 py-2 text-right font-medium">Ordered</th><th className="px-3 py-2 text-right font-medium">Already received</th><th className="px-3 py-2 text-right font-medium">Receive now</th></tr></thead><tbody className="divide-y">{order.items.map((item) => { const remaining = item.quantity - (item.quantityReceived || 0); return <tr key={item.id}><td className="px-3 py-2"><p className="font-medium">{item.productTitle || `Item …${item.id.slice(-6)}`}</p><p className="font-mono text-xs text-muted-foreground">{item.productSku || '—'}</p></td><td className="px-3 py-2 text-right tabular-nums">{item.quantity}</td><td className="px-3 py-2 text-right tabular-nums">{item.quantityReceived || 0}</td><td className="px-3 py-2 text-right"><input aria-label={`Receive ${item.productTitle || item.id}`} type="number" step="0.001" min="0" max={remaining} className="h-9 w-24 rounded-md border bg-background px-2 text-right text-sm tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" value={quantities[item.id] || 0} onChange={(event) => setQuantities((current) => ({ ...current, [item.id]: Number(event.target.value) }))} /></td></tr>; })}</tbody></table></div>
-    <div className="mt-3 flex flex-wrap items-center gap-3"><button type="submit" disabled={pending || !lotNumber || !expirationDate || !Object.values(quantities).some((quantity) => quantity > 0)} className="h-10 rounded-md bg-foreground px-4 text-sm font-medium text-background hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50">{pending ? 'Recording receipt…' : 'Record receipt'}</button>{message ? <p role={failed ? 'alert' : 'status'} className={`text-sm ${failed ? 'text-destructive' : 'text-muted-foreground'}`}>{message}</p> : null}</div>
+  return <form onSubmit={submit} aria-busy={pending} className="space-y-4 rounded-lg border bg-background p-4 shadow-xs">
+    <div className="flex items-start gap-3">
+      <span className="grid size-8 shrink-0 place-items-center rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"><PackageCheck className="size-4" aria-hidden="true" /></span>
+      <div><h3 className="text-sm font-semibold">Receive inventory</h3><p className="mt-0.5 text-xs text-muted-foreground">Enter what arrived on this delivery. Each product line needs its supplier batch number and a future expiry date from the packaging.</p></div>
+    </div>
+    {awaitingConfirmation ? <PlatformFeedback tone="info">The supplier hasn&apos;t confirmed this order. Receiving records only what physically arrived; it does not mark the order confirmed.</PlatformFeedback> : null}
+    <PlatformField label="Delivery reference" hint="Supplier delivery note or invoice number, shared by every line on this delivery." className="sm:max-w-sm">
+      <input className={platformInput} maxLength={200} value={deliveryReference} onChange={(event) => setDeliveryReference(event.target.value)} disabled={pending} />
+    </PlatformField>
+    <ul className="divide-y rounded-lg border">
+      {order.items.map((item) => {
+        const remaining = Math.max(0, item.quantity - (item.quantityReceived || 0));
+        const entry = entryFor(item.id);
+        const active = Number(entry.quantity) > 0;
+        const name = item.productTitle || `Item …${item.id.slice(-6)}`;
+        return (
+          <li key={item.id} className="space-y-3 p-3">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{name}</p>
+                <p className="text-xs text-muted-foreground"><span className="font-mono">{item.productSku || 'No SKU'}</span> · {item.quantityReceived || 0} of {item.quantity} received</p>
+              </div>
+              <PlatformField label="Receive now" className="w-32">
+                <input aria-label={`Receive now: ${name}`} type="number" step="0.001" min="0" max={remaining} placeholder="0" className={`${platformInput} text-right tabular-nums`} value={entry.quantity} disabled={pending || remaining === 0}
+                  onChange={(event) => update(item.id, { quantity: event.target.value })} />
+              </PlatformField>
+            </div>
+            {active ? (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <PlatformField label="Supplier batch number"><input required maxLength={120} className={`${platformInput} font-mono`} value={entry.lotNumber} onChange={(event) => update(item.id, { lotNumber: event.target.value })} disabled={pending} /></PlatformField>
+                <PlatformField label="Expiry date"><input required type="date" min={minimumExpirationDate} className={platformInput} value={entry.expirationDate} onChange={(event) => update(item.id, { expirationDate: event.target.value })} disabled={pending} /></PlatformField>
+                <PlatformField label="Location"><input maxLength={120} placeholder="Shelf or cooler (optional)" className={platformInput} value={entry.location} onChange={(event) => update(item.id, { location: event.target.value })} disabled={pending} /></PlatformField>
+                <PlatformField label="Condition"><select className={platformSelect} value={entry.conditionStatus} onChange={(event) => update(item.id, { conditionStatus: event.target.value })} disabled={pending}><option value="accepted">Accepted</option><option value="inspection_pending">Hold for inspection</option><option value="rejected">Rejected</option></select></PlatformField>
+                <PlatformField label={entry.conditionStatus !== 'accepted' ? 'Inspection note (required)' : 'Inspection note'} className="sm:col-span-2"><input required={entry.conditionStatus !== 'accepted'} maxLength={500} className={platformInput} value={entry.inspectionNote} onChange={(event) => update(item.id, { inspectionNote: event.target.value })} disabled={pending} /></PlatformField>
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+    <div className="flex flex-wrap items-center gap-3"><button type="submit" disabled={pending || receiving.length === 0} className={platformButton('primary', 'md')}>{pending ? 'Recording receipt…' : 'Record receipt'}</button></div>
+    {message ? <PlatformFeedback tone={failed ? 'error' : 'success'}>{message}</PlatformFeedback> : null}
   </form>;
 }

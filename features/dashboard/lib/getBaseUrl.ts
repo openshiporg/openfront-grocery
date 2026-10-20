@@ -1,7 +1,9 @@
-import { getInternalGraphQLEndpoint, getTrustedApplicationOrigin } from '@/features/keystone/lib/internalTransport';
+import { headers } from "next/headers";
+import { configuredInternalOrigin } from "./security";
 
 /**
- * Resolve the browser origin in clients and the deployment-configured origin on servers.
+ * Get the base URL for the application dynamically
+ * Works both server-side and client-side without requiring environment variables
  */
 
 export async function getBaseUrl(): Promise<string> {
@@ -10,17 +12,38 @@ export async function getBaseUrl(): Promise<string> {
     return window.location.origin;
   }
 
-  // Server-side destinations must come from deployment configuration,
-  // never from the current request's Host or forwarding headers.
-  return getTrustedApplicationOrigin();
+  // Prefer deployment-owned configuration before inspecting any request headers.
+  const internalOrigin = configuredInternalOrigin(process.env.OPENFRONT_INTERNAL_ORIGIN);
+  if (internalOrigin) return internalOrigin;
+
+  // Compatibility only: the owner must configure the origin to disable Host trust.
+  // Server-side: try to get from headers
+  if (typeof process !== 'undefined') {
+    try {
+      // Import headers from next/headers (only works in app directory)
+      const headersList = await headers();
+      
+      // Try x-forwarded-host first (common in production deployments)
+      const host = headersList.get('x-forwarded-host') || headersList.get('host');
+      const protocol = headersList.get('x-forwarded-proto') || 'https';
+      
+      if (host) {
+        return `${protocol}://${host}`;
+      }
+    } catch (e) {
+      // headers() might not be available in all contexts (e.g., API routes)
+      // Fall through to default
+    }
+  }
+
+  // Production fallback - return empty string and let relative URLs work
+  return '';
 }
 
 /**
  * Get the GraphQL endpoint URL
  */
 export async function getGraphQLEndpoint(): Promise<string> {
-  if (typeof window !== 'undefined') return new URL('/api/graphql', window.location.origin).toString();
-  const internalEndpoint = getInternalGraphQLEndpoint();
-  if (internalEndpoint) return internalEndpoint;
-  return new URL('/api/graphql', getTrustedApplicationOrigin()).toString();
+  const baseUrl = await getBaseUrl();
+  return `${baseUrl}/api/graphql`;
 }

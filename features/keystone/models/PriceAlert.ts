@@ -6,7 +6,7 @@ import {
   checkbox,
   decimal,
 } from "@keystone-6/core/fields";
-import { isSignedIn } from "../access";
+import { isCurrentAccount, isSignedIn } from "../access";
 import { ownerScopedFilter } from '../lib/storeAccess';
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
@@ -15,9 +15,11 @@ export const PriceAlert = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
+      // Alerts are created through requestGroceryPriceAlert (product and target
+      // validated, consent checked); trigger facts are written only by delivery.
+      create: () => false,
+      update: () => false,
+      delete: isCurrentAccount,
     },
     filter: {
       query: ownerScopedFilter('user'),
@@ -77,6 +79,7 @@ export const PriceAlert = list({
     currentPrice: decimal({
       precision: 12,
       scale: 2,
+      access: { create: () => false, update: () => false },
       label: "Current Price",
       ui: {
         description: "Current price of the product",
@@ -85,6 +88,7 @@ export const PriceAlert = list({
     // Whether the alert has been triggered
     isTriggered: checkbox({
       defaultValue: false,
+      access: { create: () => false, update: () => false },
       label: "Is Triggered",
       ui: {
         description: "Whether the price alert has been triggered",
@@ -92,6 +96,7 @@ export const PriceAlert = list({
     }),
     // When the user was notified
     notifiedAt: timestamp({
+      access: { create: () => false, update: () => false },
       label: "Notified At",
       ui: {
         description: "When the user was notified about the price drop",

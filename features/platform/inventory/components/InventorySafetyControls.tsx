@@ -1,10 +1,14 @@
 'use client';
 import { useState, useTransition, useRef, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { ClipboardCheck, ShieldAlert } from 'lucide-react';
 import { inventoryCountTask, inventorySafetyTask } from '../actions/inventoryControls';
+import { PlatformCard, PlatformDisclosure, PlatformFeedback, PlatformField, PlatformSubsection } from '@/features/platform/components/PlatformForm';
+import { PlatformStatusBadge } from '@/features/platform/components/PlatformStatus';
+import { platformButton, platformInput, platformSelect } from '@/features/platform/components/platformStyles';
 
-const field = 'h-10 rounded-md border bg-background px-3 text-sm';
-export function InventorySafetyControls({ lots, recalls, counts, loadError }: { lots: Array<{ id: string; lotNumber: string }>; recalls: any[]; counts: any[]; loadError?: string }) {
+const field = platformInput;
+export function InventorySafetyControls({ lots, recalls, counts, loadError, orderNumbers = {} }: { lots: Array<{ id: string; lotNumber: string }>; recalls: any[]; counts: any[]; loadError?: string; orderNumbers?: Record<string, number> }) {
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState('');
   const [affected, setAffected] = useState<any[]>([]);
@@ -26,21 +30,109 @@ export function InventorySafetyControls({ lots, recalls, counts, loadError }: { 
       } catch { setMessage('Action could not be confirmed. Retry with the same inputs to recover the recorded result.'); }
     });
   }
-  const reason = <input name="reason" required placeholder="Reason and evidence" className={field} />;
-  const lotSelect = <select name="lotId" required disabled={pending || lots.length === 0} className={field}><option value="">Select lot</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotNumber}</option>)}</select>;
-  return <section className="space-y-4 rounded-lg border p-4" aria-busy={pending}>
-    <div><h2 className="font-semibold">Safety, recalls and stock counts</h2><p className="text-sm text-muted-foreground">Hold allocated stock immediately. Quantities use the product&apos;s stock unit with up to three decimal places.</p></div>
-    {lots.length === 0 ? <p className="text-sm text-muted-foreground">No lots are available on this page; lot-based safety and count actions are disabled.</p> : null}
-    {loadError ? <p role="alert">{loadError}</p> : null}
-    <form onSubmit={event => submit(event, 'safety')} className="grid gap-3 md:grid-cols-3">{lotSelect}<select name="action" className={field}><option value="hold">Hold lot</option><option value="quarantine">Quarantine lot</option><option value="release">Release after inspection</option><option value="recall">Open recall</option></select>{reason}<input name="inspection" placeholder="Release inspection evidence" className={field} /><button disabled={pending || lots.length === 0} className={field}>Apply safety action</button></form>
-    <form onSubmit={event => submit(event, 'count')} className="grid gap-3 md:grid-cols-4"><input type="hidden" name="action" value="observe" />{lotSelect}<input name="quantity" required type="number" min="0" step="0.001" placeholder="Observed remaining quantity" className={field} />{reason}<button disabled={pending || lots.length === 0} className={field}>Record observation</button></form>
-    {message ? <p role="status">{message}</p> : null}
-    {affected.length ? <div><h3 className="font-medium">Affected orders</h3>{affected.map(order => <p key={order.orderId} className="text-sm"><a className="underline" href={`/dashboard/platform/orders?q=${order.orderId}`}>{order.orderId}</a> · {order.status} · {order.email || order.customerId || 'Guest'}</p>)}</div> : null}
-    {counts.filter(count => count.status !== 'approved').map(count => <div key={count.id} className="space-y-2 border-t pt-3"><p className="text-sm">{count.inventoryLot?.lotNumber} · {count.status} · expected {count.expectedQuantity}, observed {count.observedQuantity}{count.recountQuantity != null ? `, recount ${count.recountQuantity}` : ''}</p><form onSubmit={event => submit(event, 'count')} className="flex flex-wrap gap-2"><input type="hidden" name="countId" value={count.id} /><input type="hidden" name="action" value="recount" /><input name="quantity" required type="number" min="0" step="0.001" placeholder="Recount quantity" className={field} />{reason}<button disabled={pending || count.status !== 'observed'} className={field}>Record recount</button></form><form onSubmit={event => submit(event, 'count')} className="flex flex-wrap gap-2"><input type="hidden" name="countId" value={count.id} /><input type="hidden" name="action" value="approve" />{reason}<button disabled={pending} className={field}>Approve as independent operator</button></form></div>)}
-    {recalls.map(recall => <details key={recall.id} className="rounded border p-3"><summary>{recall.status} recall · {recall.reason} · {(recall.affectedOrders || []).length} affected orders</summary><div className="mt-3 space-y-3"><p className="text-sm">Scope: {(recall.scope?.lots || []).map((lot: any) => `${lot.supplierLotNumber}: ${lot.quantity}`).join(', ')}</p>{(recall.events || []).map((event: any, index: number) => <p key={index} className="text-xs">{event.at} · {event.action} · {event.reason} · reference {event.idempotencyKey}{event.evidence ? ` · ${JSON.stringify(event.evidence)}` : ''}</p>)}{recall.status === 'open' ? <>
-      <form onSubmit={event => submit(event, 'safety')} className="flex flex-wrap gap-2"><input type="hidden" name="action" value="notice" /><input type="hidden" name="recallId" value={recall.id} /><select required name="orderId" className={field}>{(recall.affectedOrders || []).map((order: any) => <option key={order.orderId} value={order.orderId}>{order.orderId} · {order.email || 'Guest'}</option>)}</select><select name="channel" className={field}><option>phone</option><option>email</option><option>sms</option><option>in_person</option></select><select name="outcome" className={field}><option>delivered</option><option>failed</option><option>unreachable</option></select><input name="reference" required placeholder="Communication reference" className={field} />{reason}<button disabled={pending} className={field}>Record notice outcome</button></form>
-      <form onSubmit={event => submit(event, 'safety')} className="flex flex-wrap gap-2"><input type="hidden" name="action" value="disposition" /><input type="hidden" name="recallId" value={recall.id} /><select name="dispositionLotId" className={field}>{(recall.scope?.lots || []).map((lot: any) => <option key={lot.id} value={lot.id}>{lot.supplierLotNumber}</option>)}</select><select name="disposition" className={field}><option>recovered</option><option>disposed</option><option>released</option><option>unaccounted</option></select><input name="quantity" type="number" required min="0.001" step="0.001" placeholder="Quantity" className={field} /><input name="stockQuantity" type="number" required min="0" step="0.001" defaultValue="0" aria-label="Quantity added to or removed from recorded stock" title="Recovered adds to quarantined stock; disposed or released to supplier removes stock. Zero records externally held goods." className={field} /><input name="replacesIdempotencyKey" placeholder="Correct prior disposition reference (optional)" className={field} /><input name="custody" required placeholder="Custody / disposition reference" className={field} />{reason}<button disabled={pending} className={field}>Record disposition</button></form>
-      <form onSubmit={event => submit(event, 'safety')} className="flex flex-wrap gap-2"><input type="hidden" name="action" value="close" /><input type="hidden" name="recallId" value={recall.id} />{reason}<button disabled={pending} className={field}>Close reconciled recall</button></form>
-    </> : null}</div></details>)}
-  </section>;
+  const reason = <PlatformField label="Reason and evidence"><input name="reason" required placeholder="What was observed and by whom" className={field} /></PlatformField>;
+  const lotSelect = <PlatformField label="Lot"><select name="lotId" required disabled={pending || lots.length === 0} className={platformSelect}><option value="">Select lot</option>{lots.map(lot => <option key={lot.id} value={lot.id}>{lot.lotNumber}</option>)}</select></PlatformField>;
+  const openCounts = counts.filter(count => count.status !== 'approved');
+  const openRecalls = recalls.filter(recall => recall.status === 'open');
+  return <PlatformDisclosure
+    icon={ShieldAlert}
+    title="Safety, recalls & stock counts"
+    description="Hold or quarantine lots immediately, run recalls to closure, and approve independent count observations."
+    badge={openRecalls.length || openCounts.length ? <PlatformStatusBadge status="open" label={`${openRecalls.length} recalls · ${openCounts.length} counts open`} /> : undefined}
+    defaultOpen={Boolean(openRecalls.length || openCounts.length || loadError)}
+  >
+    <div className="space-y-6" aria-busy={pending}>
+      <p className="text-xs text-muted-foreground">Quantities use the product&apos;s stock unit with up to three decimal places.</p>
+      {lots.length === 0 ? <PlatformFeedback tone="info">No lots are available on this page; lot-based safety and count actions are disabled.</PlatformFeedback> : null}
+      {loadError ? <PlatformFeedback tone="error">{loadError}</PlatformFeedback> : null}
+      {message ? <PlatformFeedback tone={/^Recorded/.test(message) ? 'success' : 'error'}>{message}</PlatformFeedback> : null}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <PlatformCard>
+          <PlatformSubsection title="Lot safety action" description="Holds take effect on allocated stock immediately. Release requires inspection evidence.">
+            <form onSubmit={event => submit(event, 'safety')} className="grid gap-3 sm:grid-cols-2">
+              {lotSelect}
+              <PlatformField label="Action"><select name="action" className={platformSelect}><option value="hold">Hold lot</option><option value="quarantine">Quarantine lot</option><option value="release">Release after inspection</option><option value="recall">Open recall</option></select></PlatformField>
+              <div className="sm:col-span-2">{reason}</div>
+              <PlatformField label="Release inspection evidence" className="sm:col-span-2"><input name="inspection" placeholder="Required when releasing a lot" className={field} /></PlatformField>
+              <button disabled={pending || lots.length === 0} className={platformButton('primary', 'md', 'sm:col-span-2 sm:justify-self-start')}>Apply safety action</button>
+            </form>
+          </PlatformSubsection>
+        </PlatformCard>
+        <PlatformCard>
+          <PlatformSubsection title="Record a count observation" description="A second operator must recount or approve before the observation changes stock.">
+            <form onSubmit={event => submit(event, 'count')} className="grid gap-3 sm:grid-cols-2">
+              <input type="hidden" name="action" value="observe" />
+              {lotSelect}
+              <PlatformField label="Observed remaining"><input name="quantity" required type="number" min="0" step="0.001" placeholder="0.000" className={`${field} tabular-nums`} /></PlatformField>
+              <div className="sm:col-span-2">{reason}</div>
+              <button disabled={pending || lots.length === 0} className={platformButton('secondary', 'md', 'sm:col-span-2 sm:justify-self-start')}><ClipboardCheck aria-hidden="true" />Record observation</button>
+            </form>
+          </PlatformSubsection>
+        </PlatformCard>
+      </div>
+
+      {affected.length ? <PlatformFeedback tone="warning" title="Affected orders">
+        <ul className="mt-1 space-y-0.5">{affected.map(order => <li key={order.orderId}><a className="font-medium underline underline-offset-2" href={`/dashboard/platform/orders?order=${encodeURIComponent(order.orderId)}&filter=all`}>{orderNumbers[order.orderId] ? `#${orderNumbers[order.orderId]}` : order.orderId}</a> · {order.status} · {order.email || order.customerId || 'Guest'}</li>)}</ul>
+      </PlatformFeedback> : null}
+
+      {openCounts.length ? <PlatformSubsection title="Counts awaiting review" description="Recount or approve as an operator independent of the observer.">
+        <div className="divide-y rounded-lg border bg-background">
+          {openCounts.map(count => <div key={count.id} className="grid gap-3 p-3.5 lg:grid-cols-[minmax(0,14rem)_1fr_1fr] lg:items-end">
+            <div className="min-w-0">
+              <p className="font-mono text-sm font-medium">{count.inventoryLot?.lotNumber}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><PlatformStatusBadge status={count.status} /><span className="tabular-nums">expected {count.expectedQuantity} · observed {count.observedQuantity}{count.recountQuantity != null ? ` · recount ${count.recountQuantity}` : ''}</span></div>
+            </div>
+            <form onSubmit={event => submit(event, 'count')} className="flex flex-wrap items-end gap-2"><input type="hidden" name="countId" value={count.id} /><input type="hidden" name="action" value="recount" /><PlatformField label="Recount" className="w-28"><input name="quantity" required type="number" min="0" step="0.001" className={`${field} tabular-nums`} /></PlatformField><PlatformField label="Reason" className="min-w-40 flex-1"><input name="reason" required className={field} /></PlatformField><button disabled={pending || count.status !== 'observed'} className={platformButton('secondary', 'md')}>Record recount</button></form>
+            <form onSubmit={event => submit(event, 'count')} className="flex flex-wrap items-end gap-2"><input type="hidden" name="countId" value={count.id} /><input type="hidden" name="action" value="approve" /><PlatformField label="Approval reason" className="min-w-40 flex-1"><input name="reason" required className={field} /></PlatformField><button disabled={pending} className={platformButton('primary', 'md')}>Approve independently</button></form>
+          </div>)}
+        </div>
+      </PlatformSubsection> : null}
+
+      {recalls.length ? <PlatformSubsection title="Recalls" description="Record customer notices and lot dispositions, then close once reconciled.">
+        <div className="space-y-2">
+          {recalls.map(recall => <details key={recall.id} open={recall.status === 'open'} className="group/recall overflow-hidden rounded-lg border bg-background">
+            <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3.5 py-3 hover:bg-muted/30 [&::-webkit-details-marker]:hidden">
+              <PlatformStatusBadge status={recall.status === 'open' ? 'recalled' : recall.status} label={`${recall.status} recall`} />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{recall.reason}</span>
+              <span className="text-xs text-muted-foreground tabular-nums">{(recall.affectedOrders || []).length} affected orders</span>
+            </summary>
+            <div className="space-y-4 border-t bg-muted/20 p-3.5">
+              <p className="text-sm"><span className="text-muted-foreground">Scope:</span> {(recall.scope?.lots || []).map((lot: any) => `${lot.supplierLotNumber}: ${lot.quantity}`).join(', ') || 'No lots recorded'}</p>
+              {(recall.events || []).length ? <ol className="space-y-1 border-l pl-3 text-xs text-muted-foreground">{(recall.events || []).map((event: any, index: number) => <li key={index} className="[overflow-wrap:anywhere]"><span className="font-medium text-foreground">{event.action}</span> · {event.at} · {event.reason} · ref {event.idempotencyKey}{event.evidence ? ` · ${JSON.stringify(event.evidence)}` : ''}</li>)}</ol> : null}
+              {recall.status === 'open' ? <div className="space-y-3">
+                <form onSubmit={event => submit(event, 'safety')} className="grid gap-2 rounded-md border bg-background p-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <p className="text-xs font-semibold sm:col-span-full">Customer notice outcome</p>
+                  <input type="hidden" name="action" value="notice" /><input type="hidden" name="recallId" value={recall.id} />
+                  <PlatformField label="Order"><select required name="orderId" className={platformSelect}>{(recall.affectedOrders || []).map((order: any) => <option key={order.orderId} value={order.orderId}>{order.orderId} · {order.email || 'Guest'}</option>)}</select></PlatformField>
+                  <PlatformField label="Channel"><select name="channel" className={platformSelect}><option>phone</option><option>email</option><option>sms</option><option>in_person</option></select></PlatformField>
+                  <PlatformField label="Outcome"><select name="outcome" className={platformSelect}><option>delivered</option><option>failed</option><option>unreachable</option></select></PlatformField>
+                  <PlatformField label="Communication reference"><input name="reference" required className={field} /></PlatformField>
+                  <PlatformField label="Reason" className="lg:col-span-2"><input name="reason" required className={field} /></PlatformField>
+                  <button disabled={pending} className={platformButton('secondary', 'md', 'sm:justify-self-start')}>Record notice outcome</button>
+                </form>
+                <form onSubmit={event => submit(event, 'safety')} className="grid gap-2 rounded-md border bg-background p-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <p className="text-xs font-semibold sm:col-span-full">Lot disposition</p>
+                  <input type="hidden" name="action" value="disposition" /><input type="hidden" name="recallId" value={recall.id} />
+                  <PlatformField label="Lot"><select name="dispositionLotId" className={platformSelect}>{(recall.scope?.lots || []).map((lot: any) => <option key={lot.id} value={lot.id}>{lot.supplierLotNumber}</option>)}</select></PlatformField>
+                  <PlatformField label="Disposition"><select name="disposition" className={platformSelect}><option>recovered</option><option>disposed</option><option>released</option><option>unaccounted</option></select></PlatformField>
+                  <PlatformField label="Quantity"><input name="quantity" type="number" required min="0.001" step="0.001" className={`${field} tabular-nums`} /></PlatformField>
+                  <PlatformField label="Stock change" hint="Recovered adds to quarantined stock; disposed or released removes it. Zero records externally held goods."><input name="stockQuantity" type="number" required min="0" step="0.001" defaultValue="0" aria-label="Quantity added to or removed from recorded stock" className={`${field} tabular-nums`} /></PlatformField>
+                  <PlatformField label="Custody / disposition reference" className="sm:col-span-2"><input name="custody" required className={field} /></PlatformField>
+                  <PlatformField label="Corrects prior reference (optional)" className="sm:col-span-2"><input name="replacesIdempotencyKey" className={field} /></PlatformField>
+                  <PlatformField label="Reason" className="sm:col-span-2 lg:col-span-3"><input name="reason" required className={field} /></PlatformField>
+                  <button disabled={pending} className={platformButton('secondary', 'md', 'self-end')}>Record disposition</button>
+                </form>
+                <form onSubmit={event => submit(event, 'safety')} className="flex flex-wrap items-end gap-2 rounded-md border border-dashed bg-background p-3">
+                  <input type="hidden" name="action" value="close" /><input type="hidden" name="recallId" value={recall.id} />
+                  <PlatformField label="Closure reason" className="min-w-56 flex-1"><input name="reason" required className={field} /></PlatformField>
+                  <button disabled={pending} className={platformButton('primary', 'md')}>Close reconciled recall</button>
+                </form>
+              </div> : null}
+            </div>
+          </details>)}
+        </div>
+      </PlatformSubsection> : null}
+    </div>
+  </PlatformDisclosure>;
 }

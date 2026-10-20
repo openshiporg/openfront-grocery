@@ -3,146 +3,190 @@
 import { useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 
+import { ChevronDown, Wallet } from 'lucide-react';
+import { PlatformFeedback, PlatformField } from '@/features/platform/components/PlatformForm';
+import { PlatformStatusBadge } from '@/features/platform/components/PlatformStatus';
+import { PlatformTime } from '@/features/platform/components/PlatformTime';
+import { platformButton, platformInput, platformSelect } from '@/features/platform/components/platformStyles';
+import { formatMoney } from '@/features/platform/lib/format';
 import type { GroceryPlatformPayment } from '@/features/platform/lib/platformProjections';
 import { cancelOrderTask, refundOrderPaymentTask } from '@/features/platform/lib/taskActions';
+import { parseMoneyToCents } from '@/features/lib/moneyInput';
 
 function operationKey(prefix: string) {
   return `${prefix}:${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`;
 }
 
-function formatMoney(cents: number, currencyCode: string) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode || 'USD' }).format(cents / 100);
-}
+type OutcomeKind = 'success' | 'pending' | 'unknown' | 'error';
+type Outcome = { kind: OutcomeKind; text: string } | null;
+/** A refund whose result is unknown: the exact request is kept and only resubmitted unchanged. */
+type UnresolvedRefund = { paymentId: string; amountCents: number; reason: string; idempotencyKey: string };
 
-function parseAmountCents(value: string) {
-  const normalized = value.trim();
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const cents = Math.round(Number(normalized) * 100);
-  return Number.isSafeInteger(cents) && cents > 0 ? cents : null;
-}
+const outcomeTone: Record<OutcomeKind, 'success' | 'info' | 'warning' | 'error'> = { success: 'success', pending: 'info', unknown: 'warning', error: 'error' };
 
+/**
+ * Refunds and whole-order cancellation for one order. `canRefund` and
+ * `canCancel` come from the server (the actor's current capabilities); the
+ * order is only cancellable here when `payments` is the order's full payment
+ * set. The server re-checks every rule.
+ */
 export function OrderAfterSalesActions({
   orderId,
   orderStatus,
   payments,
   currencyCode,
+  canRefund,
+  canCancel,
 }: {
   orderId: string;
   orderStatus: string;
   payments: GroceryPlatformPayment[];
   currencyCode: string;
+  canRefund: boolean;
+  canCancel: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [message, setMessage] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<Outcome>(null);
   const [cancelReason, setCancelReason] = useState('');
   const [cancelDisposition, setCancelDisposition] = useState('');
   const [cancelCondition, setCancelCondition] = useState('');
   const [refundReason, setRefundReason] = useState('');
-  const [refundAmounts, setRefundAmounts] = useState<Record<string, string>>({});
+  // undefined = untouched (shows the full refundable balance); '' = explicitly cleared.
+  const [refundAmounts, setRefundAmounts] = useState<Record<string, string | undefined>>({});
+  const [unresolved, setUnresolved] = useState<UnresolvedRefund | null>(null);
   const cancelKey = useRef(operationKey(`cancel:${orderId}`));
-  const refundKeys = useRef<Record<string, string>>({});
+  const cancelFingerprint = useRef('');
 
   const terminalOrder = ['cancelled', 'delivered'].includes(orderStatus);
-  // The server additionally verifies zero-charge provenance under payment locks.
   const hasUnrefundedSettlement = payments.some((payment) => payment.amountCents > 0 && ['succeeded', 'partially_refunded'].includes(payment.status));
   const hasLiveAuthorization = payments.some((payment) => ['authorized', 'pending'].includes(payment.status));
   const requiresDisposition = ['packed', 'returned'].includes(orderStatus);
-  const canCancel = ['pending', 'picking', 'packed', 'returned'].includes(orderStatus) && !hasUnrefundedSettlement && !hasLiveAuthorization;
+  const cancellable = canCancel && ['pending', 'picking', 'packed', 'returned'].includes(orderStatus) && !hasUnrefundedSettlement && !hasLiveAuthorization;
 
   function runCancel() {
-    setMessage(null);
+    setOutcome(null);
+    const input = { orderId, reason: cancelReason.trim(), ...(requiresDisposition ? { disposition: cancelDisposition, conditionNote: cancelCondition.trim() } : {}) };
+    // The key belongs to this exact request; a changed request gets a new key.
+    const fingerprint = JSON.stringify(input);
+    if (fingerprint !== cancelFingerprint.current) { cancelKey.current = operationKey(`cancel:${orderId}`); cancelFingerprint.current = fingerprint; }
     startTransition(async () => {
       try {
-        await cancelOrderTask({ orderId, reason: cancelReason, idempotencyKey: cancelKey.current, ...(requiresDisposition ? { disposition: cancelDisposition, conditionNote: cancelCondition } : {}) });
-        setMessage('Order cancelled. The reason and operator are retained in order evidence.');
-        cancelKey.current = operationKey(`cancel:${orderId}`);
+        const result = await cancelOrderTask({ ...input, idempotencyKey: cancelKey.current });
+        if (!result.ok) { setOutcome({ kind: 'error', text: result.error }); return; }
+        setOutcome({ kind: 'success', text: 'Order cancelled. The reason is kept on the order.' });
+        cancelFingerprint.current = '';
         router.refresh();
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : 'Cancellation failed');
+      } catch {
+        setOutcome({ kind: 'unknown', text: 'We couldn’t confirm the cancellation. Press Cancel order again without changes to check; it won’t be applied twice.' });
       }
     });
   }
 
-  function runRefund(payment: GroceryPlatformPayment, remainingCents: number) {
-    const amountCents = parseAmountCents(refundAmounts[payment.id] || (remainingCents / 100).toFixed(2));
-    setMessage(null);
-    if (!amountCents || amountCents > remainingCents) {
-      setMessage(`Enter a refund from ${formatMoney(1, currencyCode)} to ${formatMoney(remainingCents, currencyCode)}.`);
-      return;
-    }
-    if (!refundKeys.current[payment.id]) refundKeys.current[payment.id] = operationKey(`refund:${payment.id}`);
+  function submitRefund(request: UnresolvedRefund) {
+    setOutcome(null);
     startTransition(async () => {
-      try {
-        const response = await refundOrderPaymentTask({
-          paymentId: payment.id,
-          amountCents,
-          reason: refundReason,
-          idempotencyKey: refundKeys.current[payment.id],
-        });
-        const result = response?.refundPayment;
-        setMessage(result?.message || `Refund ${result?.status || 'submitted'}.`);
-        delete refundKeys.current[payment.id];
-        setRefundAmounts((current) => ({ ...current, [payment.id]: '' }));
-        router.refresh();
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : 'Refund failed');
+      let response: Awaited<ReturnType<typeof refundOrderPaymentTask>>;
+      try { response = await refundOrderPaymentTask(request); }
+      catch { response = { ok: false, error: 'The connection was interrupted.', uncertain: true }; }
+      if (!response.ok) {
+        if (response.uncertain) {
+          setUnresolved(request);
+          setOutcome({ kind: 'unknown', text: `We couldn’t confirm the ${formatMoney(request.amountCents, currencyCode)} refund. Check it before doing anything else; checking resubmits the same request and can’t refund twice.` });
+        } else {
+          setUnresolved(null);
+          setOutcome({ kind: 'error', text: response.error });
+        }
+        return;
       }
+      setUnresolved(null);
+      const status = response.data.status || 'processing';
+      const amount = formatMoney(response.data.amountCents ?? request.amountCents, currencyCode);
+      setOutcome(status === 'succeeded' ? { kind: 'success', text: `${amount} refunded.` }
+        : status === 'failed' ? { kind: 'error', text: response.data.message || `The ${amount} refund failed at the payment provider.` }
+        : { kind: 'pending', text: `${amount} refund submitted and waiting for the payment provider to confirm.` });
+      setRefundAmounts((current) => ({ ...current, [request.paymentId]: undefined }));
+      setRefundReason('');
+      router.refresh();
     });
   }
+
+  const refundable = canRefund && payments.some((payment) => payment.amountCents > 0 && ['succeeded', 'partially_refunded'].includes(payment.status));
+  const locked = isPending || unresolved !== null;
 
   return (
-    <details className="w-full rounded-lg border bg-muted/20 p-3 text-sm">
-      <summary className="cursor-pointer font-medium">Cancellation, payments &amp; refunds</summary>
-      <div className="mt-4 space-y-4">
-        {message ? <p role="status" className="rounded-md border bg-background px-3 py-2 text-sm">{message}</p> : null}
+    <details className="group/after w-full overflow-hidden rounded-lg border bg-background text-sm shadow-xs" open={Boolean(outcome) || unresolved !== null}>
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 outline-none hover:bg-muted/30 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+        <Wallet className="size-4 text-muted-foreground" aria-hidden="true" />
+        <span className="font-medium">{canCancel ? 'Payments, refunds & cancellation' : 'Refunds'}</span>
+        <span className="ml-auto rounded-full bg-muted px-2 py-px text-xs tabular-nums text-muted-foreground">{payments.length}</span>
+        <ChevronDown className="size-4 text-muted-foreground transition-transform group-open/after:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="space-y-4 border-t px-4 py-4">
+        {outcome ? <PlatformFeedback tone={outcomeTone[outcome.kind]}>{outcome.text}</PlatformFeedback> : null}
+        {unresolved ? (
+          <button type="button" disabled={isPending} onClick={() => submitRefund(unresolved)} className={platformButton('primary', 'md', 'w-full')}>
+            {isPending ? 'Checking…' : `Check the ${formatMoney(unresolved.amountCents, currencyCode)} refund`}
+          </button>
+        ) : null}
 
-        <div className="space-y-3">
-          {payments.length === 0 ? <p className="text-muted-foreground">No payment evidence is attached to this order.</p> : null}
+        <div className="space-y-2.5">
+          {payments.length === 0 ? <p className="text-muted-foreground">No payment is attached to this order.</p> : null}
           {payments.map((payment) => {
             const refundedCents = payment.refunds
               .filter((refund) => refund.status === 'succeeded')
               .reduce((sum, refund) => sum + refund.amountCents, 0);
-            const remainingCents = Math.max(0, payment.amountCents - refundedCents);
-            const canRefund = ['succeeded', 'partially_refunded'].includes(payment.status) && remainingCents > 0;
+            // Only captured money is refundable; an authorization that was voided or never captured has none.
+            const captured = ['succeeded', 'partially_refunded', 'refunded'].includes(payment.status);
+            const remainingCents = captured ? Math.max(0, payment.amountCents - refundedCents) : 0;
+            const paymentRefundable = canRefund && ['succeeded', 'partially_refunded'].includes(payment.status) && remainingCents > 0;
+            const shown = refundAmounts[payment.id] ?? (remainingCents / 100).toFixed(2);
+            const amountCents = parseMoneyToCents(shown);
+            const amountValid = amountCents !== null && amountCents > 0 && amountCents <= remainingCents;
             return (
-              <div key={payment.id} className="rounded-md border bg-background p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="font-medium">{formatMoney(payment.amountCents, currencyCode)} · {payment.providerCode}</p>
-                    <p className="text-xs text-muted-foreground">Payment {payment.status.replaceAll('_', ' ')} · {formatMoney(remainingCents, currencyCode)} refundable</p>
+              <div key={payment.id} className="rounded-md border bg-muted/20 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold tabular-nums">{formatMoney(payment.amountCents, currencyCode)}</p>
+                    <p className="truncate font-mono text-xs text-muted-foreground">{payment.providerCode}</p>
                   </div>
-                  {canRefund ? (
-                    <div className="flex flex-wrap items-end gap-2">
-                      <label className="grid gap-1 text-xs">
-                        Amount
+                  <PlatformStatusBadge status={payment.status} />
+                </div>
+                <p className="mt-1.5 text-xs text-muted-foreground">{captured ? <><span className="font-medium text-foreground tabular-nums">{formatMoney(remainingCents, currencyCode)}</span> refundable</> : payment.status === 'authorized' ? 'Authorized, not captured · nothing to refund' : 'Not captured · nothing to refund'}</p>
+                {paymentRefundable ? (
+                  <div className="mt-3 space-y-1.5">
+                    <div className="flex items-end gap-2">
+                      <PlatformField label={`Refund amount (${currencyCode})`} className="flex-1">
                         <input
                           inputMode="decimal"
-                          value={refundAmounts[payment.id] ?? (remainingCents / 100).toFixed(2)}
+                          value={shown}
+                          disabled={locked}
+                          aria-invalid={!amountValid}
                           onChange={(event) => setRefundAmounts((current) => ({ ...current, [payment.id]: event.target.value }))}
-                          className="w-28 rounded-md border bg-background px-2 py-1.5 text-sm"
+                          className={`${platformInput} tabular-nums`}
                         />
-                      </label>
+                      </PlatformField>
                       <button
                         type="button"
-                        disabled={isPending || refundReason.trim().length < 3}
-                        onClick={() => runRefund(payment, remainingCents)}
-                        className="rounded-md border px-3 py-1.5 font-medium hover:bg-muted disabled:opacity-50"
+                        disabled={locked || !amountValid || refundReason.trim().length < 3}
+                        onClick={() => amountValid && submitRefund({ paymentId: payment.id, amountCents: amountCents!, reason: refundReason.trim(), idempotencyKey: operationKey(`refund:${payment.id}`) })}
+                        className={platformButton('secondary', 'md')}
                       >
-                        {isPending ? 'Working…' : 'Refund'}
+                        {isPending ? 'Working…' : amountValid ? `Refund ${formatMoney(amountCents!, currencyCode)}` : 'Refund'}
                       </button>
                     </div>
-                  ) : null}
-                </div>
+                    {!amountValid ? <p className="text-xs text-destructive">Enter an amount from {formatMoney(1, currencyCode)} to {formatMoney(remainingCents, currencyCode)}.</p> : null}
+                  </div>
+                ) : null}
                 {payment.refunds.length > 0 ? (
-                  <ul className="mt-3 space-y-2 border-t pt-3 text-xs text-muted-foreground">
+                  <ul className="mt-3 space-y-1.5 border-t pt-2.5 text-xs">
                     {payment.refunds.map((refund) => (
-                      <li key={refund.id}>
-                        {formatMoney(refund.amountCents, currencyCode)} · {refund.status.replaceAll('_', ' ')}
-                        {refund.reason ? ` · ${refund.reason}` : ''}
-                        {refund.reconciliationDeadLetterAt ? ' · attention required (dead letter)' : ''}
-                        {refund.reconciliationLastError || refund.failureMessage ? ` · ${refund.reconciliationLastError || refund.failureMessage}` : ''}
-                        {refund.reconciliationNextAttemptAt ? ` · retry ${new Date(refund.reconciliationNextAttemptAt).toLocaleString()}` : ''}
+                      <li key={refund.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-medium tabular-nums">{formatMoney(refund.amountCents, currencyCode)}</span>
+                        <PlatformStatusBadge status={refund.reconciliationDeadLetterAt ? 'failed' : refund.status} label={refund.reconciliationDeadLetterAt ? 'Needs review' : undefined} />
+                        {refund.reason ? <span className="text-muted-foreground">{refund.reason}</span> : null}
+                        {refund.reconciliationLastError || refund.failureMessage ? <span className="basis-full text-destructive">{refund.reconciliationLastError || refund.failureMessage}</span> : null}
+                        {refund.reconciliationNextAttemptAt && !['succeeded', 'failed', 'cancelled'].includes(refund.status) ? <span className="basis-full text-muted-foreground"><PlatformTime value={refund.reconciliationNextAttemptAt} prefix="Retry" /></span> : null}
                       </li>
                     ))}
                   </ul>
@@ -152,64 +196,51 @@ export function OrderAfterSalesActions({
           })}
         </div>
 
-        {payments.some((payment) => payment.amountCents > 0 && ['succeeded', 'partially_refunded'].includes(payment.status)) ? (
-          <label className="grid gap-1 text-xs">
-            Refund reason
+        {refundable ? (
+          <PlatformField label="Refund reason" hint="Required for every refund and shown on the refund record.">
             <input
               value={refundReason}
-              onChange={(event) => {
-                setRefundReason(event.target.value);
-                refundKeys.current = {};
-              }}
+              disabled={locked}
+              onChange={(event) => setRefundReason(event.target.value)}
               maxLength={500}
               placeholder="Missing item, quality issue, or service recovery"
-              className="rounded-md border bg-background px-3 py-2 text-sm"
+              className={platformInput}
             />
-          </label>
+          </PlatformField>
         ) : null}
+        {!canRefund && hasUnrefundedSettlement ? <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">Refunds need payment access. Ask someone who manages payments.</p> : null}
 
-        {canCancel ? (
-          <div className="space-y-2 border-t pt-4">
-            <label className="grid gap-1 text-xs">
-              Cancellation reason
-              <input
-                value={cancelReason}
-                onChange={(event) => {
-                  setCancelReason(event.target.value);
-                  cancelKey.current = operationKey(`cancel:${orderId}`);
-                }}
-                maxLength={500}
-                placeholder="Customer request or duplicate unpaid order"
-                className="rounded-md border bg-background px-3 py-2 text-sm"
-              />
-            </label>
+        {cancellable ? (
+          <div className="space-y-3 rounded-md border border-destructive/25 bg-destructive/5 p-3">
+            <p className="text-xs font-semibold text-destructive">Cancel whole order</p>
+            <PlatformField label="Cancellation reason">
+              <input value={cancelReason} disabled={isPending} onChange={(event) => setCancelReason(event.target.value)} maxLength={500} placeholder="Customer request or duplicate unpaid order" className={platformInput} />
+            </PlatformField>
             {requiresDisposition ? <>
-              <label className="grid gap-1 text-xs">
-                Packed goods disposition
-                <select value={cancelDisposition} onChange={(event) => { setCancelDisposition(event.target.value); cancelKey.current = operationKey(`cancel:${orderId}`); }} className="rounded-md border bg-background px-3 py-2 text-sm">
+              <PlatformField label="Packed goods">
+                <select value={cancelDisposition} disabled={isPending} onChange={(event) => setCancelDisposition(event.target.value)} className={platformSelect}>
                   <option value="">Choose after inspecting goods</option>
                   <option value="return_to_stock">Return safe goods to stock</option>
-                  <option value="quarantine">Quarantine for review</option>
-                  <option value="waste">Record waste</option>
+                  <option value="quarantine">Hold for review</option>
+                  <option value="waste">Record as waste</option>
                 </select>
-              </label>
-              <label className="grid gap-1 text-xs">
-                Condition and custody evidence
-                <input value={cancelCondition} onChange={(event) => { setCancelCondition(event.target.value); cancelKey.current = operationKey(`cancel:${orderId}`); }} maxLength={500} placeholder="Inspection, temperature and return custody" className="rounded-md border bg-background px-3 py-2 text-sm" />
-              </label>
+              </PlatformField>
+              <PlatformField label="Condition and handling">
+                <input value={cancelCondition} disabled={isPending} onChange={(event) => setCancelCondition(event.target.value)} maxLength={500} placeholder="Inspection, temperature and who returned the goods" className={platformInput} />
+              </PlatformField>
             </> : null}
             <button
               type="button"
               disabled={isPending || cancelReason.trim().length < 3 || (requiresDisposition && (!cancelDisposition || !cancelCondition.trim()))}
               onClick={runCancel}
-              className="rounded-md border border-destructive/50 px-3 py-1.5 font-medium text-destructive hover:bg-destructive/5 disabled:opacity-50"
+              className={platformButton('destructive', 'md', 'w-full')}
             >
               {isPending ? 'Working…' : 'Cancel order'}
             </button>
           </div>
         ) : null}
 
-        {!canCancel && !terminalOrder ? <p className="text-xs text-muted-foreground">{hasLiveAuthorization ? 'Void active payment authorizations before cancelling this order.' : hasUnrefundedSettlement ? 'Fully refund every settled payment before cancelling this order.' : 'Return dispatched goods to store custody before cancelling.'}</p> : null}
+        {canCancel && !cancellable && !terminalOrder ? <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">{hasLiveAuthorization ? 'Void active payment authorizations before cancelling this order.' : hasUnrefundedSettlement ? 'Fully refund every settled payment before cancelling this order.' : 'Return dispatched goods to the store before cancelling.'}</p> : null}
       </div>
     </details>
   );

@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import type { GroceryUser } from '../../types';
 import { storefrontGraphQL } from './graphql';
 
@@ -13,7 +14,8 @@ function splitName(name?: string | null) {
   };
 }
 
-export async function getUser(): Promise<GroceryUser | null> {
+// One authenticated-user read per server request, shared by layout and pages.
+export const getUser = cache(async function getUser(): Promise<GroceryUser | null> {
   try {
     const { data } = await storefrontGraphQL<{
       authenticatedItem?: { id: string; email: string; name?: string | null } | null;
@@ -44,6 +46,6 @@ export async function getUser(): Promise<GroceryUser | null> {
     console.error('Error fetching user:', error);
     return null;
   }
-}
+});
 
 export const getAuthenticatedUser = getUser;

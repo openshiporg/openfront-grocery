@@ -1,46 +1,145 @@
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import Link from 'next/link';
-import { PageContainer } from '@/features/dashboard/components/PageContainer';
-import { PlatformDetails, PlatformEmptyState, PlatformErrorState, PlatformMetricGrid, PlatformSearchParams, PlatformStatusBadge, PlatformSurface, PlatformToolbar, PlatformTruthNotice, queryValue } from '@/features/platform/components/PlatformPrimitives';
-import { TaskButton } from '@/features/platform/components/TaskButton';
+import { ExternalLink, Factory, FileText, Mail, Phone, ShoppingCart } from 'lucide-react';
+import {
+  PlatformCellLabel,
+  PlatformChip,
+  PlatformDetails,
+  PlatformEmptyState,
+  PlatformErrorState,
+  PlatformFacts,
+  PlatformLinkButton,
+  PlatformList,
+  PlatformListHeader,
+  PlatformMetricGrid,
+  PlatformPage,
+  PlatformSearchParams,
+  PlatformStatusBadge,
+  PlatformSurface,
+  PlatformTabs,
+  PlatformToolbar,
+  platformButton,
+  platformHref,
+  queryValue,
+} from '@/features/platform/components/PlatformPrimitives';
+import { formatMoney } from '@/features/platform/lib/format';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
-import { updateSupplierTask } from '@/features/platform/lib/taskActions';
+import { parsePageParam } from '@/features/platform/lib/pageParams';
+import { SupplierCommercialTerms } from '../components/SupplierCommercialTerms';
 
-function money(cents = 0, currencyCode = 'USD') { return new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode || 'USD' }).format(cents / 100); }
+const PATH = '/dashboard/platform/suppliers';
+const rowGrid = 'md:grid md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_6rem_7rem_7.5rem] md:items-center md:gap-3';
+// Delivery days are stored as mon…sun codes.
+const weekdayOrder = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+const weekdayNames: Record<string, string> = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+const termsLabels: Record<string, string> = { net_30: 'Net 30', net_60: 'Net 60', cod: 'Cash on delivery' };
 
 export async function SuppliersPage({ searchParams }: { searchParams?: Promise<PlatformSearchParams> | PlatformSearchParams } = {}) {
   const params = searchParams ? await searchParams : {};
-  const q = queryValue(params, 'q').trim().toLowerCase();
+  const q = queryValue(params, 'q').trim();
   const filter = queryValue(params, 'filter') || 'all';
   const sort = queryValue(params, 'sort') || 'name';
   let data: Awaited<ReturnType<typeof platformProjections.suppliers>> = null;
   let loadError: string | null = null;
-  try { data = await platformProjections.suppliers(Number(params.page || 1), Number(params.pageSize || 50), String(params.search || params.q || ""), String(params.status || "")); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load suppliers.'; }
+  // Search, filter and sort run on the server across every supplier.
+  try { data = await platformProjections.suppliers(parsePageParam(params.page), 50, q, '', filter, sort); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load suppliers.'; }
   const currencyCode = data?.currencyCode || 'USD';
-  const all = data?.suppliers || [];
-  const suppliers = [...all]
-    .filter((supplier) => !q || [supplier.name, supplier.contactName, supplier.email, supplier.phone, ...(supplier.deliveryDays || [])].some((value) => value?.toLowerCase().includes(q)))
-    .filter((supplier) => filter === 'all' || (filter === 'open_po' ? (supplier.openPurchaseOrderCount > 0) : filter === 'no_products' ? supplier.productCount === 0 : supplier.paymentTerms === filter))
-    .sort((a, b) => sort === 'minimum' ? b.minimumOrderCents - a.minimumOrderCents : sort === 'products' ? b.productCount - a.productCount : a.name.localeCompare(b.name));
-  const openPOs = all.reduce((sum, supplier) => sum + supplier.openPurchaseOrderCount, 0);
-  const unlinked = all.filter((supplier) => supplier.productCount === 0).length;
-  const breadcrumbs = [{ type: 'link' as const, label: 'Dashboard', href: '/dashboard' }, { type: 'page' as const, label: 'Platform' }, { type: 'page' as const, label: 'Suppliers' }];
-  const header = <div><h1 className="text-2xl font-semibold tracking-tight">Suppliers</h1><p className="mt-1 text-sm text-muted-foreground">Review contacts, ordering terms, product dependency, and purchase-order exposure.</p></div>;
+  const suppliers = data?.suppliers || [];
+  const counts = data?.viewCounts;
 
-  return <PageContainer title="Suppliers" header={header} breadcrumbs={breadcrumbs}><div className="space-y-5 px-4 pb-8 md:px-6">
-    <PlatformPageLinks pagination={data?.pagination} path="/dashboard/platform/suppliers" searchParams={params} />
-    <PlatformMetricGrid metrics={[{ label: 'Suppliers', value: all.length, note: 'Store-owned vendor records' }, { label: 'Open purchase orders', value: openPOs, note: 'Not received or cancelled' }, { label: 'Linked products', value: all.reduce((sum, supplier) => sum + supplier.productCount, 0), note: 'Relationship count, not unique catalog size' }, { label: 'No linked products', value: unlinked, note: 'Supplier setup may be incomplete', tone: unlinked ? 'warning' : 'default' }]} />
-    <PlatformTruthNotice title="Supplier settlement">Use Purchasing to send supplier requests, record inspected receipts, match invoices, resolve discrepancies and credits, and export unmatched receipts. Supplier confirmation is recorded by an operator.</PlatformTruthNotice>
-    <PlatformToolbar search={q} searchPlaceholder="Supplier, contact, email, phone, or delivery day" filter={filter} filterLabel="Supplier state" filterOptions={[{ value: 'all', label: 'All suppliers' }, { value: 'open_po', label: 'Has open PO' }, { value: 'no_products', label: 'No linked products' }, { value: 'net_30', label: 'Net 30 terms' }]} sort={sort} sortOptions={[{ value: 'name', label: 'Name A–Z' }, { value: 'minimum', label: 'Highest minimum' }, { value: 'products', label: 'Most linked products' }]} resultCount={suppliers.length} />
-    {loadError ? <PlatformErrorState description={loadError} /> : <PlatformSurface title="Supplier roster" description="Expand a supplier for commercial terms, contacts, and truthful next actions." action={<Link href="/dashboard/platform/purchasing" className="inline-flex min-h-9 items-center rounded-md border px-3 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Open purchasing</Link>}>
-      {suppliers.length === 0 ? <PlatformEmptyState title="No matching suppliers" description="Reset the filters or add supplier records through the diagnostic model." /> : <div className="divide-y">{suppliers.map((supplier) => {
-        const open = supplier.openPurchaseOrderCount;
-        return <PlatformDetails key={supplier.id} summary={<div className="grid gap-3 px-4 py-4 hover:bg-muted/30 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center md:px-5"><div className="min-w-0"><p className="truncate font-medium">{supplier.name}</p><p className="truncate text-sm text-muted-foreground">{supplier.contactName || 'No named contact'} · {supplier.email || 'No email'}</p></div><PlatformStatusBadge status={open ? 'processing' : 'active'} label={open ? `${open} open PO${open === 1 ? '' : 's'}` : 'No open POs'} /><div className="text-sm md:text-right"><p className="font-medium tabular-nums">{money(supplier.minimumOrderCents, currencyCode)}</p><p className="text-xs text-muted-foreground">minimum order</p></div></div>}>
-          <div className="grid gap-5 lg:grid-cols-[1fr_auto]"><dl className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4"><div><dt className="text-xs text-muted-foreground">Phone</dt><dd className="mt-1 font-medium">{supplier.phone || 'Not recorded'}</dd></div><div><dt className="text-xs text-muted-foreground">Payment terms</dt><dd className="mt-1 font-medium">{supplier.paymentTerms || 'Not recorded'}</dd></div><div><dt className="text-xs text-muted-foreground">Delivery days</dt><dd className="mt-1 font-medium">{supplier.deliveryDays?.join(', ') || 'Not recorded'}</dd></div><div><dt className="text-xs text-muted-foreground">Relationships</dt><dd className="mt-1 font-medium">{supplier.productCount} products · {supplier.purchaseOrderCount} POs</dd></div></dl><details className="relative"><summary className="cursor-pointer list-none rounded-md border px-3 py-2 text-xs font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">Actions</summary><div className="mt-2 flex min-w-44 flex-col items-start gap-2 rounded-lg border bg-background p-2 shadow-sm"><Link href={`/dashboard/platform/purchasing?q=${encodeURIComponent(supplier.name)}`} className="w-full rounded px-2 py-1.5 text-xs font-medium hover:bg-muted">View purchase orders</Link>{supplier.paymentTerms !== 'net_30' ? <TaskButton label="Set terms to Net 30" onRun={updateSupplierTask.bind(null, supplier.id, 'net_30')} /> : <span className="px-2 py-1 text-xs text-muted-foreground">Terms already Net 30</span>}<Link href={`/dashboard/suppliers/${supplier.id}`} className="w-full rounded px-2 py-1.5 text-xs font-medium hover:bg-muted">Open diagnostic model</Link></div></details></div>
-        </PlatformDetails>;
-      })}</div>}
-    </PlatformSurface>}
-  </div></PageContainer>;
+  return (
+    <PlatformPage
+      title="Suppliers"
+      description="Supplier contacts, payment terms, minimum orders and delivery days."
+      actions={<PlatformLinkButton href="/dashboard/platform/purchasing" icon={ShoppingCart}>Open purchasing</PlatformLinkButton>}
+    >
+      {data && counts ? <PlatformMetricGrid metrics={[
+        { label: 'Suppliers', value: counts.all, note: q ? 'Matching your search' : 'In this store' },
+        { label: 'Open purchase orders', value: data.openPurchaseOrders, note: 'Not yet received or cancelled', tone: data.openPurchaseOrders ? 'warning' : 'default', href: platformHref('/dashboard/platform/purchasing', {}, { filter: 'open' }) },
+        { label: 'Suppliers with open orders', value: counts.open_po, note: q ? 'Matching your search' : 'In this store', href: platformHref(PATH, params, { filter: 'open_po' }) },
+        { label: 'No linked products', value: counts.no_products, note: 'Link products to order from this supplier', tone: counts.no_products ? 'warning' : 'default', href: platformHref(PATH, params, { filter: 'no_products' }) },
+      ]} /> : null}
+
+      {loadError ? <PlatformErrorState description={loadError} retryHref={PATH} /> : (
+        <PlatformSurface
+          icon={Factory}
+          title="Supplier roster"
+          description="Expand a supplier for contacts, commercial terms and next actions."
+          tabs={<PlatformTabs path={PATH} params={params} active={filter} label="Supplier state" tabs={[
+            { value: 'all', label: 'All', count: counts?.all },
+            { value: 'open_po', label: 'Open POs', count: counts?.open_po },
+            { value: 'no_products', label: 'No products', count: counts?.no_products, tone: 'attention' },
+            { value: 'net_30', label: 'Net 30', count: counts?.net_30 },
+            { value: 'net_60', label: 'Net 60', count: counts?.net_60 },
+            { value: 'cod', label: 'Cash on delivery', count: counts?.cod },
+          ]} />}
+        >
+          <PlatformToolbar
+            path={PATH}
+            search={q}
+            searchPlaceholder="Supplier, contact, email, phone, or delivery day"
+            preserve={{ filter }}
+            sort={sort}
+            sortOptions={[{ value: 'name', label: 'Name A–Z' }, { value: 'minimum', label: 'Highest minimum' }, { value: 'products', label: 'Most linked products' }]}
+            resultCount={data?.pagination.collections.suppliers?.total ?? suppliers.length}
+          />
+          {suppliers.length === 0 ? (
+            <PlatformEmptyState icon={Factory} title="No matching suppliers" description="Reset the filters, or add a supplier." action={<Link href="/dashboard/suppliers/create" className={platformButton('secondary', 'sm')}>Add supplier</Link>} />
+          ) : (
+            <>
+              <PlatformListHeader className={rowGrid}>
+                <span>Supplier</span><span>Delivery days</span><span className="text-right">Products</span><span className="text-right">Minimum</span><span className="text-right">Purchase orders</span>
+              </PlatformListHeader>
+              <PlatformList>
+                {suppliers.map((supplier) => {
+                  const open = supplier.openPurchaseOrderCount;
+                  const days = [...(supplier.deliveryDays || [])].sort((a, b) => weekdayOrder.indexOf(a.toLowerCase()) - weekdayOrder.indexOf(b.toLowerCase()));
+                  const dayName = (day: string) => weekdayNames[day.toLowerCase()] || day;
+                  return (
+                    <PlatformDetails key={supplier.id} summary={
+                      <div className={`grid gap-1.5 ${rowGrid}`}>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{supplier.name}</p>
+                          <p className="truncate text-xs text-muted-foreground">{supplier.contactName || 'No named contact'} · {supplier.email || 'No email'}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          <PlatformCellLabel>Delivery days</PlatformCellLabel>
+                          {days.length ? days.map((day) => <PlatformChip key={day}>{dayName(day).slice(0, 3)}</PlatformChip>) : <span className="text-xs text-muted-foreground">Not recorded</span>}
+                        </div>
+                        <p className={`text-sm tabular-nums md:text-right ${supplier.productCount ? '' : 'text-amber-700 dark:text-amber-400'}`}><PlatformCellLabel>Linked products</PlatformCellLabel>{supplier.productCount}<span className="text-xs text-muted-foreground md:hidden"> products</span></p>
+                        <p className="hidden text-sm font-medium tabular-nums md:block md:text-right"><PlatformCellLabel>Minimum order</PlatformCellLabel>{formatMoney(supplier.minimumOrderCents, currencyCode)}</p>
+                        <div className="md:flex md:justify-end"><PlatformCellLabel>Purchase orders</PlatformCellLabel><PlatformStatusBadge status={open ? 'processing' : 'active'} label={open ? `${open} open` : 'None open'} /></div>
+                      </div>
+                    }>
+                      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
+                        <PlatformFacts columns={4} items={[
+                          { label: 'Contact', value: supplier.contactName || 'Not recorded' },
+                          { label: 'Email', value: supplier.email ? <a className="inline-flex items-center gap-1 underline-offset-2 hover:underline" href={`mailto:${supplier.email}`}><Mail className="size-3.5" aria-hidden="true" />{supplier.email}</a> : 'Not recorded' },
+                          { label: 'Phone', value: supplier.phone ? <a className="inline-flex items-center gap-1 underline-offset-2 hover:underline" href={`tel:${supplier.phone}`}><Phone className="size-3.5" aria-hidden="true" />{supplier.phone}</a> : 'Not recorded' },
+                          { label: 'Payment terms', value: supplier.paymentTerms ? termsLabels[supplier.paymentTerms] || supplier.paymentTerms : 'Not recorded' },
+                          { label: 'Minimum order', value: formatMoney(supplier.minimumOrderCents, currencyCode) },
+                          { label: 'Delivery days', value: days.map(dayName).join(', ') || 'Not recorded' },
+                          { label: 'Linked products', value: supplier.productCount },
+                          { label: 'Purchase orders', value: `${supplier.purchaseOrderCount} total · ${open} open` },
+                        ]} />
+                        <div className="flex flex-col gap-2 rounded-lg border bg-background p-3 shadow-xs">
+                          <p className="text-xs font-medium text-muted-foreground">Actions</p>
+                          <SupplierCommercialTerms supplierId={supplier.id} paymentTerms={supplier.paymentTerms} minimumOrderCents={supplier.minimumOrderCents} currencyCode={currencyCode} />
+                          <Link href={platformHref('/dashboard/platform/purchasing', {}, { supplier: supplier.id, filter: 'all' })} className={platformButton('secondary', 'sm', 'justify-start')}><FileText aria-hidden="true" />View purchase orders</Link>
+                          <Link href={`/dashboard/suppliers/${supplier.id}`} className={platformButton('ghost', 'sm', 'justify-start')}><ExternalLink aria-hidden="true" />Edit supplier</Link>
+                        </div>
+                      </div>
+                    </PlatformDetails>
+                  );
+                })}
+              </PlatformList>
+            </>
+          )}
+          <PlatformPageLinks pagination={data?.pagination} path={PATH} searchParams={params} />
+        </PlatformSurface>
+      )}
+    </PlatformPage>
+  );
 }
 
 export default SuppliersPage;

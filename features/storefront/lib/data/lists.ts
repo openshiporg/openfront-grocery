@@ -110,258 +110,123 @@ export async function getShoppingListById(id: string): Promise<ShoppingList | nu
   }
 }
 
-export async function createShoppingList(name: string): Promise<ShoppingList | null> {
-  try {
-    const data = await requestGraphQL<{
-      createCustomerShoppingList: {
-        id: string;
-        name: string;
-        isDefault?: boolean;
-        updatedAt: string;
-        items: any[];
-      } | null;
-    }>(`
-      mutation CreateCustomerShoppingList($name: String!) {
-        createCustomerShoppingList(name: $name) {
-          id
-          name
-          isDefault
-          updatedAt
-          items {
-            id
-            product
-            productRef { id handle }
-            quantity
-            checked
-            unit
-            notes
-            addedAt
-          }
-        }
-      }
-    `, { name });
-
-    return data?.createCustomerShoppingList
-      ? mapList(data.createCustomerShoppingList)
-      : null;
-  } catch (error) {
-    console.error('Error creating shopping list:', error);
-    return null;
+const LIST_FIELDS = `
+  id
+  name
+  isDefault
+  updatedAt
+  items {
+    id
+    product
+    productRef { id handle }
+    quantity
+    checked
+    unit
+    notes
+    addedAt
   }
+`;
+
+/** Create a list, or get the existing list with that name (the server reuses it). */
+export async function createShoppingList(name: string): Promise<ShoppingList> {
+  const data = await requestGraphQL<{ createCustomerShoppingList: any }>(`
+    mutation CreateCustomerShoppingList($name: String!) {
+      createCustomerShoppingList(name: $name) { ${LIST_FIELDS} }
+    }
+  `, { name });
+  if (!data?.createCustomerShoppingList) throw new Error('The list could not be created. Please try again.');
+  return mapList(data.createCustomerShoppingList);
 }
 
+async function reloadAfter(listId: string) {
+  const list = await getShoppingListById(listId);
+  if (!list) throw new Error('Your list was updated, but it could not be reloaded. Refresh the page.');
+  return list;
+}
+
+/**
+ * Add a product to a list. The store adds to an existing line for the same
+ * product (it never resets the quantity) and refuses ambiguous names with the
+ * choices it found.
+ */
 export async function addItemToList(
   listId: string,
-  item: { name: string; productId?: string; quantity?: number; unit?: string; notes?: string }
-): Promise<ShoppingList | null> {
-  try {
-    if (item.productId) {
-      const list = await getShoppingListById(listId);
-      if (!list) throw new Error('The shopping list could not be loaded.');
-      const existing = list.items.find((entry) => entry.productId === item.productId);
-      if (existing) return updateListItemQuantity(listId, existing.id, existing.quantity + (item.quantity || 1));
+  item: { name?: string; productId?: string; quantity?: number; unit?: string; notes?: string; mode?: 'add' | 'set' }
+): Promise<ShoppingList> {
+  await requestGraphQL<{ addToShoppingList: any }>(`
+    mutation AddItemToShoppingList($listId: ID!, $product: String, $productId: ID, $quantity: Int, $unit: String, $notes: String, $mode: String) {
+      addToShoppingList(listId: $listId, product: $product, productId: $productId, quantity: $quantity, unit: $unit, notes: $notes, mode: $mode) { id }
     }
-    const data = await requestGraphQL<{ addToShoppingList: any }>(`
-      mutation AddItemToShoppingList(
-        $listId: ID!
-        $product: String!
-        $quantity: Int
-        $unit: String
-        $notes: String
-      ) {
-        addToShoppingList(
-          listId: $listId
-          product: $product
-          quantity: $quantity
-          unit: $unit
-          notes: $notes
-        ) {
-          id
-          name
-          isDefault
-          itemCount
-          checkedCount
-          items {
-            id
-            product
-            quantity
-            unit
-            checked
-            notes
-            addedAt
-          }
-        }
-      }
-    `, {
-      listId,
-      product: item.productId || item.name,
-      quantity: item.quantity || 1,
-      unit: item.unit || 'each',
-      notes: item.notes || '',
-    });
-
-    return data?.addToShoppingList ? (await getShoppingListById(listId)) || mapList(data.addToShoppingList) : null;
-  } catch (error) {
-    console.error('Error adding item to list:', error);
-    return null;
-  }
+  `, {
+    listId,
+    product: item.productId ? null : item.name || null,
+    productId: item.productId || null,
+    quantity: item.quantity || 1,
+    unit: item.unit || null,
+    notes: item.notes || null,
+    mode: item.mode || 'add',
+  });
+  return reloadAfter(listId);
 }
 
-export async function updateListItemQuantity(listId: string, itemId: string, quantity: number): Promise<ShoppingList | null> {
-  try {
-    const data = await requestGraphQL<{ updateShoppingListItemQuantity: any }>(`
-      mutation UpdateShoppingListItemQuantity($listId: ID!, $itemId: ID!, $quantity: Int!) {
-        updateShoppingListItemQuantity(listId: $listId, itemId: $itemId, quantity: $quantity) {
-          id
-          name
-          isDefault
-          itemCount
-          checkedCount
-          items {
-            id
-            product
-            quantity
-            unit
-            checked
-            notes
-            addedAt
-          }
-        }
-      }
-    `, {
-      listId,
-      itemId,
-      quantity,
-    });
-
-    return data?.updateShoppingListItemQuantity ? (await getShoppingListById(listId)) || mapList(data.updateShoppingListItemQuantity) : null;
-  } catch (error) {
-    console.error('Error updating list item quantity:', error);
-    return null;
-  }
+/** Set a line's quantity; `expectedQuantity` makes a change from another window a conflict instead of an overwrite. */
+export async function updateListItemQuantity(listId: string, itemId: string, quantity: number, expectedQuantity?: number): Promise<ShoppingList> {
+  await requestGraphQL<{ updateShoppingListItemQuantity: any }>(`
+    mutation UpdateShoppingListItemQuantity($listId: ID!, $itemId: ID!, $quantity: Int!, $expectedQuantity: Int) {
+      updateShoppingListItemQuantity(listId: $listId, itemId: $itemId, quantity: $quantity, expectedQuantity: $expectedQuantity) { id }
+    }
+  `, { listId, itemId, quantity, expectedQuantity: expectedQuantity ?? null });
+  return reloadAfter(listId);
 }
 
-export async function toggleListItem(listId: string, itemId: string): Promise<ShoppingList | null> {
-  try {
-    const data = await requestGraphQL<{ toggleShoppingListItemChecked: any }>(`
-      mutation ToggleShoppingListItem($listId: ID!, $itemId: ID!) {
-        toggleShoppingListItemChecked(listId: $listId, itemId: $itemId) {
-          id
-          name
-          isDefault
-          itemCount
-          checkedCount
-          items {
-            id
-            product
-            quantity
-            unit
-            checked
-            notes
-            addedAt
-          }
-        }
-      }
-    `, {
-      listId,
-      itemId,
-    });
-
-    return data?.toggleShoppingListItemChecked ? (await getShoppingListById(listId)) || mapList(data.toggleShoppingListItemChecked) : null;
-  } catch (error) {
-    console.error('Error toggling list item:', error);
-    return null;
-  }
+export async function toggleListItem(listId: string, itemId: string): Promise<ShoppingList> {
+  await requestGraphQL<{ toggleShoppingListItemChecked: any }>(`
+    mutation ToggleShoppingListItem($listId: ID!, $itemId: ID!) {
+      toggleShoppingListItemChecked(listId: $listId, itemId: $itemId) { id }
+    }
+  `, { listId, itemId });
+  return reloadAfter(listId);
 }
 
-export async function removeListItem(listId: string, itemId: string): Promise<ShoppingList | null> {
-  try {
-    const data = await requestGraphQL<{ removeFromShoppingList: any }>(`
-      mutation RemoveListItem($listId: ID!, $itemId: ID!) {
-        removeFromShoppingList(listId: $listId, itemId: $itemId) {
-          id
-          name
-          isDefault
-          itemCount
-          checkedCount
-          items {
-            id
-            product
-            quantity
-            unit
-            checked
-            notes
-            addedAt
-          }
-        }
-      }
-    `, {
-      listId,
-      itemId,
-    });
-
-    return data?.removeFromShoppingList ? (await getShoppingListById(listId)) || mapList(data.removeFromShoppingList) : null;
-  } catch (error) {
-    console.error('Error removing list item:', error);
-    return null;
-  }
+export async function removeListItem(listId: string, itemId: string): Promise<ShoppingList> {
+  await requestGraphQL<{ removeFromShoppingList: any }>(`
+    mutation RemoveListItem($listId: ID!, $itemId: ID!) {
+      removeFromShoppingList(listId: $listId, itemId: $itemId) { id }
+    }
+  `, { listId, itemId });
+  return reloadAfter(listId);
 }
 
-export async function addShoppingListToCart(listId: string): Promise<{
-  success: boolean;
-  message: string;
-  addedCount: number;
-  skippedCount: number;
-  skippedItems: string[];
-}> {
-  try {
-    const data = await requestGraphQL<{ addShoppingListToCart: any }>(`
-      mutation AddShoppingListToCart($listId: ID!) {
-        addShoppingListToCart(listId: $listId) {
-          success
-          message
-          addedCount
-          skippedCount
-          skippedItems
-        }
-      }
-    `, { listId });
+export type CartBatchResult = { success: boolean; message: string; addedCount: number; skippedCount: number; skippedItems: string[]; replayed: boolean };
 
-    return data?.addShoppingListToCart || {
-      success: false,
-      message: 'Failed to add list to cart',
-      addedCount: 0,
-      skippedCount: 0,
-      skippedItems: [],
-    };
-  } catch (error) {
-    console.error('Error adding shopping list to cart:', error);
-    return {
-      success: false,
-      message: error instanceof Error ? error.message : 'Failed to add list to cart',
-      addedCount: 0,
-      skippedCount: 0,
-      skippedItems: [],
-    };
-  }
+/**
+ * Add the list's unchecked items to the basket. Pass the same `requestKey`
+ * when retrying after an uncertain response: the store then returns the
+ * original result instead of adding the items twice.
+ */
+export async function addShoppingListToCart(listId: string, requestKey: string): Promise<CartBatchResult> {
+  const { getSessionId } = await import('./cart');
+  const data = await requestGraphQL<{ addShoppingListToCart: CartBatchResult }>(`
+    mutation AddShoppingListToCart($listId: ID!, $requestKey: String, $sessionId: String) {
+      addShoppingListToCart(listId: $listId, requestKey: $requestKey, sessionId: $sessionId) {
+        success message addedCount skippedCount skippedItems replayed
+      }
+    }
+  `, { listId, requestKey, sessionId: getSessionId() || null });
+  if (!data?.addShoppingListToCart) throw new Error('The list could not be added to your basket. Try again.');
+  return data.addShoppingListToCart;
 }
 
 export async function deleteShoppingList(id: string): Promise<boolean> {
-  try {
-    const data = await requestGraphQL<{
-      deleteCustomerShoppingList: { success: boolean; listId: string } | null;
-    }>(`
-      mutation DeleteCustomerShoppingList($listId: ID!) {
-        deleteCustomerShoppingList(listId: $listId) {
-          success
-          listId
-        }
+  const data = await requestGraphQL<{
+    deleteCustomerShoppingList: { success: boolean; listId: string } | null;
+  }>(`
+    mutation DeleteCustomerShoppingList($listId: ID!) {
+      deleteCustomerShoppingList(listId: $listId) {
+        success
+        listId
       }
-    `, { listId: id });
-
-    return Boolean(data?.deleteCustomerShoppingList?.success);
-  } catch (error) {
-    console.error('Error deleting shopping list:', error);
-    return false;
-  }
+    }
+  `, { listId: id });
+  return Boolean(data?.deleteCustomerShoppingList?.success);
 }

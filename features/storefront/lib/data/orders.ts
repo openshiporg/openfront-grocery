@@ -2,28 +2,24 @@ import type { GroceryOrder, GroceryParkingSpot } from '../../types';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 import { mapStorefrontOrder } from './order-mappers';
 
-async function getOrderSubstitutions(lineItemIds: string[]) {
-  if (!lineItemIds.length) return [];
-
-  try {
-    const { data } = await storefrontGraphQL<{ orderItemSubstitutions: any[] }>(`
-      query GetOrderSubstitutions($lineItemIds: [String!]) {
-        orderItemSubstitutions(where: { orderItem: { in: $lineItemIds } }) {
-          id
-          orderItem
-          originalProduct
-          substitutedProduct
-          reason
-          customerApproved
-          approvedAt
-        }
+/** The signed-in customer's replacement evidence; failures propagate (never shown as "no substitutions"). */
+async function getOrderSubstitutions(orderId: string) {
+  const { data, errors } = await storefrontGraphQL<{ customerOrderSubstitutions: any[] }>(`
+    query GetCustomerOrderSubstitutions($orderId: ID!) {
+      customerOrderSubstitutions(orderId: $orderId) {
+        id
+        orderItem
+        originalProduct
+        substitutedProduct
+        reason
+        customerApproved
+        approvedAt
       }
-    `, { lineItemIds }, { cache: 'no-store' });
-    return data?.orderItemSubstitutions || [];
-  } catch (error) {
-    console.error('Error fetching order substitutions:', error);
-    return [];
-  }
+    }
+  `, { orderId }, { cache: 'no-store' });
+  throwGraphQLErrors(errors);
+  if (!data?.customerOrderSubstitutions) throw new Error('Replacement details are unavailable');
+  return data.customerOrderSubstitutions;
 }
 
 async function getAuthenticatedUserId() {
@@ -41,13 +37,21 @@ async function getAuthenticatedUserId() {
   return data?.authenticatedItem?.id || null;
 }
 
-export async function getOrderById(id: string): Promise<GroceryOrder | null> {
+export type OrderRead = { status: 'found'; order: GroceryOrder } | { status: 'not_found' } | { status: 'unavailable' };
+
+/**
+ * Read a signed-in customer's order with a typed outcome: not visible to this
+ * shopper, found, or temporarily unavailable. An outage is never reported as a
+ * missing order.
+ */
+export async function readOrderById(id: string): Promise<OrderRead> {
   try {
-    const { data } = await storefrontGraphQL<{ order: any | null }>(`
+    const { data, errors } = await storefrontGraphQL<{ order: any | null }>(`
       query GetOrder($id: ID!) {
         order(where: { id: $id }) {
           id
           displayId
+          currencyCode
           status
           email
           taxRate
@@ -84,15 +88,21 @@ export async function getOrderById(id: string): Promise<GroceryOrder | null> {
         }
       }
     `, { id }, { cache: 'no-store' });
+    throwGraphQLErrors(errors);
     const order = data?.order;
-    if (!order) return null;
+    if (!order) return { status: 'not_found' };
 
-    const substitutions = await getOrderSubstitutions((order.lineItems || []).map((item: any) => item.id));
-    return mapStorefrontOrder({ ...order, orderItemSubstitutions: substitutions });
+    const substitutions = await getOrderSubstitutions(order.id);
+    return { status: 'found', order: mapStorefrontOrder({ ...order, orderItemSubstitutions: substitutions }) };
   } catch (error) {
-    console.error('Error fetching order:', error);
-    return null;
+    console.error('Order read unavailable:', error instanceof Error ? error.message : 'unknown error');
+    return { status: 'unavailable' };
   }
+}
+
+export async function getOrderById(id: string): Promise<GroceryOrder | null> {
+  const result = await readOrderById(id);
+  return result.status === 'found' ? result.order : null;
 }
 
 export async function getOrderHistory(requestedPage = 1, pageSize = 10): Promise<{ orders: GroceryOrder[]; total: number; page: number; pageSize: number; error?: string }> {
@@ -112,6 +122,7 @@ export async function getOrderHistory(requestedPage = 1, pageSize = 10): Promise
         ) {
           id
           displayId
+          currencyCode
           status
           email
           taxRate
@@ -219,23 +230,21 @@ export async function checkInPickupOrder(input: {
   }
 }
 
-/** Client-only repeat buying uses the same owned cart session as product and basket controls. */
-export async function reorderFromOrder(orderId: string): Promise<{ success: boolean; added: number; skipped: string[]; error?: string }> {
-  if (typeof window === 'undefined') return { success: false, added: 0, skipped: [], error: 'Open this order in your browser to shop it again.' };
-  const order = await getOrderById(orderId);
-  if (!order) return { success: false, added: 0, skipped: [], error: 'Order unavailable. Sign in and try again.' };
-  const { addToCart } = await import('./cart');
-  let added = 0;
-  const skipped: string[] = [];
-  // Original pack counts are valid Int quantities; picked weights must never become cart counts.
-  for (const item of order.requestedItems || order.items) {
-    if (!item.product?.id || !Number.isInteger(item.quantity) || item.quantity <= 0) {
-      skipped.push(item.title);
-      continue;
-    }
-    const cart = await addToCart(item.product.id, item.quantity);
-    if (cart) added += 1;
-    else skipped.push(item.title);
-  }
-  return { success: skipped.length === 0 && added > 0, added, skipped, ...(!added ? { error: 'No items were added. Availability may have changed; browse the shop to choose alternatives.' } : {}) };
+/**
+ * Shop a past order again as one store-side batch. The caller keeps
+ * `requestKey` for retries after an uncertain response, so the items are added
+ * exactly once; a new deliberate reorder uses a new key.
+ */
+export async function reorderFromOrder(orderId: string, requestKey: string): Promise<{ success: boolean; added: number; skipped: string[]; replayed: boolean; error?: string }> {
+  if (typeof window === 'undefined') return { success: false, added: 0, skipped: [], replayed: false, error: 'Open this order in your browser to shop it again.' };
+  const { getSessionId } = await import('./cart');
+  const { data, errors } = await storefrontGraphQL<{ reorderGroceryOrder: { success: boolean; addedCount: number; skippedItems: string[]; replayed: boolean } }>(
+    'mutation Reorder($orderId: ID!, $requestKey: String!, $sessionId: String) { reorderGroceryOrder(orderId: $orderId, requestKey: $requestKey, sessionId: $sessionId) { success addedCount skippedItems replayed } }',
+    { orderId, requestKey, sessionId: getSessionId() || null },
+    { cache: 'no-store' },
+  );
+  throwGraphQLErrors(errors);
+  const result = data?.reorderGroceryOrder;
+  if (!result) throw new Error('The order could not be added to your basket. Try again.');
+  return { success: result.success, added: result.addedCount, skipped: result.skippedItems, replayed: result.replayed, ...(!result.addedCount ? { error: 'No items were added. Availability may have changed; browse the shop to choose alternatives.' } : {}) };
 }

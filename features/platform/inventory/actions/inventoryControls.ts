@@ -1,6 +1,6 @@
 'use server';
 import { revalidatePath } from 'next/cache';
-import { keystoneClient } from '@/features/dashboard/lib/keystoneClient';
+import { keystoneClient } from '@/features/platform/lib/platformClient';
 
 export async function inventorySafetyTask(input: { action: string; inventoryLotIds?: string[]; productId?: string; recallId?: string; reason: string; idempotencyKey: string; evidence?: Record<string, unknown> }) {
   const result = await keystoneClient<any>(`mutation($action:String!,$inventoryLotIds:[ID!],$productId:ID,$recallId:ID,$reason:String!,$idempotencyKey:String!,$evidence:JSON){manageInventorySafety(action:$action,inventoryLotIds:$inventoryLotIds,productId:$productId,recallId:$recallId,reason:$reason,idempotencyKey:$idempotencyKey,evidence:$evidence)}`, input, { cache: 'no-store' });

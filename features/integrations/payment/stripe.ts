@@ -11,12 +11,17 @@ const getStripeClient = () => {
   });
 };
 
-export function stripeCheckoutMetadata(cart?: any) {
-  return { cartId: cart?.id || '', sessionId: cart?.sessionId || '', ...(cart?.checkoutPaymentSessionId ? {
-    paymentSessionId: cart.checkoutPaymentSessionId, checkoutFingerprint: cart.checkoutFingerprint || '', cartFingerprint: cart.cartFingerprint || '' } : {}) };
+export function stripeCheckoutMetadata(cart?: any, order?: any): Record<string, string> {
+  // A revised authorization carries its durable binding (Store, order, settlement,
+  // frozen-sale fingerprint) so a lost response can be recovered and verified.
+  const revised = order?.revisedAuthorization;
+  if (revised) return { source: 'openfront-grocery', kind: 'revised_authorization', orderId: String(order.id || ''), storeId: String(revised.storeId || ''),
+    settlementId: String(revised.settlementId || ''), fingerprint: String(revised.fingerprint || '') };
+  return { source: 'openfront-grocery', cartId: String(cart?.id || ''), sessionId: String(cart?.sessionId || ''), ...(cart?.checkoutPaymentSessionId ? {
+    paymentSessionId: String(cart.checkoutPaymentSessionId), checkoutFingerprint: String(cart.checkoutFingerprint || ''), cartFingerprint: String(cart.cartFingerprint || '') } : {}) };
 }
 
-export async function createPaymentFunction({ cart, amount, currency, idempotencyKey, captureMethod = 'automatic' }: { cart?: any; amount: number; currency: string; idempotencyKey?: string; captureMethod?: 'automatic' | 'manual' }) {
+export async function createPaymentFunction({ cart, order, amount, currency, idempotencyKey, captureMethod = 'automatic' }: { cart?: any; order?: any; amount: number; currency: string; idempotencyKey?: string; captureMethod?: 'automatic' | 'manual' }) {
   const stripe = getStripeClient();
 
   const paymentIntent = await stripe.paymentIntents.create({
@@ -26,7 +31,7 @@ export async function createPaymentFunction({ cart, amount, currency, idempotenc
     automatic_payment_methods: {
       enabled: true,
     },
-    metadata: stripeCheckoutMetadata(cart),
+    metadata: stripeCheckoutMetadata(cart, order),
   }, idempotencyKey ? { idempotencyKey } : undefined);
 
   return {
@@ -51,7 +56,7 @@ export async function capturePaymentFunction({ paymentId, amount, amountCents, i
   };
 }
 
-export async function refundPaymentFunction({ paymentId, amount, idempotencyKey }: { paymentId: string; amount?: number; idempotencyKey?: string }) {
+export async function refundPaymentFunction({ paymentId, amount, idempotencyKey, timeoutMs }: { paymentId: string; amount?: number; idempotencyKey?: string; timeoutMs?: number }) {
   const stripe = getStripeClient();
 
   const refund = await stripe.refunds.create(
@@ -60,7 +65,7 @@ export async function refundPaymentFunction({ paymentId, amount, idempotencyKey 
       amount,
       metadata: idempotencyKey ? { groceryRefundKey: idempotencyKey } : undefined,
     },
-    idempotencyKey ? { idempotencyKey } : undefined,
+    { ...(idempotencyKey ? { idempotencyKey } : {}), ...(timeoutMs ? { timeout: timeoutMs } : {}) },
   );
 
   return {
@@ -90,8 +95,8 @@ export async function getPaymentStatusFunction({ paymentId }: { paymentId: strin
   };
 }
 
-export async function getRefundStatusFunction({ refundId }: { refundId: string }) {
-  const refund = await getStripeClient().refunds.retrieve(refundId);
+export async function getRefundStatusFunction({ refundId, timeoutMs }: { refundId: string; timeoutMs?: number }) {
+  const refund = await getStripeClient().refunds.retrieve(refundId, {}, timeoutMs ? { timeout: timeoutMs } : undefined);
   return { id: refund.id, status: refund.status, amount: refund.amount, currency: refund.currency,
     paymentId: typeof refund.payment_intent === 'string' ? refund.payment_intent : refund.payment_intent?.id, data: refund };
 }

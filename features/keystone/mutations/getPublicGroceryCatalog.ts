@@ -1,8 +1,10 @@
 import { catalogPageQuery } from '../lib/catalogPage';
+import { publicError } from '../lib/publicError';
+import { currentNotificationPreference, emailAllowedFor, enableEmailCategory } from '../lib/notificationConsent';
 import type { Context } from '.keystone/types';
 
 import { deriveSellableQuantity } from '../lib/sellableInventory';
-import { publicStore, requireSessionStore } from '../lib/storeScope';
+import { lockCurrentCustomer, publicStore, requireSessionStore } from '../lib/storeScope';
 
 const MAX_PAGE_SIZE = 100;
 
@@ -44,7 +46,8 @@ function mapCatalogProduct(product: any, storeId: string, requestedAlerts: Set<s
     shelfLife: product.shelfLife,
     organicCertified: product.organicCertified,
     allergens: Array.isArray(product.allergens) ? product.allergens : [],
-    department: product.departmentRef,
+    // A hidden aisle's details are not published; its products may still be found by search.
+    department: product.departmentRef?.isActive ? product.departmentRef : null,
     inStock: sellableQuantity > 0,
     stockQuantity: sellableQuantity,
     backInStockRequested: requestedAlerts.has(product.id),
@@ -142,7 +145,7 @@ export async function getPublicGroceryProduct(
 
 export async function requestGroceryBackInStockAlert(
   _root: unknown,
-  { productId }: { productId: string },
+  { productId, enableEmail }: { productId: string; enableEmail?: boolean | null },
   context: Context,
 ) {
   if (!context.session?.itemId) throw new Error('Sign in to request a back-in-stock alert');
@@ -170,6 +173,23 @@ export async function requestGroceryBackInStockAlert(
       "SELECT pg_advisory_xact_lock(hashtext('grocery-back-in-stock'), hashtext($1))",
       `${context.session?.itemId}:${product.id}`,
     );
+    await lockCurrentCustomer(transactionContext);
+    const userId = context.session!.itemId;
+    // An alert is a promise to email; only accept it when email for stock alerts
+    // is on, or when the customer explicitly turns it on for this request.
+    const preference = await currentNotificationPreference(transactionContext.prisma, userId);
+    if (!emailAllowedFor('product.back_in_stock', preference)) {
+      if (!enableEmail) {
+        return {
+          requested: false,
+          reused: false,
+          productId: product.id,
+          emailDisabled: true,
+          message: 'Back-in-stock emails are turned off in your email preferences, so no alert was set.',
+        };
+      }
+      await enableEmailCategory(transactionContext.prisma, userId, 'backInStock');
+    }
     const existing = await transactionContext.prisma.backInStockAlert.findFirst({
       where: { userId: context.session?.itemId, productRefId: product.id, isActive: true },
       select: { id: true },
@@ -188,7 +208,44 @@ export async function requestGroceryBackInStockAlert(
       requested: true,
       reused: Boolean(existing),
       productId: product.id,
-      message: existing ? 'Back-in-stock alert is already active' : 'Back-in-stock alert requested',
+      emailDisabled: false,
+      message: existing ? 'Back-in-stock alert is already active' : 'Back-in-stock alert requested. We’ll email you when it’s back.',
     };
+  });
+}
+
+/**
+ * Ask to be emailed when a product's price drops to a target. The product must
+ * be published in this Store and the target below today's price; email for
+ * price drops must be on, or explicitly turned on for this request. One active
+ * alert per product: asking again updates its target.
+ */
+export async function requestGroceryPriceAlert(
+  _root: unknown,
+  { productId, targetPrice, enableEmail }: { productId: string; targetPrice: string; enableEmail?: boolean | null },
+  context: Context,
+) {
+  if (!context.session?.itemId) throw new Error('Sign in to request a price alert');
+  const store = await requireSessionStore(context);
+  const match = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(String(targetPrice || '').trim().replace(/^\$/, ''));
+  if (!match) throw publicError('Enter a target price like 3.49.');
+  const targetCents = Number(match[1]) * 100 + Number((match[2] || '').padEnd(2, '0'));
+  const product = await context.prisma.product.findFirst({ where: { id: productId, storeId: store.id, status: 'published' }, select: { id: true, title: true, priceCents: true } });
+  if (!product) throw publicError('This product is not available.');
+  if (targetCents <= 0 || targetCents >= Number(product.priceCents)) throw publicError('Choose a target below the current price.');
+  return context.transaction(async (transactionContext) => {
+    const userId = context.session!.itemId;
+    await transactionContext.prisma.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-price-alert'), hashtext($1))", `${userId}:${product.id}`);
+    await lockCurrentCustomer(transactionContext);
+    const preference = await currentNotificationPreference(transactionContext.prisma, userId);
+    if (!emailAllowedFor('product.price_drop', preference)) {
+      if (!enableEmail) return { requested: false, emailDisabled: true, message: 'Price-drop emails are turned off in your email preferences, so no alert was set.' };
+      await enableEmailCategory(transactionContext.prisma, userId, 'priceDrops');
+    }
+    const existing = await transactionContext.prisma.priceAlert.findFirst({ where: { userId, productRefId: product.id, isTriggered: false }, select: { id: true } });
+    const targetPriceText = (targetCents / 100).toFixed(2);
+    if (existing) await transactionContext.prisma.priceAlert.update({ where: { id: existing.id }, data: { targetPrice: targetPriceText } });
+    else await transactionContext.prisma.priceAlert.create({ data: { userId, productRefId: product.id, product: product.title, targetPrice: targetPriceText, currentPrice: (Number(product.priceCents) / 100).toFixed(2) } });
+    return { requested: true, emailDisabled: false, message: `We’ll email you if ${product.title} drops to ${targetPriceText} or less.` };
   });
 }

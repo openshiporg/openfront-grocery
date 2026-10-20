@@ -49,6 +49,20 @@ export function isSignedIn({ session }: AccessArgs) {
   return Boolean(session)
 }
 
+/**
+ * A signed-in account that is still current: not erased and a member of an
+ * active Store. Used where customers create their own records, so a stale
+ * cookie cannot recreate data after an approved erasure.
+ */
+export async function isCurrentAccount({ session, context }: AccessArgs) {
+  if (!session?.itemId || !context?.prisma?.user?.findUnique) return false;
+  const user = await context.prisma.user.findUnique({
+    where: { id: session.itemId },
+    select: { privacyErasedAt: true, store: { select: { isActive: true } } },
+  });
+  return Boolean(user && !user.privacyErasedAt && user.store?.isActive);
+}
+
 function currentPermission(capability: Capability) {
   return async ({ session, context }: AccessArgs) => {
     if (!session?.itemId || !context?.prisma?.user) return false;

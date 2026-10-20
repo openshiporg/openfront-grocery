@@ -13,6 +13,8 @@ export async function requestOrderAccess(form:FormData) {
   const orderId=String(form.get('orderId') || '').trim();
   const email=String(form.get('email') || '').trim();
   if(!orderId || orderId.length>200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length>320) throw new Error('Enter a valid order ID and checkout email.');
+  // Without a mail service no link can be delivered; say so rather than promising an email.
+  if(!process.env.SMTP_HOST || !process.env.SMTP_FROM) throw new Error('Emailed access links are not available right now. Open your order from the browser you checked out with, or send the store a message from the Help page with your order number.');
   const result=await storefrontGraphQL('mutation Access($orderId:ID!,$email:String!){requestGuestOrderAccess(orderId:$orderId,email:$email)}',{orderId,email});
   throwGraphQLErrors(result.errors);
   if(result.data?.requestGuestOrderAccess !== true) throw new Error('The access link could not be requested. Please try again.');

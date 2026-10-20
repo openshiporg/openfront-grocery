@@ -1,29 +1,66 @@
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
-import { PageContainer } from '@/features/dashboard/components/PageContainer';
-import { PlatformErrorState, PlatformMetricGrid, PlatformTruthNotice } from '@/features/platform/components/PlatformPrimitives';
+import { PlatformErrorState, PlatformMetricGrid, PlatformPage, PlatformToolbar, PlatformWorkflowNav, queryValue } from '@/features/platform/components/PlatformPrimitives';
 import DeliveryOperationsClient from '@/features/platform/delivery/components/DeliveryOperationsClient';
+import { parsePageParam } from '@/features/platform/lib/pageParams';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 
+const PATH = '/dashboard/platform/delivery';
+
 export async function DeliveryPage({searchParams}: {searchParams?: Promise<Record<string,string|string[]|undefined>> | Record<string,string|string[]|undefined>} = {}) {
-  const params=searchParams?await searchParams:{};
+  const params = searchParams ? await searchParams : {};
+  const q = queryValue(params, 'q').trim();
   let data: Awaited<ReturnType<typeof platformProjections.delivery>> = null;
   let loadError: string | null = null;
-  try { data = await platformProjections.delivery(Number(params.page || 1), Number(params.pageSize || 50), String(params.search || params.q || ""), String(params.status || "")); } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load delivery.'; }
-  const routes = data?.deliveryRoutes || [];
-  const slots = data?.deliverySlots || [];
-  const readyOrders = data?.readyOrders || [];
-  const drivers = data?.drivers || [];
-  const highPressure = slots.filter((slot) => slot.capacity > 0 && slot.currentBookings / slot.capacity >= 0.8).length;
-  const openRoutes = routes.filter((route) => route.status !== 'completed').length;
-  const remainingCapacity = slots.filter((slot) => slot.isActive).reduce((sum, slot) => sum + Math.max(0, slot.capacity - slot.currentBookings), 0);
-  const breadcrumbs = [{ type: 'link' as const, label: 'Dashboard', href: '/dashboard' }, { type: 'page' as const, label: 'Platform' }, { type: 'page' as const, label: 'Delivery' }];
-  const header = <div><h1 className="text-2xl font-semibold tracking-tight">Delivery</h1><p className="mt-1 text-sm text-muted-foreground">Control order-count capacity, group packed orders, assign an eligible driver, and complete retailer-operated routes.</p></div>;
-  return <PageContainer title="Delivery" header={header} breadcrumbs={breadcrumbs}><div className="space-y-5 px-4 pb-8 md:px-6">
-    <PlatformPageLinks pagination={data?.pagination} path="/dashboard/platform/delivery" searchParams={params} />
-    <PlatformMetricGrid metrics={[{ label: 'Ready to route', value: readyOrders.length, note: 'Packed delivery orders' }, { label: 'Open routes', value: openRoutes, note: `${routes.filter((route) => route.status === 'in_progress').length} in progress` }, { label: 'Open order capacity', value: remainingCapacity, note: 'Across active projected slots' }, { label: 'High-pressure slots', value: highPressure, note: 'At least 80% booked', tone: highPressure ? 'warning' : 'default' }]} />
-    <PlatformTruthNotice title="Delivery operations">Routes are manually grouped and retailer-operated. Record each recipient handoff or failed/refused attempt, custody and condition evidence. Complete a route after every stop is delivered or returned to the store.</PlatformTruthNotice>
-    {loadError ? <PlatformErrorState description={loadError} /> : <DeliveryOperationsClient slots={slots} routes={routes} readyOrders={readyOrders} drivers={drivers} />}
-  </div></PageContainer>;
+  // Each queue's search, view, sort and page run on the server.
+  try {
+    data = await platformProjections.delivery({
+      search: q, routeView: queryValue(params, 'routes'), routePage: parsePageParam(params.routePage),
+      readyPage: parsePageParam(params.readyPage), slotPage: parsePageParam(params.slotPage),
+      slotView: queryValue(params, 'slots'), slotSort: queryValue(params, 'slotSort'),
+    });
+  } catch (error) { loadError = error instanceof Error ? error.message : 'Unable to load delivery.'; }
+  const summary = data?.summary;
+
+  return (
+    <PlatformPage
+      title="Delivery"
+      description="Group packed orders into routes, assign a driver, record each stop and set slot capacity."
+      actions={<PlatformWorkflowNav current="delivery" />}
+    >
+      {summary ? <PlatformMetricGrid metrics={[
+        { label: 'Ready to route', value: summary.readyToRoute, note: 'Packed delivery orders without a route', tone: summary.readyToRoute ? 'warning' : 'default' },
+        { label: 'Open routes', value: summary.openRoutes, note: `${summary.inProgress} on the road · ${summary.drivers} drivers` },
+        { label: 'Open order capacity', value: summary.openCapacity, note: 'Across open upcoming slots' },
+        { label: 'Busy slots', value: summary.highPressureSlots, note: 'At least 80% booked', tone: summary.highPressureSlots ? 'warning' : 'default' },
+      ]} /> : null}
+      {loadError || !data ? <PlatformErrorState description={loadError || 'Delivery could not be loaded.'} retryHref={PATH} /> : <>
+        <div className="overflow-hidden rounded-xl border bg-card shadow-xs [&>form]:border-b-0">
+          <PlatformToolbar path={PATH} search={q} searchPlaceholder="Order number, customer email, driver, or slot date/time"
+            preserve={{ routes: queryValue(params, 'routes'), slots: queryValue(params, 'slots'), slotSort: queryValue(params, 'slotSort') }} />
+        </div>
+        <DeliveryOperationsClient
+          key={JSON.stringify(params)}
+          slots={data.deliverySlots}
+          routes={data.deliveryRoutes}
+          readyOrders={data.readyOrders}
+          drivers={data.drivers}
+          driversTruncated={data.driversTruncated}
+          timezone={data.timezone}
+          search={q}
+          routeView={data.routeView}
+          routeViewCounts={data.routeViewCounts}
+          slotView={data.slotView}
+          slotSort={data.slotSort}
+          readyTotal={data.readyPagination.collections.readyOrders?.total ?? data.readyOrders.length}
+          slotTotal={data.slotPagination.collections.deliverySlots?.total ?? data.deliverySlots.length}
+          params={params}
+          readyPager={<PlatformPageLinks pagination={data.readyPagination} path={PATH} searchParams={params} pageParam="readyPage" />}
+          slotPager={<PlatformPageLinks pagination={data.slotPagination} path={PATH} searchParams={params} pageParam="slotPage" />}
+          routePager={<PlatformPageLinks pagination={data.pagination} path={PATH} searchParams={params} pageParam="routePage" />}
+        />
+      </>}
+    </PlatformPage>
+  );
 }
 
 export default DeliveryPage;

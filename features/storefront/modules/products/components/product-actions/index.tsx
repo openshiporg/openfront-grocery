@@ -2,12 +2,13 @@
 
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
-import { Bell } from 'lucide-react';
+import { Bell, ChevronDown, Heart, ListPlus, Minus, Plus, ShoppingBasket } from 'lucide-react';
 import type { GroceryProduct, ShoppingList } from '@/features/storefront/types';
 import { useMarketBasket } from '@/features/storefront/modules/market/MarketBasket';
-import { requestBackInStockAlert } from '@/features/storefront/lib/data/products';
+import { requestBackInStockAlert, requestPriceAlert } from '@/features/storefront/lib/data/products';
 import { addItemToList, createShoppingList } from '@/features/storefront/lib/data/lists';
-import { UrbanButton, UrbanSelect, UrbanTextInput } from '@/features/storefront/modules/urban/UrbanPrimitives';
+import { storefrontGraphQL, throwGraphQLErrors } from '@/features/storefront/lib/data/graphql';
+import { UrbanButton, UrbanButtonLink, UrbanSelect, UrbanTextInput } from '@/features/storefront/modules/urban/UrbanPrimitives';
 
 interface ProductActionsProps {
   product: GroceryProduct;
@@ -25,6 +26,10 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [alertRequested, setAlertRequested] = useState(Boolean(product.backInStockRequested));
+  const [emailDisabled, setEmailDisabled] = useState(false);
+  const [targetPrice, setTargetPrice] = useState('');
+  const [priceEmailDisabled, setPriceEmailDisabled] = useState(false);
+  const [favoriteSaved, setFavoriteSaved] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   const run = (fn: () => Promise<void>) => {
@@ -44,10 +49,25 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
     setMessage(`Added ${quantity} × ${product.name} to basket.`);
   });
 
-  const handleRequestAlert = () => run(async () => {
-    const result = await requestBackInStockAlert(product.id);
+  const handleRequestAlert = (enableEmail = false) => run(async () => {
+    const result = await requestBackInStockAlert(product.id, { enableEmail });
     setAlertRequested(result.requested);
+    setEmailDisabled(result.emailDisabled);
     setMessage(result.message);
+  });
+
+  const handlePriceAlert = (enableEmail = false) => run(async () => {
+    const result = await requestPriceAlert(product.id, targetPrice.trim(), { enableEmail });
+    setPriceEmailDisabled(result.emailDisabled);
+    setMessage(result.message);
+  });
+
+  const handleSaveFavorite = () => run(async () => {
+    const result = await storefrontGraphQL<{ saveFavoriteProduct: { id: string; reused: boolean } | null }>('mutation SaveFavorite($productId:ID!){saveFavoriteProduct(productId:$productId){id reused}}', { productId: product.id });
+    throwGraphQLErrors(result.errors);
+    if (!result.data?.saveFavoriteProduct?.id) throw new Error('This product could not be saved to favorites.');
+    setFavoriteSaved(true);
+    setMessage(result.data.saveFavoriteProduct.reused ? `${product.name} is already in your favorites.` : `Saved ${product.name} to your favorites.`);
   });
 
   const handleAddToList = () => run(async () => {
@@ -55,72 +75,102 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
     let listId = selectedListId;
     if (!listId) {
       const created = await createShoppingList(newListName.trim() || 'Weekly staples');
-      if (!created) throw new Error('Could not create a list.');
       listId = created.id;
       setSelectedListId(created.id);
-      setLists((current) => [...current, created]);
+      setLists((current) => current.some((list) => list.id === created.id) ? current : [...current, created]);
     }
-    const updated = await addItemToList(listId, { name: product.name, productId: product.id, quantity, unit: product.unit || 'each' });
-    if (!updated) throw new Error('Could not add product to list.');
+    // Saved by exact product identity; repeated saves add to the same line.
+    const updated = await addItemToList(listId, { productId: product.id, quantity, mode: 'add' });
     setMessage(`Saved ${product.name} to ${updated.name}.`);
   });
 
+  const maxAddable = Math.max(1, Math.floor(product.stockQuantity - inBasket));
   return (
     <div className="mt-6 space-y-4">
-      {(message || error) && (
-        <div role={error ? 'alert' : 'status'} className={`border px-4 py-3 text-sm ${error ? 'border-[var(--sf-danger-bg)] bg-[var(--sf-danger-bg)] text-[var(--sf-danger)]' : 'border-[var(--sf-info-bg)] bg-[var(--sf-info-bg)] text-[var(--sf-info)]'}`}>
-          {error || message}
-        </div>
-      )}
-
       {product.inStock ? (
-        <div className="grid gap-3 sm:grid-cols-[140px_1fr]">
-          <div className="grid grid-cols-3 border border-[var(--sf-rule-strong)]">
-            <button type="button" disabled={isPending || busy || quantity <= 1} onClick={() => setQuantity(Math.max(1, quantity - 1))} className="py-2.5 text-xl font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)]" aria-label="Decrease quantity">−</button>
-            <span className="border-x border-[var(--sf-rule)] py-2.5 text-center text-lg font-medium">{quantity}</span>
-            <button type="button" onClick={() => setQuantity(Math.min(Math.max(1, Math.floor(product.stockQuantity - inBasket)), quantity + 1))} disabled={isPending || busy || quantity >= product.stockQuantity - inBasket} className="py-2.5 text-xl font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper-2)] disabled:cursor-not-allowed disabled:opacity-50" aria-label="Increase quantity">+</button>
+        <div className="flex flex-wrap gap-3">
+          <div className="sf-stepper sf-stepper-lg w-[9.5rem]" role="group" aria-label="Quantity to add">
+            <button type="button" disabled={isPending || busy || quantity <= 1} onClick={() => setQuantity(Math.max(1, quantity - 1))} aria-label="Decrease quantity"><Minus className="h-4 w-4" aria-hidden="true" /></button>
+            <output aria-live="polite" aria-label={`Quantity ${quantity}`}>{quantity}</output>
+            <button type="button" onClick={() => setQuantity(Math.min(maxAddable, quantity + 1))} disabled={isPending || busy || quantity >= product.stockQuantity - inBasket} aria-label="Increase quantity"><Plus className="h-4 w-4" aria-hidden="true" /></button>
           </div>
-          <UrbanButton type="button" onClick={handleAddToCart} disabled={isPending || busy || quantity > product.stockQuantity - inBasket} className="w-full">
-            {isPending ? 'Working…' : 'Add to basket'}
+          <UrbanButton type="button" size="lg" onClick={handleAddToCart} disabled={isPending || busy || quantity > product.stockQuantity - inBasket} className="min-w-[12rem] flex-1">
+            <ShoppingBasket className="h-5 w-5" aria-hidden="true" />
+            {isPending ? 'Adding…' : `Add ${quantity > 1 ? `${quantity} ` : ''}to basket`}
           </UrbanButton>
         </div>
       ) : (
-        <div className="border border-[var(--sf-rule-strong)] bg-[var(--sf-paper-2)] p-4">
-          <p className="text-sm leading-6 text-[var(--sf-ink-muted)]">This product is currently out of stock. This item cannot be added to your basket.</p>
+        <div id="stock-alert" className="scroll-mt-28 rounded-[var(--sf-radius-md)] border border-[var(--sf-rule)] bg-[var(--sf-paper-2)] p-4">
+          <p className="text-sm leading-6 text-[var(--sf-ink-muted)]">This product is out of stock and can’t be added to your basket right now.</p>
           {isSignedIn ? (
-            <UrbanButton type="button" variant="ghost" onClick={handleRequestAlert} disabled={isPending || alertRequested} className="mt-3 w-full">
-              <Bell className="h-4 w-4" />
-              {alertRequested ? 'Back-in-stock alert requested' : isPending ? 'Requesting…' : 'Request a back-in-stock alert'}
+            emailDisabled && !alertRequested ? <div className="mt-3 space-y-2">
+              <UrbanButton type="button" variant="ghost" onClick={() => handleRequestAlert(true)} disabled={isPending} className="w-full">
+                <Bell className="h-4 w-4" aria-hidden="true" />
+                {isPending ? 'Requesting…' : 'Turn on back-in-stock emails and alert me'}
+              </UrbanButton>
+              <p className="text-xs text-[var(--sf-ink-muted)]">This turns on only back-in-stock emails. <Link href="/account/profile" className="font-semibold underline underline-offset-4">Review all email preferences</Link>.</p>
+            </div> : <UrbanButton type="button" variant="ghost" onClick={() => handleRequestAlert()} disabled={isPending || alertRequested} className="mt-3 w-full">
+              <Bell className="h-4 w-4" aria-hidden="true" />
+              {alertRequested ? 'Back-in-stock alert requested' : isPending ? 'Requesting…' : 'Email me when it’s back'}
             </UrbanButton>
           ) : (
-            <Link prefetch={false} href={`/dashboard/signin?from=${encodeURIComponent(`/products/${product.handle}`)}`} className="mt-3 inline-flex w-full items-center justify-center gap-2 border border-[var(--sf-rule-strong)] px-4 py-2.5 text-sm font-medium text-[var(--sf-accent)] hover:bg-[var(--sf-paper)]">
-              <Bell className="h-4 w-4" /> Sign in for a back-in-stock alert
-            </Link>
+            <UrbanButtonLink href={`/account/sign-in?from=${encodeURIComponent(`/products/${product.handle}#stock-alert`)}`} variant="ghost" className="mt-3 w-full">
+              <Bell className="h-4 w-4" aria-hidden="true" /> Sign in for a back-in-stock alert
+            </UrbanButtonLink>
           )}
         </div>
       )}
 
-      <div className="border-t border-[var(--sf-rule)] pt-5">
-        <div>
-          <h3 className="font-[family-name:var(--sf-font-display)] text-lg font-semibold text-[var(--sf-ink)]">Save to a list</h3>
-          <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">Keep your usual groceries together for next time.</p>
-          {!isSignedIn ? <Link prefetch={false} href={`/dashboard/signin?from=${encodeURIComponent(`/products/${product.handle}`)}`} className="mt-2 inline-block text-sm font-medium text-[var(--sf-accent)]">Sign in</Link> : null}
-          <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
-            {lists.length > 0 ? (
-              <UrbanSelect aria-label="Shopping list" disabled={isPending || !isSignedIn} value={selectedListId} onChange={(event) => setSelectedListId(event.target.value)}>
-                <option value="">Create a new list</option>
-                {lists.map((list) => <option key={list.id} value={list.id}>{list.name}</option>)}
-              </UrbanSelect>
-            ) : (
-              <UrbanTextInput aria-label="New list name" disabled={isPending || !isSignedIn} value={newListName} onChange={(event) => setNewListName(event.target.value)} placeholder="New list name" />
-            )}
-            <UrbanButton type="button" variant="ghost" onClick={handleAddToList} disabled={isPending || !isSignedIn}>Save</UrbanButton>
-          </div>
-          {lists.length > 0 && !selectedListId ? <UrbanTextInput aria-label="New list name" className="mt-2" value={newListName} onChange={(event) => setNewListName(event.target.value)} placeholder="New list name" disabled={isPending} /> : null}
-          {inBasket > 0 ? <p className="mt-3 text-sm">{inBasket} already in your basket. <Link prefetch={false} href="/cart" className="underline">View basket</Link></p> : null}
+      {(message || error) && (
+        <p role={error ? 'alert' : 'status'} className={`rounded-[var(--sf-radius-md)] px-4 py-3 text-sm font-medium ${error ? 'bg-[var(--sf-danger-bg)] text-[var(--sf-danger)]' : 'bg-[var(--sf-sage-light)] text-[var(--sf-sage)]'}`}>
+          {error || message}
+        </p>
+      )}
+      {isSignedIn ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <UrbanButton type="button" variant="ghost" onClick={handleSaveFavorite} disabled={isPending || favoriteSaved} aria-pressed={favoriteSaved}>
+            <Heart className={`h-4 w-4 ${favoriteSaved ? 'fill-current text-[var(--sf-accent)]' : ''}`} aria-hidden="true" />
+            {favoriteSaved ? 'In your favorites' : 'Save to favorites'}
+          </UrbanButton>
+          {favoriteSaved ? <Link prefetch={false} href="/favorites" className="text-sm font-semibold underline underline-offset-4">View favorites</Link> : null}
+          <form className="flex w-full flex-wrap items-end gap-2" onSubmit={(event) => { event.preventDefault(); handlePriceAlert(priceEmailDisabled); }}>
+            <label className="sf-label min-w-[10rem] flex-1">Email me if the price drops to
+              <input className="sf-field" inputMode="decimal" required placeholder="e.g. 2.99" value={targetPrice} onChange={(event) => { setTargetPrice(event.target.value); setPriceEmailDisabled(false); }} disabled={isPending} />
+            </label>
+            <UrbanButton type="submit" variant="ghost" disabled={isPending || !targetPrice.trim()}>{priceEmailDisabled ? 'Turn on price-drop emails and set alert' : 'Set price alert'}</UrbanButton>
+          </form>
         </div>
+      ) : (
+        <p className="text-sm text-[var(--sf-ink-muted)]"><Link prefetch={false} href={`/account/sign-in?from=${encodeURIComponent(`/products/${product.handle}`)}`} className="font-semibold text-[var(--sf-ink)] underline underline-offset-4">Sign in</Link> to save favorites.</p>
+      )}
+      {inBasket > 0 ? <p className="text-sm text-[var(--sf-ink-muted)]"><span className="font-semibold text-[var(--sf-ink)]">{inBasket} in your basket.</span> <Link prefetch={false} href="/cart" className="underline underline-offset-4">View basket</Link></p> : null}
 
-      </div>
+      <details className="group rounded-[var(--sf-radius-md)] border border-[var(--sf-rule)] bg-[var(--sf-card)]">
+        <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+          <span className="inline-flex items-center gap-2"><ListPlus className="h-4 w-4 text-[var(--sf-sage)]" aria-hidden="true" />Save to a shopping list</span>
+          <ChevronDown className="h-4 w-4 transition-transform duration-[var(--sf-dur-fast)] group-open:rotate-180" aria-hidden="true" />
+        </summary>
+        <div className="border-t border-[var(--sf-rule)] p-4">
+          {!isSignedIn ? (
+            <p className="text-sm text-[var(--sf-ink-muted)]">Lists belong to your account. <Link prefetch={false} href={`/account/sign-in?from=${encodeURIComponent(`/products/${product.handle}`)}`} className="font-semibold text-[var(--sf-ink)] underline underline-offset-4">Sign in</Link> to keep your usual groceries together.</p>
+          ) : (
+            <>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                {lists.length > 0 ? (
+                  <UrbanSelect aria-label="Shopping list" disabled={isPending} value={selectedListId} onChange={(event) => setSelectedListId(event.target.value)}>
+                    <option value="">Create a new list</option>
+                    {lists.map((list) => <option key={list.id} value={list.id}>{list.name}</option>)}
+                  </UrbanSelect>
+                ) : (
+                  <UrbanTextInput aria-label="New list name" disabled={isPending} value={newListName} onChange={(event) => setNewListName(event.target.value)} placeholder="New list name, e.g. Weekly staples" />
+                )}
+                <UrbanButton type="button" variant="dark" onClick={handleAddToList} disabled={isPending}>Save {quantity > 1 ? `${quantity}` : ''}</UrbanButton>
+              </div>
+              {lists.length > 0 && !selectedListId ? <UrbanTextInput aria-label="New list name" className="mt-2" value={newListName} onChange={(event) => setNewListName(event.target.value)} placeholder="New list name" disabled={isPending} /> : null}
+            </>
+          )}
+        </div>
+      </details>
     </div>
   );
 }

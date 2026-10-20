@@ -7,7 +7,8 @@ export const RateLimitBucket = list({
   ui: { isHidden: true },
   fields: {
     key: text({ validation: { isRequired: true }, isIndexed: 'unique' }),
-    windowStartedAt: timestamp({ validation: { isRequired: true } }),
+    // Indexed so finished windows can be pruned in bounded batches.
+    windowStartedAt: timestamp({ validation: { isRequired: true }, isIndexed: true }),
     requestCount: integer({ validation: { isRequired: true, min: 0 } }),
     ...trackingFields,
   },

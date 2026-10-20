@@ -1,14 +1,12 @@
 import { list } from '@keystone-6/core';
 import { checkbox, json, relationship, text } from '@keystone-6/core/fields';
 import { trackingFields } from './trackingFields';
-import { permissions } from '../access';
+import { canAdministerPaymentProviders, canReadPaymentProviderConfiguration } from '../lib/providerAuthority';
 
-async function canManageProviderConfiguration(args: any) {
-  // Provider settings affect every Store in this deployment. Require both the
-  // current payment-management and onboarding capabilities for this global
-  // effect; reserve that capability combination for deployment administrators.
-  return Boolean(await permissions.canManagePayments(args) && await permissions.canManageOnboarding(args));
-}
+// Provider settings affect every Store in this deployment, so writes need
+// explicit deployment authority (see providerAuthority); Store staff with
+// payments + onboarding may read the non-secret configuration.
+const canManageProviderConfiguration = canAdministerPaymentProviders;
 
 const adapterSelector = () => text({
   defaultValue: 'manual',
@@ -19,7 +17,7 @@ const adapterSelector = () => text({
 export const PaymentProvider = list({
   access: {
     operation: {
-      query: canManageProviderConfiguration,
+      query: canReadPaymentProviderConfiguration,
       create: canManageProviderConfiguration,
       update: canManageProviderConfiguration,
       delete: () => false,

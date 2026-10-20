@@ -1,3 +1,4 @@
+import { publicError } from './publicError';
 import type { Context } from '.keystone/types';
 import { isInventoryLotEligible } from './inventorySafety';
 import { quantityMilli } from './inventoryMovements';
@@ -56,7 +57,7 @@ export function assertSellableQuantity(
 ) {
   const sellableQuantity = deriveSellableQuantity(product, storeId, now);
   if (sellableQuantity < requestedQuantity) {
-    throw new Error(sellableInventoryMessage(product.title || 'Product', sellableQuantity));
+    throw publicError(sellableInventoryMessage(product.title || 'Product', sellableQuantity), 'OUT_OF_STOCK');
   }
   return sellableQuantity;
 }

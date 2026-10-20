@@ -5,16 +5,16 @@ import {
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
-import { isSignedIn, permissions } from "../access";
+import { isCurrentAccount, isSignedIn, permissions } from "../access";
 import { ownerScopedFilter } from '../lib/storeAccess';
 
 export const SubstitutionPreference = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount,
     },
     filter: {
       query: ownerScopedFilter('user'),

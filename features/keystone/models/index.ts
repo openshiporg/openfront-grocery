@@ -12,6 +12,7 @@ import { SupplierCredit } from "./SupplierCredit";
 import { SupplierInvoice } from "./SupplierInvoice";
 import { ProductInformationVersion } from "./ProductInformationVersion";
 import { CustomerMessage } from "./CustomerMessage";
+import { ContactMessage } from "./ContactMessage";
 import { PurchaseReceipt } from "./PurchaseReceipt";
 import { InventoryCount } from "./InventoryCount";
 import { InventoryRecall } from "./InventoryRecall";
@@ -52,6 +53,7 @@ import { PurchaseOrder } from "./PurchaseOrder";
 import { Recipe } from "./Recipe";
 import { RecipeIngredient } from "./RecipeIngredient";
 import { RateLimitBucket } from './RateLimitBucket';
+import { CustomerBatchRequest } from './CustomerBatchRequest';
 import { Role } from "./Role";
 import { ShoppingList } from "./ShoppingList";
 import { ShoppingListItem } from "./ShoppingListItem";
@@ -78,6 +80,7 @@ export const models = {
   SupplierInvoice,
   ProductInformationVersion,
   CustomerMessage,
+  ContactMessage,
   PurchaseReceipt,
   InventoryCount,
   InventoryRecall,
@@ -118,6 +121,7 @@ export const models = {
   Recipe,
   RecipeIngredient,
   RateLimitBucket,
+  CustomerBatchRequest,
   Role,
   ShoppingList,
   ShoppingListItem,

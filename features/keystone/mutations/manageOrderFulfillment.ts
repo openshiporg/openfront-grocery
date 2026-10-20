@@ -1,3 +1,4 @@
+import { publicError } from '../lib/publicError';
 import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { assertOrderInventoryEligible } from '../lib/inventorySafety';
 import type { Context } from '.keystone/types';
@@ -29,7 +30,7 @@ export async function advanceOrderFulfillment(
 ) {
   const { storeId } = await assertCanManageOrders(context);
   if (!['picking', 'packed', 'ready_for_pickup'].includes(target)) {
-    throw new Error('Unsupported fulfillment target');
+    throw publicError('Unsupported fulfillment target');
   }
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
@@ -48,9 +49,9 @@ export async function advanceOrderFulfillment(
         }
       `,
     });
-    if (!order || order.store?.id !== storeId) throw new Error('Order not found in active store');
+    if (!order || order.store?.id !== storeId) throw publicError('Order not found in active store');
     if (order.deliveryRoute?.id) {
-      throw new Error('Routed orders advance through the delivery route workflow');
+      throw publicError('Routed orders advance through the delivery route workflow');
     }
 
     const metadata = (order.metadata || {}) as Record<string, unknown>;
@@ -71,14 +72,14 @@ export async function advanceOrderFulfillment(
       ? 'ready_for_pickup'
       : NEXT_STATUS[order.status];
     if (target !== expectedTarget) {
-      throw new Error(`Cannot move fulfillment from ${order.status} to ${target}`);
+      throw publicError(`Cannot move fulfillment from ${order.status} to ${target}`);
     }
 
     if (target === 'packed' || target === 'ready_for_pickup') await assertOrderInventoryEligible(transactionContext.prisma, orderId, storeId as string);
     if (target === 'packed') {
       await getFulfillmentActualLines(transactionContext, orderId);
       if ((metadata.finalSale as any)?.status !== 'finalized') {
-        throw new Error('Finalize the actual sale before packing this order');
+        throw publicError('Finalize the actual sale before packing this order');
       }
       const unresolved = (order.lineItems || []).some((lineItem: any) => {
         const linePreference = lineItem.metadata?.substitutionPreference;
@@ -88,7 +89,7 @@ export async function advanceOrderFulfillment(
           && lineItem.substitutions[0].customerApproved !== true;
       });
       if (unresolved) {
-        throw new Error('Customer approval is required before packing substituted items');
+        throw publicError('Customer approval is required before packing substituted items');
       }
     }
 
@@ -101,7 +102,7 @@ export async function advanceOrderFulfillment(
       query: 'id',
     });
     if (!settledPayments.length) {
-      throw new Error('Order fulfillment requires an authorized payment for picking and a settled payment for packing');
+      throw publicError('Order fulfillment requires an authorized payment for picking and a settled payment for packing');
     }
 
     const now = new Date().toISOString();

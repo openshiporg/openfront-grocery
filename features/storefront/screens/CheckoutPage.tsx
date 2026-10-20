@@ -3,6 +3,7 @@ import { Metadata } from 'next';
 import { retrieveCart } from '@/features/storefront/lib/data/cart';
 import { getStore } from '@/features/storefront/lib/data/store';
 import { getUser } from '@/features/storefront/lib/data/user';
+import { getSavedAddresses } from '@/features/storefront/lib/data/addresses';
 import { getCheckoutFulfillmentWindows } from '@/features/storefront/lib/data/delivery';
 import { listPaymentProviders } from '@/features/storefront/lib/data/payment';
 import { storefrontMetadata } from '@/features/storefront/lib/metadata';
@@ -25,22 +26,22 @@ export async function CheckoutPage() {
     listPaymentProviders(),
     getStore(),
   ]);
+  const savedAddresses = user ? (await getSavedAddresses()).addresses : [];
 
   return (
     <UrbanPageShell>
-      <UrbanContainer className="space-y-8 py-8 sm:py-10">
+      <UrbanContainer className="space-y-6 py-7 sm:space-y-8 sm:py-10">
         <UrbanPageHeader
           breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Basket', href: '/cart' }, { label: 'Checkout' }]}
           title="Checkout"
-          description="Choose delivery or pickup, confirm your details, and place your order."
-
+          description="Pick a delivery or pickup time, confirm your details, then review the estimate before you pay."
         />
-        <p className="text-sm text-[var(--sf-ink-muted)]">Payment availability: {paymentProviders[0]?.name || 'Unavailable'}</p>
         <UrbanCheckout
           storeAddress={store.address}
           timezone={store.timezone}
           cart={cart}
           user={user}
+          savedAddresses={savedAddresses}
           paymentProviders={paymentProviders}
           deliveryWindows={fulfillment.deliveryWindows}
           pickupWindows={fulfillment.pickupWindows}

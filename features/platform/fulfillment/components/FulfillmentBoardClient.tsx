@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
@@ -9,6 +8,7 @@ import {
   CircleDashed,
   Clock3,
   Eye,
+  ListChecks,
   LoaderCircle,
   PackageOpen,
   Search,
@@ -28,6 +28,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { advanceOrderStatus } from '@/features/platform/fulfillment/actions';
+import { formatFulfillmentPromise } from '@/features/platform/lib/format';
 import {
   applyFulfillmentTransition,
   formatSubstitutionPreference,
@@ -35,7 +36,6 @@ import {
   fulfillmentMethod,
   isPickupReady,
   nextFulfillmentTransition,
-  stageProgress,
   transitionLabel,
   validDropTransition,
   type FulfillmentLaneId,
@@ -44,11 +44,26 @@ import {
   type FulfillmentTransitionTarget,
 } from '@/features/platform/fulfillment/lib/fulfillmentBoard';
 import styles from './FulfillmentBoard.module.css';
-import { FulfillmentActualsForm, FinalizeFulfillmentSaleButton } from './FulfillmentActualsForm';
+import { FulfillmentActualsForm, FinalizeFulfillmentSaleButton, type SubstitutionProposalView } from './FulfillmentActualsForm';
 
 interface FulfillmentBoardClientProps {
+  /** Already searched, filtered and sorted on the server; the board keeps only drag and selection state. */
   lanes: Record<FulfillmentLaneId, FulfillmentOrder[]>;
+  /** Matching orders per lane across every page. */
+  laneTotals: Record<FulfillmentLaneId, number>;
   substitutions: FulfillmentSubstitution[];
+  timeZone?: string;
+  search: string;
+  view: string;
+  sort: string;
+}
+
+const BOARD_PATH = '/dashboard/platform/fulfillment';
+function boardHref(next: { q?: string; view?: string; sort?: string }) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(next)) if (value && !(key === 'view' && value === 'all') && !(key === 'sort' && value === 'oldest')) query.set(key, value);
+  const text = query.toString();
+  return text ? `${BOARD_PATH}?${text}` : BOARD_PATH;
 }
 
 interface DragState {
@@ -71,6 +86,12 @@ const laneLabels: Record<FulfillmentLaneId, string> = {
   pending: 'Pending',
   picking: 'Picking',
   packed: 'Packed',
+};
+
+const laneHints: Record<FulfillmentLaneId, string> = {
+  pending: 'Paid, not started',
+  picking: 'Record actual goods',
+  packed: 'Ready for hand-off',
 };
 
 const laneIcons = {
@@ -139,15 +160,13 @@ function orderStage(order: FulfillmentOrder): FulfillmentLaneId {
   return order.status === 'picking' ? 'picking' : order.status === 'packed' ? 'packed' : 'pending';
 }
 
-export default function FulfillmentBoardClient({ lanes: incomingLanes, substitutions }: FulfillmentBoardClientProps) {
+export default function FulfillmentBoardClient({ lanes: incomingLanes, laneTotals, substitutions, timeZone, search, view, sort }: FulfillmentBoardClientProps) {
   const router = useRouter();
   const [lanes, setLanes] = useState(incomingLanes);
   const [localSubstitutions, setLocalSubstitutions] = useState(substitutions);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [mobileLane, setMobileLane] = useState<FulfillmentLaneId>('pending');
-  const [search, setSearch] = useState('');
-  const [view, setView] = useState('all');
-  const [sort, setSort] = useState('oldest');
+  const [searchText, setSearchText] = useState(search);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
@@ -161,7 +180,8 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
   const boardRef = useRef<HTMLElement | null>(null);
   const focusStageAfterRender = useRef(false);
 
-  useEffect(() => setLanes(incomingLanes), [incomingLanes]);
+  // Fresh server data after any successful action supersedes an earlier failure message.
+  useEffect(() => { setLanes(incomingLanes); setError(null); }, [incomingLanes]);
   useEffect(() => setLocalSubstitutions(substitutions), [substitutions]);
   useEffect(() => { dragRef.current = drag; }, [drag]);
   useEffect(() => {
@@ -201,24 +221,7 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
     previousRects.current.clear();
   }, [drag?.overLane]);
 
-  const filteredLanes = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    const next = {} as Record<FulfillmentLaneId, FulfillmentOrder[]>;
-    fulfillmentLaneIds.forEach((lane) => {
-      next[lane] = [...lanes[lane]]
-        .filter((order) => {
-          const method = fulfillmentMethod(order);
-          const hasSubstitution = order.lineItems.some((item) => substitutionMap.has(item.id));
-          const matchesQuery = !query
-            || String(order.displayId).includes(query)
-            || order.email.toLowerCase().includes(query)
-            || order.lineItems.some((item) => item.title.toLowerCase().includes(query) || item.sku?.toLowerCase().includes(query));
-          return matchesQuery && (view === 'all' || view === method || (view === 'substitutions' && hasSubstitution));
-        })
-        .sort((a, b) => sort === 'newest' ? b.displayId - a.displayId : sort === 'items' ? b.lineItems.length - a.lineItems.length : a.displayId - b.displayId);
-    });
-    return next;
-  }, [lanes, search, sort, substitutionMap, view]);
+  const filteredLanes = lanes;
 
   const selectedOrder = useMemo(
     () => fulfillmentLaneIds.flatMap((lane) => lanes[lane]).find((order) => order.id === selectedOrderId) || null,
@@ -241,12 +244,13 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
     setMessage(null);
     setPendingOrderId(order.id);
     try {
-      await advanceOrderStatus({
+      const result = await advanceOrderStatus({
         orderId: order.id,
         currentStatus: order.status,
         fulfillmentMethod: fulfillmentMethod(order),
         readyForPickup: isPickupReady(order),
       });
+      if (!result.ok) throw new Error(`Order #${order.displayId} stayed in ${laneLabels[orderStage(order)]}: ${result.error}`);
       const updated = applyFulfillmentTransition(order, target);
       setLanes((current) => {
         const next = { ...current };
@@ -418,6 +422,11 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
         aria-busy={isPending || undefined}
         tabIndex={ghost ? -1 : 0}
         onPointerDown={ghost ? undefined : (event) => beginDrag(order, lane, event)}
+        onKeyDown={ghost ? undefined : (event) => {
+          if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+          event.preventDefault();
+          setSelectedOrderId(order.id);
+        }}
         style={ghost && drag ? {
           width: drag.width,
           height: drag.height,
@@ -425,90 +434,78 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
         } : undefined}
       >
         <div className={styles.cardTop}>
-          <div className={styles.cardTitle}>Order #{order.displayId}</div>
+          <div className={styles.cardTitle}>#{order.displayId}</div>
           <span className={styles.method}><MethodIcon aria-hidden="true" />{fulfillmentMethod(order)}</span>
         </div>
-        <p className={styles.cardDescription}>{order.email} · {order.deliveryTimeWindow || 'Window not recorded'}<br />{lineSummary(order)}</p>
+        <p className={styles.cardEmail}>{order.email}</p>
+        <p className={styles.cardDescription}>{lineSummary(order)}{order.lineItems.length > 2 ? ` +${order.lineItems.length - 2} more` : ''}</p>
         <footer className={styles.cardFooter}>
-          <span className={styles.meta} title={formatSubstitutionPreference(order.substitutionPreference)}>
+          <span className={styles.meta} data-tone={hasReview ? 'review' : undefined} title={formatSubstitutionPreference(order.substitutionPreference)}>
             {hasReview ? <Clock3 aria-hidden="true" /> : <Check aria-hidden="true" />}
-            {order.lineItems.length} lines
+            {order.lineItems.length} lines{hasReview ? ' · review' : ''}
           </span>
-          <span className={styles.progress} aria-label={`${laneLabels[lane]} stage progress`}>
-            <span style={{ width: `${stageProgress(lane) * 100}%` }} />
-          </span>
+          <span className={styles.meta}>{formatFulfillmentPromise(order, timeZone, 'No window')}</span>
           {!ghost ? (
-            <>
-              <button className={styles.iconButton} type="button" aria-label={`Inspect order #${order.displayId}${label ? ` and use ${label}` : ''}`} onClick={() => setSelectedOrderId(order.id)}>
-                <Eye width={13} height={13} aria-hidden="true" />
-              </button>
-            </>
+            <button className={styles.iconButton} type="button" aria-label={`Inspect order #${order.displayId}${label ? ` and use ${label}` : ''}`} onClick={() => setSelectedOrderId(order.id)}>
+              <Eye width={14} height={14} aria-hidden="true" />
+            </button>
           ) : null}
         </footer>
       </article>
     );
   };
 
+  const nextLabel = selectedOrder ? transitionLabel(nextFulfillmentTransition(selectedOrder)) : null;
+
   return (
     <section ref={boardRef} className={styles.shell} aria-label="Pick and pack fulfillment board">
-      <div className={styles.frame}>
-        <header className={styles.header}>
-          <div className={styles.identity}>
-            <span className={styles.mark} aria-hidden="true"><span /><span /><span /><span /></span>
-            <div className={styles.heading}>
-              <h2>Juniper fulfillment</h2>
-              <p>Move paid grocery orders through authorized pick and pack stages.</p>
-            </div>
-          </div>
-          <nav className={styles.nav} aria-label="Fulfillment destinations">
-            <Link className={styles.navLink} href="/dashboard/platform/orders">Orders</Link>
-            <Link className={styles.navLink} href="/dashboard/platform/fulfillment" data-current="true" aria-current="page">Pick &amp; pack</Link>
-            <Link className={styles.navLink} href="/dashboard/platform/delivery">Delivery</Link>
-            <Link className={styles.navLink} href="/dashboard/platform/pickup">Pickup</Link>
-          </nav>
-        </header>
-
-        <div className={styles.toolbar} role="search">
-          <label className={styles.searchWrap}>
-            <span className="sr-only">Search fulfillment queue</span>
-            <Search className={styles.searchIcon} aria-hidden="true" />
-            <input className={`${styles.control} ${styles.searchControl}`} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Order, customer, product, or SKU" />
-          </label>
-          <div className={styles.filterGroup} aria-label="Fulfillment filter">
-            {[
-              ['all', 'All work'], ['pickup', 'Pickup'], ['delivery', 'Delivery'], ['substitutions', 'Substitutions'],
-            ].map(([value, label]) => <button key={value} type="button" className={styles.filterButton} data-active={view === value} aria-pressed={view === value} onClick={() => setView(value)}>{label}</button>)}
-          </div>
-          <label>
-            <span className="sr-only">Sort fulfillment queue</span>
-            <select className={styles.control} value={sort} onChange={(event) => setSort(event.target.value)}>
-              <option value="oldest">Oldest order first</option>
-              <option value="newest">Newest order first</option>
-              <option value="items">Most lines first</option>
-            </select>
-          </label>
+      <form className={styles.toolbar} role="search" onSubmit={(event) => { event.preventDefault(); router.push(boardHref({ q: searchText.trim(), view, sort })); }}>
+        <label className={styles.searchWrap}>
+          <span className="sr-only">Search the whole fulfillment queue</span>
+          <Search className={styles.searchIcon} aria-hidden="true" />
+          <input className={`${styles.control} ${styles.searchControl}`} type="search" name="q" value={searchText} onChange={(event) => setSearchText(event.target.value)} placeholder="Order, customer, product, or SKU — press Enter" />
+        </label>
+        <div className={styles.filterGroup} role="group" aria-label="Fulfillment filter">
+          {[
+            ['all', 'All work'], ['pickup', 'Pickup'], ['delivery', 'Delivery'], ['substitutions', 'Substitutions'],
+          ].map(([value, label]) => <button key={value} type="button" className={styles.filterButton} data-active={view === value} aria-pressed={view === value} onClick={() => router.push(boardHref({ q: search, view: value, sort }))}>{label}</button>)}
         </div>
+        <label>
+          <span className="sr-only">Sort fulfillment queue</span>
+          <select className={styles.control} value={sort} onChange={(event) => router.push(boardHref({ q: search, view, sort: event.target.value }))}>
+            <option value="oldest">Oldest order first</option>
+            <option value="newest">Newest order first</option>
+            <option value="items">Most lines first</option>
+          </select>
+        </label>
+      </form>
 
-        <div className={styles.stageSwitcher} role="tablist" aria-label="Fulfillment stage" aria-orientation="horizontal">
-          {fulfillmentLaneIds.map((lane) => (
-            <button
-              key={lane}
-              id={`fulfillment-stage-tab-${lane}`}
-              role="tab"
-              type="button"
-              className={styles.stageButton}
-              data-active={mobileLane === lane}
-              aria-selected={mobileLane === lane}
-              aria-controls={`fulfillment-stage-panel-${lane}`}
-              tabIndex={mobileLane === lane ? 0 : -1}
-              onClick={() => setMobileLane(lane)}
-              onKeyDown={(event) => handleStageKeyDown(event, lane)}
-            >
-              {laneLabels[lane]} · {filteredLanes[lane].length}
-            </button>
-          ))}
-        </div>
+      <div className={`${styles.filterGroup} ${styles.stageSwitcher}`} role="tablist" aria-label="Fulfillment stage" aria-orientation="horizontal">
+        {fulfillmentLaneIds.map((lane) => (
+          <button
+            key={lane}
+            id={`fulfillment-stage-tab-${lane}`}
+            role="tab"
+            type="button"
+            className={styles.stageButton}
+            data-active={mobileLane === lane}
+            aria-selected={mobileLane === lane}
+            aria-controls={`fulfillment-stage-panel-${lane}`}
+            tabIndex={mobileLane === lane ? 0 : -1}
+            onClick={() => setMobileLane(lane)}
+            onKeyDown={(event) => handleStageKeyDown(event, lane)}
+          >
+            {laneLabels[lane]} · {laneTotals[lane]}
+          </button>
+        ))}
+      </div>
 
+      <div className={styles.feedback}>
+        {message ? <div className={styles.status} role="status" aria-live="polite">{message}</div> : null}
+        {error ? <div className={styles.error} role="alert">{error}</div> : null}
+      </div>
+
+      <div className={styles.workspace} data-inspecting={Boolean(selectedOrder)}>
         <div className={styles.board}>
           {fulfillmentLaneIds.map((lane) => {
             const LaneIcon = laneIcons[lane];
@@ -526,7 +523,8 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
                 <header className={styles.laneHeader}>
                   <LaneIcon className={styles.laneIcon} aria-hidden="true" />
                   <h3 id={`fulfillment-lane-${lane}`}>{laneLabels[lane]}</h3>
-                  <span className={styles.laneCount} aria-label={`${filteredLanes[lane].length} orders`}>{filteredLanes[lane].length}</span>
+                  <span className={styles.laneHint}>{laneHints[lane]}</span>
+                  <span className={styles.laneCount} aria-label={`${laneTotals[lane]} orders`}>{laneTotals[lane]}</span>
                 </header>
                 <div className={styles.laneWell} data-lane-id={lane} data-drop={dropState}>
                   {filteredLanes[lane].map((order) => drag?.order.id === order.id ? null : renderCard(order, lane))}
@@ -534,9 +532,9 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
                   {filteredLanes[lane].length === 0 && drag?.overLane !== lane ? (
                     <div className={styles.sleeping}>
                       <div>
-                        <span className={styles.sleepIconWrap} aria-hidden="true"><PackageOpen /><span className={styles.z}>z</span><span className={styles.z}>z</span></span>
+                        <span className={styles.sleepIconWrap} aria-hidden="true"><PackageOpen /></span>
                         <strong>No {laneLabels[lane].toLowerCase()} orders</strong>
-                        <p>{search || view !== 'all' ? 'No orders match the current queue view.' : `Orders will rest here when they reach ${laneLabels[lane].toLowerCase()}.`}</p>
+                        <p>{search || view !== 'all' ? 'No orders match the current queue view.' : `Orders appear here when they reach ${laneLabels[lane].toLowerCase()}.`}</p>
                       </div>
                     </div>
                   ) : null}
@@ -546,33 +544,33 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
           })}
         </div>
 
-        <div className={styles.feedback}>
-          {message ? <div className={styles.status} role="status" aria-live="polite">{message}</div> : null}
-          {error ? <div className={styles.error} role="alert">{error}</div> : null}
-        </div>
-
         {selectedOrder ? (
           <aside className={styles.inspector} aria-labelledby="fulfillment-order-inspector-title">
             <header className={styles.inspectorHeader}>
-              <div>
-                <h3 id="fulfillment-order-inspector-title">Order #{selectedOrder.displayId} lines</h3>
-                <p>{selectedOrder.email} · {selectedOrder.deliveryTimeWindow || 'Window not recorded'} · {formatSubstitutionPreference(selectedOrder.substitutionPreference)}</p>
+              <div className={styles.inspectorTitle}>
+                <div>
+                  <h3 id="fulfillment-order-inspector-title">Order #{selectedOrder.displayId}</h3>
+                  <p>{selectedOrder.email}</p>
+                  <p>{formatFulfillmentPromise(selectedOrder, timeZone)} · {formatSubstitutionPreference(selectedOrder.substitutionPreference)}</p>
+                </div>
+                <button className={styles.iconButton} type="button" aria-label="Close order details" onClick={() => { setSelectedOrderId(null); restoreOrderFocus(selectedOrder.id); }}><X width={15} height={15} aria-hidden="true" /></button>
               </div>
-              <div className={styles.filterGroup}>
-                {transitionLabel(nextFulfillmentTransition(selectedOrder)) ? (
-                  <button className={styles.cardButton} type="button" disabled={pendingOrderId === selectedOrder.id} onClick={() => runButtonTransition(selectedOrder)}>
-                    {pendingOrderId === selectedOrder.id ? 'Updating…' : transitionLabel(nextFulfillmentTransition(selectedOrder))}<ArrowRight width={12} height={12} aria-hidden="true" />
+              <div className={styles.inspectorActions}>
+                {nextLabel ? (
+                  <button className={styles.cardButton} data-variant="primary" type="button" disabled={pendingOrderId === selectedOrder.id} onClick={() => runButtonTransition(selectedOrder)}>
+                    {pendingOrderId === selectedOrder.id ? 'Updating…' : nextLabel}<ArrowRight width={13} height={13} aria-hidden="true" />
                   </button>
                 ) : null}
-                <button className={styles.iconButton} type="button" aria-label="Close order details" onClick={() => { setSelectedOrderId(null); restoreOrderFocus(selectedOrder.id); }}><X width={14} height={14} aria-hidden="true" /></button>
+                {selectedOrder.status === 'picking' && <FinalizeFulfillmentSaleButton orderId={selectedOrder.id} finalized={(selectedOrder.metadata?.finalSale as { status?: string } | undefined)?.status === 'finalized'} />}
               </div>
             </header>
-            {selectedOrder.status === 'picking' && <FinalizeFulfillmentSaleButton orderId={selectedOrder.id} finalized={(selectedOrder.metadata?.finalSale as { status?: string } | undefined)?.status === 'finalized'} />}
             <div className={styles.lineList}>
+              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><ListChecks className="size-3.5" aria-hidden="true" />{selectedOrder.lineItems.length} lines to resolve</p>
               {selectedOrder.lineItems.map((item) => {
                 const existing = substitutionMap.get(item.id);
-                const tone = existing?.customerApproved ? 'approved' : existing ? 'review' : 'none';
-                const state = existing?.customerApproved ? 'Approved substitute' : existing ? 'Needs customer review' : 'No substitution';
+                const proposal = ((selectedOrder.metadata?.substitutionProposals as Record<string, SubstitutionProposalView> | undefined) || {})[item.id] || null;
+                const tone = existing?.customerApproved || proposal?.status === 'approved' ? 'approved' : existing || proposal ? 'review' : 'none';
+                const state = proposal?.status === 'approved' ? 'Customer approved replacement' : proposal?.status === 'rejected' ? 'Customer declined replacement' : proposal ? 'Waiting for customer' : existing?.customerApproved ? 'Approved substitute' : existing ? 'Needs customer review' : 'No substitution';
                 return (
                   <article className={styles.line} key={item.id}>
                     <div>
@@ -580,7 +578,7 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, substitut
                       <p className={styles.lineMeta}>SKU {item.sku || 'not recorded'}</p>
                       <span className={styles.substitutionState} data-tone={tone}>{state}</span>
                     </div>
-                    <FulfillmentActualsForm orderId={selectedOrder.id} email={selectedOrder.email} status={selectedOrder.status} preference={selectedOrder.substitutionPreference} item={item} />
+                    <FulfillmentActualsForm key={`${item.id}:${proposal?.id || 'none'}:${proposal?.status || ''}`} orderId={selectedOrder.id} email={selectedOrder.email} status={selectedOrder.status} preference={selectedOrder.substitutionPreference} item={item} proposal={proposal} />
                   </article>
                 );
               })}

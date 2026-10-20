@@ -8,6 +8,8 @@ import {
   type PaymentWebhookResult,
 } from '../../integrations/payment';
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 const MAX_REMOTE_RESPONSE_BYTES = 1_048_576;
 const SAFE_WEBHOOK_HEADERS = new Set([
   'stripe-signature', 'paypal-transmission-id', 'paypal-transmission-time',
@@ -99,14 +101,16 @@ async function readBoundedJson(response: Response) {
   return JSON.parse(new TextDecoder().decode(payload));
 }
 
-async function invokeRemoteAdapter(provider: PaymentProviderRecord, operation: PaymentProviderOperation, endpoint: string, args: any) {
+const DEFAULT_ADAPTER_TIMEOUT_MS = 30_000;
+
+async function invokeRemoteAdapter(provider: PaymentProviderRecord, operation: PaymentProviderOperation, endpoint: string, args: any, timeoutMs = DEFAULT_ADAPTER_TIMEOUT_MS) {
   try {
     const body = JSON.stringify(paymentAdapterPayload(provider, operation, args));
     if (new TextEncoder().encode(body).byteLength > MAX_REMOTE_RESPONSE_BYTES) throw new Error('Payment adapter request exceeds the size limit');
     const response = await fetch(endpoint, {
       method: 'POST',
       redirect: 'error',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body,
     });
@@ -117,26 +121,34 @@ async function invokeRemoteAdapter(provider: PaymentProviderRecord, operation: P
   }
 }
 
+/**
+ * `timeoutMs` bounds the provider request itself (the remote fetch is aborted,
+ * the Stripe SDK request times out) so a caller's lease never outlives it. A
+ * timeout is an unknown outcome, never proof that nothing happened: callers keep
+ * the idempotency key / provider ID and reconcile.
+ */
 export async function executeAdapterFunction({
   provider,
   functionName,
   args,
+  timeoutMs,
 }: {
   provider: PaymentProviderRecord;
   functionName: PaymentProviderOperation;
   args: any;
+  timeoutMs?: number;
 }) {
-  if (!provider?.isInstalled) throw new Error(`Payment provider ${provider?.code || 'unknown'} is not installed`);
+  if (!isPaymentProviderInstalled(provider)) throw new Error(`Payment provider ${provider?.code || 'unknown'} is not installed`);
   const selector = getConfiguredPaymentAdapterSelector(provider, functionName);
   if (selector.startsWith('https://')) {
     assertProviderCredentials(provider, functionName);
-    return invokeRemoteAdapter(provider, functionName, selector, args);
+    return invokeRemoteAdapter(provider, functionName, selector, args, timeoutMs);
   }
 
   const adapter = getLocalPaymentProviderAdapter(selector);
   const fn = adapter[functionName] as ((input: any) => Promise<any>) | undefined;
   if (typeof fn !== 'function') throw new Error(`Payment adapter operation ${functionName} is unavailable`);
-  return fn(args);
+  return fn(timeoutMs ? { ...args, timeoutMs } : args);
 }
 
 export async function createPayment({ provider, cart, order, amount, currency, idempotencyKey, captureMethod }: { provider: PaymentProviderRecord; cart?: any; order?: any; amount: number; currency: string; idempotencyKey?: string; captureMethod?: 'automatic' | 'manual' }) {
@@ -147,16 +159,16 @@ export async function capturePayment({ provider, paymentId, amount, amountCents,
   return executeAdapterFunction({ provider, functionName: 'capturePaymentFunction', args: { paymentId, amount, amountCents, idempotencyKey } });
 }
 
-export async function refundPayment({ provider, paymentId, amount, idempotencyKey }: { provider: PaymentProviderRecord; paymentId: string; amount?: number; idempotencyKey?: string }) {
-  return executeAdapterFunction({ provider, functionName: 'refundPaymentFunction', args: { paymentId, amount, amountCents: amount, idempotencyKey } });
+export async function refundPayment({ provider, paymentId, amount, idempotencyKey, timeoutMs }: { provider: PaymentProviderRecord; paymentId: string; amount?: number; idempotencyKey?: string; timeoutMs?: number }) {
+  return executeAdapterFunction({ provider, functionName: 'refundPaymentFunction', args: { paymentId, amount, amountCents: amount, idempotencyKey }, timeoutMs });
 }
 
 export async function getPaymentStatus({ provider, paymentId }: { provider: PaymentProviderRecord; paymentId: string }) {
   return executeAdapterFunction({ provider, functionName: 'getPaymentStatusFunction', args: { paymentId } });
 }
 
-export async function getRefundStatus({ provider, refundId }: { provider: PaymentProviderRecord; refundId: string }) {
-  return executeAdapterFunction({ provider, functionName: 'getRefundStatusFunction', args: { refundId } });
+export async function getRefundStatus({ provider, refundId, timeoutMs }: { provider: PaymentProviderRecord; refundId: string; timeoutMs?: number }) {
+  return executeAdapterFunction({ provider, functionName: 'getRefundStatusFunction', args: { refundId }, timeoutMs });
 }
 
 export async function cancelPayment({ provider, paymentId, idempotencyKey }: { provider: PaymentProviderRecord; paymentId: string; idempotencyKey?: string }) {

@@ -37,7 +37,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       'Initialize the Store profile, catalog, suppliers, full-count inventory, rolling Store-local fulfillment policy, dated slot capacity, parking, coupons, and static payment adapters.',
     icon: <Building2 className="h-5 w-5" />,
     include: {
-      storeSettings: ['Juniper Market'],
+      storeSettings: ['Business profile'],
       departments: ['produce', 'dairy', 'meat-seafood', 'bakery', 'frozen', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com', 'ocean-catch@example.com'],
       products: [
@@ -67,7 +67,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       coupons: ['WELCOME10', 'FRESH5'],
     },
     displayNames: {
-      storeSettings: ['Juniper Market'],
+      storeSettings: ['Business profile'],
       departments: ['Produce', 'Dairy & Eggs', 'Meat & Seafood', 'Bakery', 'Frozen', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy', 'Ocean Catch Seafood'],
       products: [
@@ -103,7 +103,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       'Initialize a smaller connected catalog, supplier, inventory, slot, parking, coupon, and adapter baseline.',
     icon: <Package className="h-5 w-5" />,
     include: {
-      storeSettings: ['Juniper Market'],
+      storeSettings: ['Business profile'],
       departments: ['produce', 'dairy', 'bakery', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com'],
       products: ['organic-bananas', 'whole-milk-gallon', 'jasmine-rice', 'sourdough-bread'],
@@ -115,7 +115,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       coupons: ['WELCOME10'],
     },
     displayNames: {
-      storeSettings: ['Juniper Market'],
+      storeSettings: ['Business profile'],
       departments: ['Produce', 'Dairy & Eggs', 'Bakery', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy'],
       products: ['Organic Bananas', 'Whole Milk', 'Jasmine Rice', 'Sourdough Bread'],
@@ -133,7 +133,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       'Start from the smaller launch JSON and customize real Store-owned baseline data before initialization.',
     icon: <SlidersHorizontal className="h-5 w-5" />,
     include: {
-      storeSettings: ['Juniper Market'],
+      storeSettings: ['Business profile'],
       departments: ['produce', 'dairy', 'bakery', 'pantry'],
       suppliers: ['local-harvest@example.com', 'bay-dairy@example.com'],
       products: ['organic-bananas', 'whole-milk-gallon', 'jasmine-rice', 'sourdough-bread'],
@@ -145,7 +145,7 @@ export const STORE_TEMPLATES: Record<TemplateType, StoreTemplate> = {
       coupons: ['WELCOME10'],
     },
     displayNames: {
-      storeSettings: ['Juniper Market'],
+      storeSettings: ['Business profile'],
       departments: ['Produce', 'Dairy & Eggs', 'Bakery', 'Pantry'],
       suppliers: ['Local Harvest Co-op', 'Bay Dairy'],
       products: ['Organic Bananas', 'Whole Milk', 'Jasmine Rice', 'Sourdough Bread'],

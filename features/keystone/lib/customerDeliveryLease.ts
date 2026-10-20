@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { communicationAllowed } from './customerCommunications';
 
 export const CUSTOMER_DELIVERY_LEASE_MS = 5 * 60_000;
 const DELIVERY_UNKNOWN_MESSAGE = 'Delivery outcome unknown; reconcile the provider receipt before retrying';
@@ -10,14 +11,25 @@ function requireSuccessfulPrismaResult(value: any) {
   if (value?.extensions?.code === 'KS_PRISMA_ERROR') throw new Error('Customer delivery database operation failed');
   return value;
 }
-export async function claimCustomerDelivery(context: any, event: any, draft: any, guard: { userId?: string; orderId?: string; purchaseOrderId?: string; invitationId?: string }) {
+/**
+ * `consentType`, when given, is the optional message type whose email consent is
+ * re-read here under the customer's row lock — at the moment each send
+ * (including a retry of a failed one) is authorized. A message the customer has
+ * since opted out of becomes `skipped` and is never sent.
+ */
+export async function claimCustomerDelivery(context: any, event: any, draft: any, guard: { userId?: string; orderId?: string; purchaseOrderId?: string; invitationId?: string }, consentType?: string) {
   return context.transaction(async (tc: any) => {
     const tx = tc.prisma;
+    let consentAllowed = true;
     if (guard.userId) {
       requireSuccessfulPrismaResult(await tx.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id"=$1 FOR UPDATE', guard.userId));
       const user = requireSuccessfulPrismaResult(await tx.user.findUnique({ where: { id: guard.userId } }));
       if (!user || user.storeId !== draft.storeId) throw new Error('Message customer is outside the active Store');
       if (user.privacyErasedAt) return null;
+      if (consentType) {
+        const preference = requireSuccessfulPrismaResult(await tx.notificationPreference.findFirst({ where: { userId: guard.userId }, orderBy: { updatedAt: 'desc' } }));
+        consentAllowed = communicationAllowed(consentType, preference);
+      }
     }
     let suppressed = false;
     if (guard.orderId) {
@@ -42,7 +54,13 @@ export async function claimCustomerDelivery(context: any, event: any, draft: any
     if (currentEvent?.status === 'suppressed') return null;
     if (!currentEvent || currentEvent.storeId !== draft.storeId || currentEvent.status !== 'processing' || currentEvent.claimToken !== event.claimToken) throw new Error('Delivery event claim expired');
     let message = requireSuccessfulPrismaResult(await tx.customerMessage.findUnique({ where: { eventKey: draft.eventKey } }));
-    if (!message) message = requireSuccessfulPrismaResult(await tx.customerMessage.create({ data: draft }));
+    if (!message) message = requireSuccessfulPrismaResult(await tx.customerMessage.create({ data: consentAllowed ? draft : { ...draft, status: 'skipped' } }));
+    else if (!consentAllowed && ['pending', 'failed'].includes(message.status)) {
+      message = requireSuccessfulPrismaResult(await tx.customerMessage.update({ where: { id: message.id }, data: {
+        status: 'skipped', deliveryToken: '', deliveryLeaseExpiresAt: null,
+        providerEvidence: deliveryEvidence(message.providerEvidence, { consentOutcome: { status: 'skipped', reason: 'Customer email preference no longer allows this message', observedAt: new Date().toISOString() } }),
+      } }));
+    }
     if (message.storeId !== draft.storeId) throw new Error('Message ownership differs from its event');
     if (suppressed || message.status === 'suppressed') {
       if (message.status !== 'sent') requireSuccessfulPrismaResult(await tx.customerMessage.update({ where: { id: message.id }, data: { status: 'suppressed', deliveryToken: '', deliveryLeaseExpiresAt: null } }));

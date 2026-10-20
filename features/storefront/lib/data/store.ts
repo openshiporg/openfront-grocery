@@ -25,6 +25,7 @@ export const getStore = cache(async function getStore(): Promise<GroceryStore> {
         publicGroceryStorefrontSettings {
           id
           name
+          setupIncomplete
           tagline
           homepageTitle
           homepageDescription
@@ -32,12 +33,16 @@ export const getStore = cache(async function getStore(): Promise<GroceryStore> {
           contactPhone
           address
           logoUrl
+          logoIcon
+          logoColor
           brandHue
           effectiveBrandHue
           currencyCode
           locale
           timezone
           countryCode
+          openingHours
+          policyNotes
         }
       }
     `,
@@ -48,8 +53,9 @@ export const getStore = cache(async function getStore(): Promise<GroceryStore> {
   );
   throwGraphQLErrors(errors);
   const settings = data?.publicGroceryStorefrontSettings;
-  if (!settings?.id || !settings.name?.trim()) {
+  if (!settings?.id) {
     throw new Error('The public grocery storefront is not configured');
   }
-  return settings;
+  // A store still using its setup placeholder name is shown as "being set up".
+  return { ...settings, name: settings.name?.trim() || '', setupIncomplete: Boolean(settings.setupIncomplete || !settings.name?.trim()) };
 });

@@ -73,7 +73,7 @@ export function CustomSetupSteps({
 
 First summarize the supplied JSON: the Store profile, departments, suppliers, catalog products, inventory lots, rolling delivery and pickup windows, curbside parking, coupons, and the static Stripe adapter registry. Then ask what I want to change.
 
-Preserve every top-level section and every field. Keep product handles, supplier emails, department handles, and inventory-lot references connected. Do not add customers, orders, payment history, loyalty balances, subscription revenue, stock movements, or unsupported business claims. Keep currencyCode as USD, the Store active, the timezone as a valid IANA timezone, and paymentProviders as exactly the pp_stripe_default registry entry. Return only the complete JSON when I say I am finished.`;
+Preserve every top-level section and every field. Keep product handles, supplier emails, department handles, and inventory-lot references connected. Do not add customers, orders, payment history, loyalty balances, subscription revenue, stock movements, or unsupported business claims. Keep currencyCode as USD, the Store active, the timezone as a valid IANA timezone, and paymentProviders as exactly the pp_stripe_default registry entry. Keep storeSettings.logoIcon as a logo-library icon id (for example capsule) with logoColor as its hue rotation in degrees, and set storeSettings.deliveryPolicy.postalPrefixes to the postal codes the store delivers to. Return only the complete JSON when I say I am finished.`;
   };
 
   const [jsonApplied, setJsonApplied] = useState(false);

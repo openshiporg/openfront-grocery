@@ -2,6 +2,8 @@ export type CheckoutPaymentSnapshot = {
   noCharge?: {version:number;amountCents:number;reason:string};
   customerRequest?: unknown;
   cartId: string;
+  /** Fingerprint of the confirmed basket contents this estimate was prepared for. */
+  basketFingerprint: string;
   id: string;
   clientSecret: string;
   paymentIntentId: string;
@@ -23,8 +25,18 @@ function requiredMoney(value: unknown, label: string) {
   return amount;
 }
 
+/** Contents that change what is being bought: lines, products, quantities and substitution choices. */
+export function basketFingerprint(cart: { items: Array<{ id: string; quantity: number; substitutionPreference?: string | null; product?: { id?: string } | null }> } | null | undefined) {
+  if (!cart) return '';
+  return cart.items
+    .map((item) => `${item.id}:${item.product?.id || ''}:${item.quantity}:${item.substitutionPreference || ''}`)
+    .sort()
+    .join('|');
+}
+
 export function createCheckoutPaymentSnapshot(input: {
   cartId: string;
+  basketFingerprint: string;
   windowId: string;
   fulfillmentMethod: 'delivery' | 'pickup';
   couponCode?: string;
@@ -47,6 +59,7 @@ export function createCheckoutPaymentSnapshot(input: {
     noCharge,
     customerRequest:input.customerRequest,
     cartId: input.cartId,
+    basketFingerprint: input.basketFingerprint,
     id,
     clientSecret,
     paymentIntentId,
@@ -65,6 +78,7 @@ export function checkoutPaymentSnapshotMatches(
   snapshot: CheckoutPaymentSnapshot | null,
   expected: {
     cartId: string;
+    basketFingerprint: string;
     windowId: string;
     fulfillmentMethod: 'delivery' | 'pickup';
     couponCode?: string;
@@ -73,6 +87,7 @@ export function checkoutPaymentSnapshotMatches(
   return Boolean(
     snapshot &&
     snapshot.cartId === expected.cartId &&
+    snapshot.basketFingerprint === expected.basketFingerprint &&
     snapshot.windowId === expected.windowId &&
     snapshot.fulfillmentMethod === expected.fulfillmentMethod &&
     snapshot.couponCode === expected.couponCode,

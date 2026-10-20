@@ -31,6 +31,12 @@ function validateDraft(args: DraftArgs) {
   }
 }
 
+function draftFingerprint(input: { supplierId?: string | null; expectedDeliveryDate?: string | Date | null; notes?: string | null; items: Array<{ productId?: string | null; quantity: number; unitCostCents: number }> }) {
+  const day = input.expectedDeliveryDate ? new Date(input.expectedDeliveryDate).toISOString().slice(0, 10) : '';
+  const items = [...input.items].map((item) => `${item.productId}:${item.quantity}:${item.unitCostCents}`).sort();
+  return JSON.stringify([input.supplierId || '', day, String(input.notes || '').trim(), items]);
+}
+
 export async function createPurchaseOrderDraft(
   _root: unknown,
   args: DraftArgs,
@@ -49,10 +55,18 @@ export async function createPurchaseOrderDraft(
     const sudoContext = transactionContext.sudo();
     const existing = await sudoContext.query.PurchaseOrder.findOne({
       where: { idempotencyKey },
-      query: 'id poNumber status totalAmount store { id } items { id }',
+      query: 'id poNumber status totalAmount notes expectedDeliveryDate store { id } supplier { id } items { id quantity unitCostCents product { id } }',
     });
     if (existing && existing.store?.id !== store.id) throw new Error('Purchase order idempotency key belongs to another store');
     if (existing) {
+      // A retry may only return the original draft for the same request: same
+      // supplier, products, quantities, unit costs, expected date and notes.
+      if (draftFingerprint({ supplierId: existing.supplier?.id, expectedDeliveryDate: existing.expectedDeliveryDate, notes: existing.notes,
+        items: (existing.items || []).map((item: any) => ({ productId: item.product?.id, quantity: Number(item.quantity), unitCostCents: Number(item.unitCostCents) })) })
+        !== draftFingerprint({ supplierId: args.supplierId, expectedDeliveryDate: args.expectedDeliveryDate, notes: args.notes,
+          items: args.items.map((item) => ({ productId: item.productId, quantity: item.quantity, unitCostCents: Math.round(item.unitCost * 100) })) })) {
+        throw new Error('This purchase order request was already used for a different draft. Start a new purchase order.');
+      }
       return {
         success: true,
         purchaseOrderId: existing.id,
@@ -82,12 +96,13 @@ export async function createPurchaseOrderDraft(
 
     const now = new Date();
     const prefix = `PO-${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-    const latest = await tx.purchaseOrder.findFirst({
-      where: { poNumber: { startsWith: prefix } },
-      orderBy: { poNumber: 'desc' },
-      select: { poNumber: true },
-    });
-    const latestSequence = Number.parseInt(latest?.poNumber.slice(prefix.length + 1) || '0', 10) || 0;
+    // The monthly sequence is numeric (…-9999 is followed by …-10000), allocated under the numbering lock.
+    const [latest] = await tx.$queryRawUnsafe<Array<{ sequence: number | null }>>(
+      `SELECT MAX(CAST(substring("poNumber" from $2) AS BIGINT)) AS "sequence" FROM "PurchaseOrder"
+        WHERE "poNumber" LIKE $1 AND substring("poNumber" from $2) ~ '^[0-9]+$'`,
+      `${prefix}-%`, prefix.length + 2,
+    );
+    const latestSequence = Number(latest?.sequence || 0);
     const poNumber = `${prefix}-${String(latestSequence + 1).padStart(4, '0')}`;
     const totalAmountCents = args.items.reduce((sum, item) => sum + item.quantity * Math.round(item.unitCost * 100), 0);
     const totalAmount = totalAmountCents / 100;

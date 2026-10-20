@@ -427,6 +427,30 @@ model CustomerMessage {
   @@index([userId])
 }
 
+model ContactMessage {
+  id          String   @id @default(cuid())
+  store       Store    @relation("ContactMessage_store", fields: [storeId], references: [id])
+  storeId     String   @map("store")
+  customer    User?    @relation("ContactMessage_customer", fields: [customerId], references: [id])
+  customerId  String?  @map("customer")
+  reference   String   @unique @default("")
+  subject     String   @default("")
+  name        String   @default("")
+  email       String   @default("")
+  phone       String   @default("")
+  topic       String   @default("")
+  orderNumber String   @default("")
+  message     String   @default("")
+  sourcePath  String   @default("")
+  status      String   @default("new")
+  staffNotes  String   @default("")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@index([storeId])
+  @@index([customerId])
+}
+
 model PurchaseReceipt {
   id                          String           @id @default(cuid())
   idempotencyKey              String           @unique @default("")
@@ -603,6 +627,7 @@ model Address {
   province                   String   @default("")
   postalCode                 String   @default("")
   phone                      String   @default("")
+  isSaved                    Boolean  @default(false)
   user                       User?    @relation("Address_user", fields: [userId], references: [id])
   userId                     String?  @map("user")
   createdAt                  DateTime @default(now())
@@ -718,6 +743,7 @@ model Coupon {
   validFrom                     DateTime?
   validTo                       DateTime?
   productCategories             Json?
+  categoryTaxonomy              String                 @default("department_handle")
   excludedProducts              Json?
   isActive                      Boolean                @default(true)
   store                         Store                  @relation("Coupon_store", fields: [storeId], references: [id])
@@ -1149,20 +1175,20 @@ model PaymentProvider {
   publicCheckout              Boolean          @default(false)
   supportsIdempotentCapture   Boolean          @default(false)
   captureIdempotencyEvidence  String           @default("")
-  credentials                 Json?             @default("{}")
-  createPaymentFunction       String            @default("manual")
-  capturePaymentFunction      String            @default("manual")
-  refundPaymentFunction       String            @default("manual")
-  getPaymentStatusFunction    String            @default("manual")
-  getRefundStatusFunction     String            @default("manual")
-  cancelPaymentFunction       String            @default("manual")
-  generatePaymentLinkFunction String            @default("manual")
-  handleWebhookFunction       String            @default("manual")
-  metadata                    Json?             @default("{}")
+  credentials                 Json?            @default("{}")
+  createPaymentFunction       String           @default("manual")
+  capturePaymentFunction      String           @default("manual")
+  refundPaymentFunction       String           @default("manual")
+  getPaymentStatusFunction    String           @default("manual")
+  getRefundStatusFunction     String           @default("manual")
+  cancelPaymentFunction       String           @default("manual")
+  generatePaymentLinkFunction String           @default("manual")
+  handleWebhookFunction       String           @default("manual")
+  metadata                    Json?            @default("{}")
   payments                    Payment[]        @relation("Payment_paymentProvider")
   sessions                    PaymentSession[] @relation("PaymentSession_paymentProvider")
-  createdAt                   DateTime          @default(now())
-  updatedAt                   DateTime          @default(now()) @updatedAt
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @default(now()) @updatedAt
 }
 
 model PaymentRefund {
@@ -1447,6 +1473,20 @@ model RateLimitBucket {
   requestCount    Int
   createdAt       DateTime @default(now())
   updatedAt       DateTime @default(now()) @updatedAt
+
+  @@index([windowStartedAt])
+}
+
+model CustomerBatchRequest {
+  id         String   @id @default(cuid())
+  requestKey String   @unique @default("")
+  storeId    String   @default("")
+  ownerKey   String   @default("")
+  kind       String   @default("")
+  sourceId   String   @default("")
+  results    Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
 }
 
 model Role {
@@ -1594,6 +1634,7 @@ model Store {
   from_SupplierInvoice_store           SupplierInvoice[]              @relation("SupplierInvoice_store")
   from_ProductInformationVersion_store ProductInformationVersion[]    @relation("ProductInformationVersion_store")
   from_CustomerMessage_store           CustomerMessage[]              @relation("CustomerMessage_store")
+  from_ContactMessage_store            ContactMessage[]               @relation("ContactMessage_store")
   from_PurchaseReceipt_store           PurchaseReceipt[]              @relation("PurchaseReceipt_store")
   from_InventoryCount_store            InventoryCount[]               @relation("InventoryCount_store")
   from_InventoryRecall_store           InventoryRecall[]              @relation("InventoryRecall_store")
@@ -1613,7 +1654,10 @@ model StoreSettings {
   contactEmail        String   @default("hello@junipermarket.example")
   contactPhone        String   @default("(415) 555-0148")
   address             String   @default("184 Juniper Street, San Francisco, CA 94107")
+  policyNotes         String   @default("")
   logoUrl             String   @default("/logo.svg")
+  logoIcon            String?
+  logoColor           String   @default("0")
   brandHue            Int?
   currencyCode        String   @default("USD")
   taxRateBps          Int      @default(875)
@@ -1682,6 +1726,7 @@ model User {
   from_FinancialClose_recordedBy         FinancialClose[]            @relation("FinancialClose_recordedBy")
   from_ProductInformationVersion_actor   ProductInformationVersion[] @relation("ProductInformationVersion_actor")
   from_CustomerMessage_user              CustomerMessage[]           @relation("CustomerMessage_user")
+  from_ContactMessage_customer           ContactMessage[]            @relation("ContactMessage_customer")
   from_OrderSettlement_finalizedBy       OrderSettlement[]           @relation("OrderSettlement_finalizedBy")
   from_OrderLineFulfillment_recordedBy   OrderLineFulfillment[]      @relation("OrderLineFulfillment_recordedBy")
   from_Address_user                      Address[]                   @relation("Address_user")

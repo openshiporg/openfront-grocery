@@ -1,3 +1,4 @@
+import { calendarKey, legacyWindowTimes } from '../marketFormatting';
 import type { GroceryOrder } from '../../types';
 
 function mapOrderStatus(status: string): GroceryOrder['status'] {
@@ -72,6 +73,17 @@ function mapLineItems(lineItems: any[] = [], substitutions: any[] = []) {
   });
 }
 
+function mapSubstitutionProposals(metadata: any): GroceryOrder['substitutionProposals'] {
+  const proposals = metadata?.substitutionProposals;
+  if (!proposals || typeof proposals !== 'object' || Array.isArray(proposals)) return [];
+  return Object.values(proposals).flatMap((proposal: any) => proposal?.id && ['pending', 'approved', 'rejected'].includes(proposal.status) ? [{
+    id: String(proposal.id), lineItemId: String(proposal.lineItemId), originalTitle: String(proposal.originalTitle || ''),
+    productTitle: String(proposal.productTitle || ''), quantity: Number(proposal.quantityMilli || 0) / 1000, unitOfMeasure: String(proposal.unitOfMeasure || 'each'),
+    estimatedSubtotalCents: Number(proposal.estimatedSubtotalCents || 0), reason: proposal.reason ? String(proposal.reason) : undefined,
+    status: proposal.status, decidedAt: proposal.decidedAt || null,
+  }] : []);
+}
+
 export function mapStorefrontOrder(order: any): GroceryOrder {
   const finalSale=order.metadata?.finalSale;
   const hasPickedActuals = ['finalized', 'requires_customer_authorization', 'processing'].includes(finalSale?.status) && Array.isArray(finalSale?.actuals);
@@ -94,9 +106,12 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
     requestedItems,
     receiptStage: finalSale?.status === 'finalized' ? 'final' : hasPickedActuals ? 'proposed' : 'requested',
     finalSale: order.metadata?.finalSale,
+    substitutionProposals: mapSubstitutionProposals(order.metadata),
     deliveryOutcome: order.metadata?.deliveryStop || order.metadata?.deliveryOutcome,
     id: order.id,
     orderNumber: String(order.displayId || order.id.slice(-8).toUpperCase()),
+    // Receipts show money in the currency the order was placed in.
+    currencyCode: typeof order.currencyCode === 'string' ? order.currencyCode : undefined,
     status: pickupReady && order.status === 'packed' ? 'ready_for_pickup' : mapOrderStatus(order.status),
     email: order.email,
     createdAt: order.createdAt,
@@ -108,35 +123,14 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
     total,
     shippingAddress: metadata.shippingAddressSnapshot || order.shippingAddress,
     fulfillmentMethod,
-    deliverySlot: order.deliveryDate
+    // The promised day is a store-local calendar date; times come only from the
+    // order's snapshot or a recognized legacy code, otherwise they stay unknown.
+    deliverySlot: order.deliveryDate || fulfillmentSlot?.date
       ? {
-          date: new Date(order.deliveryDate).toISOString(),
-          startTime:
-            fulfillmentSlot?.startTime ||
-            (order.deliveryTimeWindow?.startsWith('time_8')
-              ? '08:00'
-              : order.deliveryTimeWindow?.startsWith('time_10')
-              ? '10:00'
-              : order.deliveryTimeWindow?.startsWith('time_12')
-              ? '12:00'
-              : order.deliveryTimeWindow?.startsWith('time_14')
-              ? '14:00'
-              : order.deliveryTimeWindow?.startsWith('time_16')
-              ? '16:00'
-              : '18:00'),
-          endTime:
-            fulfillmentSlot?.endTime ||
-            (order.deliveryTimeWindow?.endsWith('10')
-              ? '10:00'
-              : order.deliveryTimeWindow?.endsWith('12')
-              ? '12:00'
-              : order.deliveryTimeWindow?.endsWith('14')
-              ? '14:00'
-              : order.deliveryTimeWindow?.endsWith('16')
-              ? '16:00'
-              : order.deliveryTimeWindow?.endsWith('18')
-              ? '18:00'
-              : '20:00'),
+          date: calendarKey(fulfillmentSlot?.date || order.deliveryDate) || '',
+          ...(fulfillmentSlot?.startTime && fulfillmentSlot?.endTime
+            ? { startTime: String(fulfillmentSlot.startTime), endTime: String(fulfillmentSlot.endTime) }
+            : legacyWindowTimes(order.deliveryTimeWindow)),
         }
       : undefined,
     pickupCheckIn:

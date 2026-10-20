@@ -7,8 +7,9 @@ import { CUSTOMER_PRIVACY_POLICY, customerExportIdentity, privacyErasureEligibil
 
 async function privacyCustomer(context: Context) {
   if (!context.session?.itemId) throw new Error('Sign in to manage your privacy requests');
-  const user = await (context.prisma as any).user.findUnique({ where: { id: context.session.itemId }, include: { store: true } });
-  if (!user || !user.store?.isActive || user.roleId || user.privacyErasedAt) throw new Error('An active customer account is required');
+  const user = await (context.prisma as any).user.findUnique({ where: { id: context.session.itemId }, include: { store: true, _count: { select: { staffAccessEvents: true } } } });
+  // Staff identities (current or revoked) follow staff lifecycle and retention, not the shopper flow.
+  if (!user || !user.store?.isActive || user.roleId || user._count?.staffAccessEvents || user.privacyErasedAt) throw new Error('An active customer account is required');
   return user;
 }
 export async function groceryCustomerPrivacy(_root: unknown, args: { page?: number; pageSize?: number }, context: Context) {
@@ -31,7 +32,7 @@ export async function requestGroceryCustomerPrivacy(_root: unknown, { kind }: { 
     return { success: true, requestId: request.id, status: request.status, reused: false };
   });
 }
-const EXPORT_COLLECTIONS = ['orders', 'orderLines', 'actuals', 'substitutions', 'settlements', 'payments', 'refunds', 'lineRefunds', 'addresses', 'notificationPreferences', 'substitutionPreferences', 'shoppingLists', 'shoppingListItems', 'favorites', 'priceAlerts', 'stockAlerts', 'coupons', 'loyalty', 'redemptions', 'subscriptions', 'subscriptionRuns', 'messages', 'carts', 'cartItems', 'privacyRequests'] as const;
+const EXPORT_COLLECTIONS = ['orders', 'orderLines', 'actuals', 'substitutions', 'settlements', 'payments', 'refunds', 'lineRefunds', 'addresses', 'notificationPreferences', 'substitutionPreferences', 'shoppingLists', 'shoppingListItems', 'favorites', 'priceAlerts', 'stockAlerts', 'coupons', 'loyalty', 'redemptions', 'subscriptions', 'subscriptionRuns', 'messages', 'carts', 'cartItems', 'privacyRequests', 'contactMessages'] as const;
 const pick = (value:any, keys:string[]) => Object.fromEntries(keys.filter(key => value?.[key] !== undefined).map(key => [key,value[key]]));
 const publicEvents = (value:any) => (Array.isArray(value)?value:[]).map(event=>pick(event,['action','at','nextDeliveryDate','timezone','status','reason']));
 export async function exportGroceryCustomerData(_root: unknown, args: { requestId: string; afterOrderId?: string; collection?: string; afterId?: string }, context: Context) {
@@ -67,6 +68,9 @@ export async function exportGroceryCustomerData(_root: unknown, args: { requestI
     carts:{model:'cart',where:{customerId:user.id,storeId:user.storeId},fields:['id','subtotalCents','itemCount','createdAt','updatedAt']},
     cartItems:{model:'cartItem',where:{cart:{customerId:user.id,storeId:user.storeId}},fields:['id','cartId','productId','quantity','subtotalCents','substitutionPreference','addedAt']},
     privacyRequests:{model:'customerPrivacyRequest',where:own,fields:['id','kind','status','policyVersion','reviewReason','createdAt','reviewedAt','eligibleAt','completedAt']},
+    // Messages the signed-in customer sent to the store. Internal staff notes are never exported;
+    // messages sent while signed out are not linked to the account and are not included.
+    contactMessages:{model:'contactMessage',where:{customerId:user.id,storeId:user.storeId},fields:['id','reference','subject','topic','orderNumber','name','email','phone','message','status','createdAt']},
   };
   const config=configuration[collection], afterId=args.afterId || (collection==='orders'?args.afterOrderId:undefined);
   const rows=await tx[config.model].findMany({where:{...config.where,...(afterId?{id:{gt:afterId}}:{})},orderBy:{id:'asc'},take:101,select:Object.fromEntries(config.fields.map(field=>[field,true]))});
@@ -92,8 +96,9 @@ export async function reviewGroceryCustomerErasure(_root: unknown, args: { reque
     if (!request || request.storeId !== store.id || request.kind !== 'erasure') throw new Error('Erasure request not found in active Store');
     if (request.status === 'completed') return { success: true, status: 'completed', reused: true };
     await tx.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id" = $1 FOR UPDATE', request.userId);
-    const user = await tx.user.findUnique({ where: { id: request.userId } });
-    if (!user || user.storeId !== store.id || user.roleId) throw new Error('Staff identities require staff lifecycle administration');
+    const user = await tx.user.findUnique({ where: { id: request.userId }, include: { _count: { select: { staffAccessEvents: true } } } });
+    // A revoked employee keeps their staff history; shopper erasure must not reach it.
+    if (!user || user.storeId !== store.id || user.roleId || user._count?.staffAccessEvents) throw new Error('Staff identities require staff lifecycle administration');
     const review = { reviewedById: context.session!.itemId, reviewedAt: new Date(), reviewReason: reason, policyVersion: CUSTOMER_PRIVACY_POLICY.version };
     if (!args.approve) { await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: 'rejected' } }); return { success: true, status: 'rejected' }; }
     const activeDelivery = await tx.customerMessage.findFirst({ where: { userId: user.id, storeId: store.id, deliveryLeaseExpiresAt: { gt: new Date() } } });
@@ -144,6 +149,10 @@ export async function reviewGroceryCustomerErasure(_root: unknown, args: { reque
       await tx.groceryOutboxEvent.update({ where: { id: event.id }, data: { payload, payloadHash: groceryOutboxPayloadHash(payload), status: 'suppressed', claimToken: '', lastError: 'Suppressed after approved privacy retention review' } });
     }
     await tx.customerMessage.updateMany({ where: { storeId: store.id, OR: [{ userId: user.id }, { orderId: { in: orderIds } }, { recipient: user.email }] }, data: { recipient: '[erased]', subject: '[erased]', body: '[erased]', status: 'suppressed', failureMessage: '', providerEvidence: { privacy: { pseudonymized: true } } } });
+    // Inbound messages linked to this account: the customer's own words and contact details
+    // are erased; the store's operational record (reference, topic, status, dates, staff notes)
+    // stays. Messages sent while signed out are matched to no account and are left untouched.
+    await tx.contactMessage.updateMany({ where: { storeId: store.id, customerId: user.id }, data: { name: 'Erased customer', email: `erased-${user.id}@invalid.local`, phone: '', message: '[erased at customer request]', sourcePath: '', subject: '[erased]' } });
     const subscriptions = await tx.subscription.findMany({ where: { userId: user.id, storeId: store.id } });
     for (const row of subscriptions) await tx.subscription.update({ where: { id: row.id }, data: { status: 'cancelled', isActive: false, consent: scrubOrderContactMetadata(row.consent), events: (Array.isArray(row.events) ? row.events : []).map(scrubOrderContactMetadata) } });
     const recurringRuns = await tx.subscriptionRun.findMany({ where: { userId: user.id, storeId: store.id } });

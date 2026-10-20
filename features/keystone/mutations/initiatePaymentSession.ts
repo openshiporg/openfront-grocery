@@ -17,6 +17,9 @@ import { createPayment } from '../utils/paymentProviderAdapter';
 import { calculateCouponDiscount } from '../lib/couponPricing';
 import { evaluateFulfillmentWindow } from '../lib/rollingFulfillment';
 import { assertSellableQuantity } from '../lib/sellableInventory';
+import { checkoutContactProblem } from '../../lib/checkoutContact';
+import { findStoreCouponByCode } from '../lib/couponLookup';
+import { publicError } from '../lib/publicError';
 import { getStoreTaxRateBps } from '../lib/storeMoney';
 import { isLiveFulfillmentSlot } from '../lib/storeTime';
 import { ensureCheckoutAttempt, type SubmitOrderData } from './submitGroceryOrder';
@@ -85,6 +88,8 @@ async function bindRestartChild(tx: any, source: CheckoutRestartSource | undefin
   }
 }
 
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export async function initiatePaymentSessionWithDependencies(
   root: any,
   { cartId, paymentProviderId, deliverySlotId, pickupSlotId, sessionId, couponCode, recovery }: InitiatePaymentSessionArgs,
@@ -99,20 +104,14 @@ export async function initiatePaymentSessionWithDependencies(
   const sudoContext = context.sudo();
 
   if (Boolean(deliverySlotId) === Boolean(pickupSlotId)) {
-    throw new Error('Choose exactly one live delivery or pickup slot');
+    throw publicError('Choose one delivery or pickup time.', 'CHECKOUT_DETAILS');
   }
   const requestedFulfillmentMethod = pickupSlotId ? 'pickup' : 'delivery';
-  if (!/^\S+@\S+\.\S+$/.test(recovery?.email?.trim() || '') || recovery.email.length > 320) throw new Error('Checkout recovery requires a valid email');
-  for (const value of [recovery.deliveryAddress?.firstName, recovery.deliveryAddress?.lastName, recovery.deliveryAddress?.phone]) {
-    if (!value?.trim() || value.length > 200) throw new Error('Checkout recovery requires customer contact details');
-  }
-  if (requestedFulfillmentMethod === 'delivery') {
-    for (const value of [recovery.deliveryAddress.address1, recovery.deliveryAddress.city, recovery.deliveryAddress.province, recovery.deliveryAddress.postalCode]) {
-      if (!value?.trim() || value.length > 200) throw new Error('Checkout recovery requires a valid delivery address');
-    }
-  }
+  // Validated before any provider call with the same contract as submission and recovery.
+  const contactProblem = checkoutContactProblem({ email: recovery?.email, fulfillmentMethod: requestedFulfillmentMethod, deliveryAddress: recovery?.deliveryAddress });
+  if (contactProblem) throw publicError(contactProblem, 'CHECKOUT_DETAILS');
   if (!['call_me', 'best_match', 'refund'].includes(recovery.substitutionPreference)) {
-    throw new Error('Checkout recovery substitution preference is invalid');
+    throw publicError('Choose what to do if an item is unavailable.', 'CHECKOUT_DETAILS');
   }
 
   const cart = await sudoContext.query.Cart.findOne({
@@ -125,7 +124,7 @@ export async function initiatePaymentSessionWithDependencies(
       customer { id }
       subtotal
       subtotalCents
-      items { id quantity substitutionPreference product { id title price priceCents taxRateBasisPoints pricingMethod unitOfMeasure department status store { id } inventoryLots { id expirationDate quantityRemaining safetyStatus conditionStatus store { id } } } }
+      items { id quantity substitutionPreference product { id title price priceCents taxRateBasisPoints pricingMethod unitOfMeasure department departmentRef { handle } status store { id } inventoryLots { id expirationDate quantityRemaining safetyStatus conditionStatus store { id } } } }
       paymentSessions {
         id
         isSelected
@@ -154,16 +153,16 @@ export async function initiatePaymentSessionWithDependencies(
   }
   if (!cart.store?.isActive) throw new Error('Cart store is unavailable');
   if (!context.session?.itemId && cart.expiresAt && new Date(cart.expiresAt).getTime() <= Date.now()) {
-    throw new Error('Guest cart session has expired; start a new cart');
+    throw publicError('Your basket session has expired. Add your items again to continue.', 'CART_EXPIRED');
   }
-  if (!cart.items?.length) throw new Error('Cart is empty');
+  if (!cart.items?.length) throw publicError('Your basket is empty.', 'CART_EMPTY');
 
   const provider = await sudoContext.query.PaymentProvider.findOne({
     where: { code: paymentProviderId },
     query: 'id code isInstalled publicCheckout supportsIdempotentCapture captureIdempotencyEvidence credentials metadata createPaymentFunction capturePaymentFunction refundPaymentFunction getPaymentStatusFunction getRefundStatusFunction cancelPaymentFunction generatePaymentLinkFunction handleWebhookFunction',
   });
 
-  if (!provider || !provider.isInstalled) {
+  if (!provider || !isPaymentProviderInstalled(provider)) {
     throw new Error(`Payment provider ${paymentProviderId} not found or not installed`);
   }
   assertPublicPaymentProvider(provider as PaymentProviderRecord);
@@ -184,15 +183,15 @@ export async function initiatePaymentSessionWithDependencies(
     : null;
 
   if (deliverySlotId && (!deliverySlot || deliverySlot.store?.id !== cart.store?.id)) {
-    throw new Error('Selected delivery slot was not found in the active store');
+    throw publicError('That delivery time is no longer offered. Choose another time.', 'SLOT_UNAVAILABLE');
   }
 
   if (pickupSlotId && (!pickupSlot || pickupSlot.store?.id !== cart.store?.id)) {
-    throw new Error('Selected pickup slot was not found in the active store');
+    throw publicError('That pickup time is no longer offered. Choose another time.', 'SLOT_UNAVAILABLE');
   }
   const selectedSlot = deliverySlot || pickupSlot;
   if (!selectedSlot || !isLiveFulfillmentSlot(selectedSlot as { date: string; endTime: string }, cart.store.timezone)) {
-    throw new Error('Selected fulfillment slot is no longer a live Store-local window');
+    throw publicError('That time has passed. Choose a later time.', 'SLOT_UNAVAILABLE');
   }
   const storeSettings = await (context.prisma as any).storeSettings.findFirst({
     where: { storeId: cart.store.id, isActive: true },
@@ -206,23 +205,23 @@ export async function initiatePaymentSessionWithDependencies(
     endTime: selectedSlot.endTime,
   });
   if (!storeSettings || !windowDecision.allowed) {
-    throw new Error('Selected fulfillment slot is outside current Store hours, blackout, horizon, or cutoff policy');
+    throw publicError('That time is past the order cutoff or outside store hours. Choose another time.', 'SLOT_UNAVAILABLE');
   }
 
   if (deliverySlot && !deliverySlot.isActive) {
-    throw new Error('Selected delivery slot is no longer available');
+    throw publicError('That delivery time is no longer available. Choose another time.', 'SLOT_UNAVAILABLE');
   }
 
   if (pickupSlot && (!pickupSlot.isActive || !pickupSlot.isAvailable)) {
-    throw new Error('Selected pickup slot is no longer available');
+    throw publicError('That pickup time is no longer available. Choose another time.', 'SLOT_UNAVAILABLE');
   }
 
   if (deliverySlot && deliverySlot.capacity - deliverySlot.currentBookings <= 0) {
-    throw new Error('Selected delivery slot is fully booked');
+    throw publicError('That delivery time is fully booked. Choose another time.', 'SLOT_UNAVAILABLE');
   }
 
   if (pickupSlot && pickupSlot.maxOrders - pickupSlot.currentOrders <= 0) {
-    throw new Error('Selected pickup slot is fully booked');
+    throw publicError('That pickup time is fully booked. Choose another time.', 'SLOT_UNAVAILABLE');
   }
 
   const fulfillmentMethod = pickupSlot ? 'pickup' : 'delivery';
@@ -231,7 +230,7 @@ export async function initiatePaymentSessionWithDependencies(
   for (const item of cart.items) {
     const product = item.product;
     if (!product || product.store?.id !== cart.store.id || product.status !== 'published') {
-      throw new Error('Cart contains a product that is no longer available');
+      throw publicError(`${product?.title || 'An item in your basket'} is no longer available. Remove it to continue.`, 'PRODUCT_UNAVAILABLE');
     }
     assertSellableQuantity(product, cart.store.id, item.quantity, now);
     subtotalCents += Number(product.priceCents ?? Math.round(Number(product.price || 0) * 100)) * item.quantity;
@@ -244,11 +243,11 @@ export async function initiatePaymentSessionWithDependencies(
   let discountDollars = 0;
   let couponSnapshot: any = null;
   if (couponCode?.trim()) {
-    const coupon = await sudoContext.query.Coupon.findOne({ where: { code: couponCode.trim().toUpperCase() }, query: 'id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts store { id }' });
-    if (!coupon || coupon.store?.id !== cart.store?.id) throw new Error('Coupon is not available for this store');
+    const coupon = await findStoreCouponByCode(sudoContext, couponCode, cart.store?.id, 'id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts categoryTaxonomy store { id }');
+    if (!coupon || coupon.store?.id !== cart.store?.id) throw publicError(`Coupon ${couponCode.trim().toUpperCase().slice(0, 40)} isn't valid here. Check the code or remove it.`, 'COUPON_INVALID');
     await validateLoyaltyCoupon(context.prisma, coupon.id, context.session?.itemId, cart.store!.id);
     discountDollars = calculateCouponDiscount(coupon as any, cart.items || []);
-    couponSnapshot = { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discountDollars, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents };
+    couponSnapshot = { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discountDollars, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, categoryTaxonomy: coupon.categoryTaxonomy, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents };
   }
   const discountCents = Math.round(discountDollars * 100);
   const service = evaluateDeliveryPolicy(storeSettings.deliveryPolicy, fulfillmentMethod, recovery.deliveryAddress.postalCode, subtotalCents - discountCents);
@@ -355,7 +354,7 @@ export async function initiatePaymentSessionWithDependencies(
     }
     await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id"=$1 FOR UPDATE', cart.id);
     const freshCart = await transactionContext.sudo().query.Cart.findOne({where:{id:cart.id},query:'id customer { id } sessionId items { id quantity substitutionPreference product { id priceCents taxRateBasisPoints pricingMethod unitOfMeasure } }'});
-    if (!freshCart || checkoutCartFingerprint(freshCart) !== cartFingerprint || (context.session?.itemId ? freshCart.customer?.id !== context.session.itemId : freshCart.customer?.id || freshCart.sessionId !== sessionId?.trim())) throw new Error('Cart changed while payment was being prepared; review checkout');
+    if (!freshCart || checkoutCartFingerprint(freshCart) !== cartFingerprint || (context.session?.itemId ? freshCart.customer?.id !== context.session.itemId : freshCart.customer?.id || freshCart.sessionId !== sessionId?.trim())) throw publicError('Your basket changed while payment was being prepared. Review checkout and try again.', 'CART_CHANGED');
     await transactionContext.prisma.$queryRaw`
       WITH payment_lock AS MATERIALIZED (
         SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))
@@ -457,7 +456,7 @@ export async function initiatePaymentSessionWithDependencies(
       if (ready?.data?.status === 'failed') throw new Error(ready.data.error || 'Payment session initiation failed');
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
-    throw new Error('Payment session is still being initialized; please retry without changing the cart or slot');
+    throw publicError('Payment is still being prepared. Try again in a moment without changing your basket or time.', 'PAYMENT_PENDING');
   }
 
   try {

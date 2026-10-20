@@ -1,13 +1,15 @@
 {
   "storeSettings": {
-    "name": "Juniper Market",
+    "name": "Replace with your store name",
     "tagline": "Neighborhood grocery · delivery & curbside pickup",
     "homepageTitle": "Fresh from the neighborhood",
     "homepageDescription": "Seasonal produce, pantry staples, and household essentials selected for everyday shopping.",
-    "contactEmail": "hello@junipermarket.example",
-    "contactPhone": "(415) 555-0148",
-    "address": "184 Juniper Street, San Francisco, CA 94107",
+    "contactEmail": "replace-with-your-store-email@example.com",
+    "contactPhone": "Replace with your store phone number",
+    "address": "Replace with your store street address, city, state and ZIP code",
     "logoUrl": "/logo.svg",
+    "logoIcon": "capsule",
+    "logoColor": "297",
     "brandHue": 35,
     "currencyCode": "USD",
     "taxRateBps": 875,
@@ -42,6 +44,15 @@
         ]
       }
     },
+    "deliveryPolicy": {
+      "version": 1,
+      "pickupMinimumCents": 0,
+      "deliveryMinimumCents": 0,
+      "postalPrefixes": [],
+      "deliveryFeeCents": 0,
+      "feeTaxRateBasisPoints": 0
+    },
+    "policyNotes": "Replace with your store's own policies (returns, refunds, age-restricted goods). Shoppers see this on the Policies page once you replace it.",
     "isActive": true
   },
   "departments": [

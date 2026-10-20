@@ -5,6 +5,8 @@ import { verifyGuestOrderToken } from '../utils/guestOrderToken';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 
 /** Bind consent and the provider key to frozen goods, amount, currency and original payment. */
+import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+
 export function adjustmentFingerprint(settlement: any, payment: any) {
   return createHash('sha256').update(JSON.stringify([settlement.id, settlement.actualsHash, settlement.totalCents,
     settlement.snapshot?.currency, payment.id, payment.providerPaymentId, payment.paymentProviderId])).digest('hex');
@@ -36,7 +38,7 @@ export function makeAuthorizeOrderAdjustment(overrides: Partial<typeof defaults>
       if (!evidence.originalPaymentId) throw new Error('Original payment identity is missing');
       await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id"=$1 FOR UPDATE', evidence.originalPaymentId);
       const payment = await tx.payment.findUnique({ where: { id: evidence.originalPaymentId }, include: { paymentProvider: true } });
-      if (!payment || payment.orderId !== orderId || payment.storeId !== order.storeId || !payment.paymentProvider?.isInstalled) throw new Error('Original payment provider is unavailable');
+      if (!payment || payment.orderId !== orderId || payment.storeId !== order.storeId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw new Error('Original payment provider is unavailable');
       assertIdempotentCaptureProvider(payment.paymentProvider);
       if (['processing', 'unknown'].includes(payment.providerData?.authorizationVoid?.status)) throw new Error('Original authorization void requires reconciliation');
       const fingerprint = adjustmentFingerprint(settlement, payment);
@@ -51,15 +53,20 @@ export function makeAuthorizeOrderAdjustment(overrides: Partial<typeof defaults>
       if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 23 * 3600000) throw new Error('Revised authorization requires operator recovery; automatic provider-key reuse is expired');
       // A timed-out initiation stays recorded: abandonment must first recover the intent identity.
       const lease = { token: deps.token(), expiresAt: new Date(deps.now() + 120000).toISOString() };
+      // The request binding is durable before any provider I/O, so a lost response
+      // can later be matched exactly (recoverRevisedAuthorization) — never guessed.
       await tx.orderSettlement.update({ where: { id: settlement.id }, data: { providerEvidence: { ...evidence,
         authorizationInitiatedAt: initiatedAt, authorizationCreationLease: lease,
         customerApproval: { userId: context.session?.itemId || null, at: initiatedAt, totalCents: settlement.totalCents, actualsHash: settlement.actualsHash, fingerprint },
+        reauthorizationRequest: evidence.reauthorizationRequest || { requestKey: `${settlement.idempotencyKey}:revised-authorization`, storeId: order.storeId, orderId, settlementId: settlement.id,
+          fingerprint, amountCents: settlement.totalCents, currency: settlement.snapshot.currency, requestedAt: initiatedAt },
       } } });
       return { settlement, payment, fingerprint, ready: null };
     }));
     if (claim.ready) return { clientSecret: claim.ready.clientSecret, paymentIntentId: claim.ready.paymentIntentId, totalCents: claim.settlement.totalCents };
     const created = await deps.createPayment({ provider: claim.payment.paymentProvider, amount: claim.settlement.totalCents,
-      currency: claim.settlement.snapshot.currency, captureMethod: 'manual', idempotencyKey: `${claim.settlement.idempotencyKey}:revised-authorization` });
+      currency: claim.settlement.snapshot.currency, captureMethod: 'manual', idempotencyKey: `${claim.settlement.idempotencyKey}:revised-authorization`,
+      order: { id: orderId, revisedAuthorization: { storeId: claim.payment.storeId, settlementId: claim.settlement.id, fingerprint: claim.fingerprint } } });
     if (!created.paymentIntentId || !created.clientSecret || created.paymentIntentId === claim.payment.providerPaymentId) throw new Error('Provider did not return a distinct revised authorization');
     const ready = await withSerializableRetry<{ clientSecret: string; paymentIntentId: string }>(() => context.transaction(async (tc: any) => {
       const tx = tc.prisma;
@@ -73,7 +80,7 @@ export function makeAuthorizeOrderAdjustment(overrides: Partial<typeof defaults>
         || current.providerEvidence?.abandonment || current.providerEvidence?.originalPaymentId !== claim.payment.id
         || order.storeId !== claim.payment.storeId || String(order.currencyCode).toLowerCase() !== current.snapshot?.currency
         || !currentPayment || currentPayment.orderId !== orderId || currentPayment.storeId !== order.storeId
-        || !currentPayment.paymentProvider?.isInstalled || ['processing', 'unknown'].includes(currentPayment.providerData?.authorizationVoid?.status)
+        || !currentPayment.paymentProvider || !isPaymentProviderInstalled(currentPayment.paymentProvider) || ['processing', 'unknown'].includes(currentPayment.providerData?.authorizationVoid?.status)
         || adjustmentFingerprint(current, currentPayment) !== claim.fingerprint
         || current.providerEvidence?.customerApproval?.fingerprint !== claim.fingerprint) throw new Error('Order or approval changed during authorization; provider intent needs reconciliation');
       const existing = current.providerEvidence?.reauthorization;

@@ -8,23 +8,38 @@ function fragmentMap(document: DocumentNode) {
   return new Map(document.definitions.filter((definition): definition is FragmentDefinitionNode => definition.kind === Kind.FRAGMENT_DEFINITION).map((fragment) => [fragment.name.value, fragment]));
 }
 
-function depthOfSelectionSet(selectionSet: SelectionSetNode | undefined, fragments: Map<string, FragmentDefinitionNode>, depth: number, seen: Set<string>, report: (node: ASTNode) => void): number {
-  if (!selectionSet) return depth;
-  let maximum = depth;
+const MAX_DEPTH_VALIDATION_WORK = 20_000;
+
+class DepthBudgetExceeded extends Error {}
+
+/**
+ * Depth of a selection set counted in fields (fragment spreads and inline
+ * fragments add no level). Each named fragment's depth is computed once and
+ * memoized, cycles are cut (graphql's NoFragmentCycles rejects them), total
+ * work is budgeted, and traversal stops as soon as the limit is exceeded — so a
+ * small document of fragments that spread each other repeatedly costs linear
+ * work instead of exponential expansion.
+ */
+function selectionDepth(selectionSet: SelectionSetNode | undefined, fragments: Map<string, FragmentDefinitionNode>, memo: Map<string, number>, visiting: Set<string>, work: { count: number }): number {
+  if (!selectionSet) return 0;
+  let maximum = 0;
   for (const selection of selectionSet.selections) {
-    if (selection.kind === Kind.FRAGMENT_SPREAD) {
-      if (seen.has(selection.name.value)) continue;
-      const nextSeen = new Set(seen).add(selection.name.value);
-      maximum = Math.max(maximum, depthOfSelectionSet(fragments.get(selection.name.value)?.selectionSet, fragments, depth + 1, nextSeen, report));
-      continue;
+    if (++work.count > MAX_DEPTH_VALIDATION_WORK) throw new DepthBudgetExceeded();
+    let depth = 0;
+    if (selection.kind === Kind.FIELD) depth = 1 + selectionDepth(selection.selectionSet, fragments, memo, visiting, work);
+    else if (selection.kind === Kind.INLINE_FRAGMENT) depth = selectionDepth(selection.selectionSet, fragments, memo, visiting, work);
+    else {
+      const name = selection.name.value;
+      if (memo.has(name)) depth = memo.get(name) ?? 0;
+      else if (!visiting.has(name)) {
+        visiting.add(name);
+        depth = selectionDepth(fragments.get(name)?.selectionSet, fragments, memo, visiting, work);
+        visiting.delete(name);
+        memo.set(name, depth);
+      }
     }
-    if (selection.kind === Kind.INLINE_FRAGMENT) {
-      maximum = Math.max(maximum, depthOfSelectionSet(selection.selectionSet, fragments, depth + 1, seen, report));
-      continue;
-    }
-    const nextDepth = depth + 1;
-    if (nextDepth > MAX_GRAPHQL_DEPTH) report(selection);
-    maximum = Math.max(maximum, depthOfSelectionSet(selection.selectionSet, fragments, nextDepth, seen, report));
+    if (depth > maximum) maximum = depth;
+    if (maximum > MAX_GRAPHQL_DEPTH) return maximum;
   }
   return maximum;
 }
@@ -32,9 +47,18 @@ function depthOfSelectionSet(selectionSet: SelectionSetNode | undefined, fragmen
 export const boundedGraphqlDepthRule: ValidationRule = (context: ValidationContext) => ({
   Document(node) {
     const fragments = fragmentMap(node);
+    const memo = new Map<string, number>();
+    const work = { count: 0 };
     for (const definition of node.definitions) {
-      if (definition.kind === Kind.OPERATION_DEFINITION) {
-        depthOfSelectionSet(definition.selectionSet, fragments, 0, new Set(), (selection) => context.reportError(new GraphQLError(`GraphQL query depth exceeds ${MAX_GRAPHQL_DEPTH}`, { nodes: selection as ASTNode })));
+      if (definition.kind !== Kind.OPERATION_DEFINITION) continue;
+      try {
+        if (selectionDepth(definition.selectionSet, fragments, memo, new Set(), work) > MAX_GRAPHQL_DEPTH) {
+          context.reportError(new GraphQLError(`GraphQL query depth exceeds ${MAX_GRAPHQL_DEPTH}`, { nodes: definition as ASTNode }));
+        }
+      } catch (error) {
+        if (!(error instanceof DepthBudgetExceeded)) throw error;
+        context.reportError(new GraphQLError('GraphQL query is too complex', { nodes: definition as ASTNode }));
+        return;
       }
     }
   },

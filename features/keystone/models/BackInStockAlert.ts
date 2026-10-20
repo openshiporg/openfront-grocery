@@ -5,7 +5,7 @@ import {
   timestamp,
   checkbox,
 } from "@keystone-6/core/fields";
-import { isSignedIn } from "../access";
+import { isCurrentAccount, isSignedIn } from "../access";
 import { ownerScopedFilter } from '../lib/storeAccess';
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
@@ -14,9 +14,9 @@ export const BackInStockAlert = list({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn,
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount,
     },
     filter: {
       query: ownerScopedFilter('user'),

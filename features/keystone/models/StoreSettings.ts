@@ -8,6 +8,8 @@ import { assertValidTimeZone } from '../lib/storeTime';
 import { requiredUniqueRelationshipPrisma } from './relationshipConfig';
 import { trackingFields } from './trackingFields';
 import { normalizeStorefrontBrandHue } from '../../storefront/lib/branding';
+import { DEFAULT_STORE_LOGO_COLOR, normalizeStoreLogoColor } from '../../lib/store-logo';
+import { sanitizeStoreLogoSvg } from '../utils/storeLogo';
 
 export const StoreSettings = list({
   db: { idField: { kind: 'autoincrement' } },
@@ -47,18 +49,8 @@ export const StoreSettings = list({
       if (!storeId) throw new Error('An active store is required');
       return { ...data, store: { connect: { id: storeId } } };
     },
-    afterOperation: async ({ operation, item, resolvedData, context }) => {
-      if (operation !== 'update') return;
-      const storeId = (item as any).storeId;
-      if (!storeId) throw new Error('Store settings are missing ownership');
-      const data = Object.fromEntries(Object.entries({
-        name: resolvedData.name,
-        timezone: resolvedData.timezone,
-        currencyCode: resolvedData.currencyCode,
-        isActive: resolvedData.isActive,
-      }).filter(([, value]) => value !== undefined));
-      if (Object.keys(data).length) await context.prisma.store.update({ where: { id: storeId }, data });
-    },
+    // Name and timezone are mirrored on Store; they change only through
+    // updateGroceryStoreProfile, which writes both in one transaction.
   },
   graphql: { plural: 'storeSettingsItems' },
   ui: {
@@ -74,7 +66,8 @@ export const StoreSettings = list({
       graphql: { isNonNull: { create: true } },
       access: { create: () => false, update: () => false },
     }),
-    name: text({ validation: { isRequired: true }, defaultValue: 'Juniper Market' }),
+    // Mirrored on Store: edited only through updateGroceryStoreProfile (atomic with the mirror).
+    name: text({ validation: { isRequired: true }, defaultValue: 'Juniper Market', access: { update: () => false } }),
     tagline: text({ defaultValue: 'Neighborhood grocery · delivery & curbside pickup' }),
     homepageTitle: text({ defaultValue: 'Fresh from the neighborhood' }),
     homepageDescription: text({
@@ -85,16 +78,55 @@ export const StoreSettings = list({
     contactEmail: text({ defaultValue: 'hello@junipermarket.example' }),
     contactPhone: text({ defaultValue: '(415) 555-0148' }),
     address: text({ defaultValue: '184 Juniper Street, San Francisco, CA 94107' }),
+    // Merchant-written terms shown on the storefront Policies page above the standard
+    // picking, payment and pickup rules. Empty shows only the standard sections.
+    policyNotes: text({
+      defaultValue: '',
+      validation: { length: { max: 5000 } },
+      ui: { displayMode: 'textarea', description: 'Your own store policy text (returns, refunds, age-restricted goods, and so on), shown on the storefront Policies page.' },
+    }),
     logoUrl: text({ defaultValue: '/logo.svg' }),
+    // Openfront logo-library mark. Nullable so existing stores keep their logoUrl artwork until an
+    // operator explicitly chooses a library or custom SVG; when set, it takes precedence over logoUrl.
+    logoIcon: text({
+      db: { isNullable: true },
+      ui: { displayMode: 'textarea', description: 'Sanitized SVG from the logo library or a custom SVG. Unset uses the logo path.' },
+      hooks: {
+        resolveInput: ({ resolvedData, fieldKey }) => {
+          const value = resolvedData[fieldKey];
+          if (value === undefined || value === null || value === '') return value;
+          return typeof value === 'string' ? sanitizeStoreLogoSvg(value) : '';
+        },
+        validate: ({ inputData, resolvedData, fieldKey, addValidationError }) => {
+          const submitted = inputData?.[fieldKey];
+          if (typeof submitted === 'string' && submitted.trim() && !resolvedData?.[fieldKey]) {
+            addValidationError('Logo must be a valid, safe SVG document');
+          }
+        },
+      },
+    }),
+    logoColor: text({
+      defaultValue: DEFAULT_STORE_LOGO_COLOR,
+      label: 'Logo colour',
+      ui: { description: 'Hue rotation in degrees applied to the library or uploaded SVG logo. The shop’s buttons, links, focus rings and hero follow this colour. Custom image logos use the storefront brand hue instead.' },
+      hooks: {
+        resolveInput: ({ resolvedData, fieldKey }) => {
+          const value = resolvedData[fieldKey];
+          return value === undefined ? value : normalizeStoreLogoColor(value);
+        },
+      },
+    }),
     brandHue: integer({
       validation: { min: 0, max: 359 },
       label: 'Storefront brand hue (0–359)',
-      ui: { description: 'Leave unset to use the explicit storefront default. Use Platform Settings to choose a supported preset.' },
+      ui: { description: 'Accent colour for shops whose logo is a custom image (library and SVG logos set the accent from the logo colour). Leave empty to use the default green.' },
     }),
-    currencyCode: text({ access: { update: () => false }, defaultValue: 'USD' }),
+    // Grocery prices in two-decimal minor units; the currency is fixed when the
+    // store is set up (onboarding accepts USD) and orders keep their own copy.
+    currencyCode: text({ access: { update: () => false }, defaultValue: 'USD', ui: { description: 'Fixed at store setup. Orders keep the currency they were placed in.' } }),
     taxRateBps: integer({ defaultValue: 875, validation: { isRequired: true, min: 0, max: 10_000 }, label: 'Default tax rate (basis points)' }),
     locale: text({ defaultValue: 'en-US' }),
-    timezone: text({ defaultValue: 'America/Los_Angeles' }),
+    timezone: text({ defaultValue: 'America/Los_Angeles', access: { update: () => false } }),
     countryCode: text({ defaultValue: 'US' }),
     deliveryPolicy: json({ defaultValue: { version: 1, postalPrefixes: [], pickupMinimumCents: 0, deliveryMinimumCents: 0, deliveryFeeCents: 0, feeTaxRateBasisPoints: 0 }, access: { create: () => false, update: () => false } }),
     hours: json({

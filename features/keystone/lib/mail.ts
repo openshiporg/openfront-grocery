@@ -61,7 +61,7 @@ function passwordResetEmail({ url }: { url: string }): string {
   `;
 }
 
-export async function sendPasswordResetEmail(resetToken: string, to: string, baseUrl?: string): Promise<void> {
+export async function sendPasswordResetEmail(resetToken: string, to: string, baseUrl?: string, resetPath = '/dashboard/reset'): Promise<void> {
   if (process.env.NODE_ENV === 'production' && (!process.env.SMTP_HOST || !process.env.SMTP_FROM)) {
     throw new Error('SMTP_HOST and SMTP_FROM are required in production');
   }
@@ -73,7 +73,7 @@ export async function sendPasswordResetEmail(resetToken: string, to: string, bas
     from: process.env.SMTP_FROM,
     subject: "Your password reset token!",
     html: passwordResetEmail({
-      url: `${frontendUrl}/dashboard/reset?token=${resetToken}`,
+      url: `${frontendUrl}${resetPath}?token=${encodeURIComponent(resetToken)}`,
     }),
   });
   if (process.env.MAIL_USER?.includes("ethereal.email")) {

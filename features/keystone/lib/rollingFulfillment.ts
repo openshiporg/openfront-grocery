@@ -127,6 +127,23 @@ function parseDayRanges(value: unknown) {
   });
 }
 
+const PUBLIC_DAY_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+const wallClock = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+
+/** Weekly opening hours safe for the storefront: the seven day keys only, never fulfillment policy. */
+/** Why a weekday opening-hours entry ("8:00 AM - 8:00 PM" or "Closed") is invalid, or null. */
+export function openingHoursEntryProblem(value: string) {
+  if (/^closed$/i.test(value.trim())) return null;
+  return parseRange(value) ? null : 'Use a range like 8:00 AM - 8:00 PM, or Closed';
+}
+
+export function publicOpeningHours(hours: unknown) {
+  const source = record(hours) || {};
+  // No configured week means unknown hours, not a store that is closed every day.
+  if (!PUBLIC_DAY_ORDER.some((day) => Object.hasOwn(source, day))) return [];
+  return PUBLIC_DAY_ORDER.map((day) => ({ day, ranges: parseDayRanges(source[day]).map(({ start, end }) => ({ start: wallClock(start), end: wallClock(end) })) }));
+}
+
 function operatingRanges(hours: unknown, dateKey: string) {
   const source = record(hours);
   if (!source) return [];

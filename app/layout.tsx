@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Openfront Grocery",
-  description: "Source-owned grocery delivery, pickup, and retail operations.",
+  description: "Grocery delivery and pickup.",
   applicationName: "Openfront Grocery",
   icons: {
     icon: "/favicon.svg",

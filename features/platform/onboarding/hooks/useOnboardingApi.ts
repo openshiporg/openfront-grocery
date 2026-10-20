@@ -7,7 +7,7 @@ interface OnboardingApiProps {
   currentJsonData: Record<string, any>;
   completedItems: Record<string, string[]>;
   setProgress: (message: string) => void;
-  setResult: (result: { reused: boolean; counts: Record<string, number> } | null) => void;
+  setResult: (result: { reused: boolean; counts: Record<string, number>; missing?: string[] } | null) => void;
   onCompleted?: () => void;
   setItemLoading: (type: SeedSectionKey, item: string) => void;
   setItemCompleted: (type: SeedSectionKey, item: string) => void;
@@ -42,7 +42,7 @@ export function useOnboardingApi({
     setError(null);
     resetOnboardingState();
     setStep('progress');
-    setProgress('Applying the Store-owned launch baseline atomically...');
+    setProgress('Setting up your store…');
 
     const pending = Object.entries(currentJsonData).flatMap(([section, value]) => {
       const items = Array.isArray(value) ? value : value ? [value] : [];
@@ -55,13 +55,15 @@ export function useOnboardingApi({
 
     try {
       const result = await runGroceryOnboardingAction(currentJsonData);
-      if (!result.success || !result.data.completed) {
-        throw new Error(result.success ? 'Grocery onboarding did not complete' : result.error);
+      if (!result.success) throw new Error(result.error);
+      if (!result.data.completed) {
+        // The store exists but is not ready to open; say exactly what is missing.
+        throw new Error(`${result.data.reused ? 'Existing setup found, but it' : 'Setup was saved, but the store'} still needs: ${(result.data.missing || []).join(', ') || 'review in Settings'}.`);
       }
 
       pending.forEach(({ section, label }) => setItemCompleted(section, label));
-      setResult({ reused: result.data.reused, counts: result.data.counts });
-      setProgress(result.data.reused ? 'Existing Store setup verified.' : 'Grocery launch baseline complete!');
+      setResult({ reused: result.data.reused, counts: result.data.counts, missing: result.data.missing });
+      setProgress(result.data.reused ? 'Existing setup found and verified.' : 'Store setup complete.');
       setStep('done');
       onCompleted?.();
     } catch (error) {

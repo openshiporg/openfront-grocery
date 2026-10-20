@@ -1,7 +1,11 @@
 import type { Context } from '.keystone/types';
 
+import { sanitizeStoreLogoSvg } from '../utils/storeLogo';
+import { normalizeStoreLogoColor } from '../../lib/store-logo';
 import { requireFreshCapability } from '../access';
 import { publicStore, requireSessionStore } from '../lib/storeScope';
+import { publicOpeningHours } from '../lib/rollingFulfillment';
+import { isOnboardingPlaceholder } from '../../lib/onboarding-placeholders';
 import {
   effectiveStorefrontBrandHue,
   normalizeStorefrontBrandHue,
@@ -10,6 +14,11 @@ import {
 function optionalText(value: string | null | undefined) {
   const normalized = value?.trim();
   return normalized || null;
+}
+
+/** Merchant-facing onboarding placeholders are never published as real store details. */
+function publicText(value: string | null | undefined) {
+  return isOnboardingPlaceholder(value) ? null : optionalText(value);
 }
 
 export async function getPublicGroceryStorefrontSettings(
@@ -30,36 +39,47 @@ export async function getPublicGroceryStorefrontSettings(
       contactPhone: true,
       address: true,
       logoUrl: true,
+      logoIcon: true,
+      logoColor: true,
       brandHue: true,
       currencyCode: true,
       locale: true,
       timezone: true,
       countryCode: true,
+      hours: true,
+      policyNotes: true,
       isActive: true,
     },
   });
   if (!settings?.isActive) throw new Error('No active grocery storefront settings are configured');
 
-  const name = optionalText(settings.name) || optionalText(store.name);
-  if (!name) throw new Error('The active grocery storefront has no configured name');
+  // The setup placeholder ("Replace with your store name") is never published as
+  // the merchant's identity. With no real name configured the shop reports that
+  // setup is incomplete rather than inventing one.
+  const name = publicText(settings.name) || publicText(store.name);
   const brandHue = normalizeStorefrontBrandHue(settings.brandHue);
 
   return {
     id: String(settings.id),
     name,
-    tagline: optionalText(settings.tagline),
-    homepageTitle: optionalText(settings.homepageTitle),
-    homepageDescription: optionalText(settings.homepageDescription),
-    contactEmail: optionalText(settings.contactEmail),
-    contactPhone: optionalText(settings.contactPhone),
-    address: optionalText(settings.address),
+    setupIncomplete: !name,
+    tagline: publicText(settings.tagline),
+    homepageTitle: publicText(settings.homepageTitle),
+    homepageDescription: publicText(settings.homepageDescription),
+    contactEmail: publicText(settings.contactEmail),
+    contactPhone: publicText(settings.contactPhone),
+    address: publicText(settings.address),
     logoUrl: optionalText(settings.logoUrl),
+    logoIcon: sanitizeStoreLogoSvg(settings.logoIcon || '') || null,
+    logoColor: normalizeStoreLogoColor(settings.logoColor),
     brandHue,
     effectiveBrandHue: effectiveStorefrontBrandHue(brandHue),
     currencyCode: optionalText(settings.currencyCode),
     locale: optionalText(settings.locale),
     timezone: optionalText(settings.timezone),
     countryCode: optionalText(settings.countryCode),
+    openingHours: publicOpeningHours(settings.hours),
+    policyNotes: publicText(settings.policyNotes),
   };
 }
 

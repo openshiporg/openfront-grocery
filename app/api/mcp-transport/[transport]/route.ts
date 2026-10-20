@@ -9,7 +9,7 @@ import {
   isListType,
   isInputObjectType,
 } from 'graphql';
-import { getBaseUrl } from '@/features/dashboard/lib/getBaseUrl';
+import { getTrustedApplicationOrigin } from '@/features/keystone/lib/internalTransport';
 import { keystoneContext } from '@/features/keystone/context';
 import { trustedClientIp } from '@/features/keystone/lib/clientIp';
 import { getMcpDisabledResponse } from '@/features/keystone/lib/mcpFeatureGate';
@@ -57,7 +57,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ tra
     const { transport } = await params;
     
     // Construct GraphQL endpoint
-    const baseUrl = await getBaseUrl();
+    // Server-side destinations come from deployment configuration, never the request's Host header.
+    const baseUrl = getTrustedApplicationOrigin();
     const graphqlEndpoint = `${baseUrl}/api/graphql`;
     
     // Extract cookie from request
@@ -906,7 +907,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ tran
 
   const { transport } = await params;
   
-  const baseUrl = await getBaseUrl();
+  const baseUrl = getTrustedApplicationOrigin();
   const graphqlEndpoint = `${baseUrl}/api/graphql`;
   
   return new Response(JSON.stringify({ 

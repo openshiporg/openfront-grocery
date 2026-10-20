@@ -36,3 +36,22 @@ export function createStaffInvitationToken() { return randomBytes(32).toString('
 export function assertLastManagerSafe(target: any, next: StaffCapabilities, managerCount: number) {
   if (target?.role?.canManageUsers && target.role.canAccessDashboard && !(next.canManageUsers && next.canAccessDashboard) && managerCount <= 1) throw new Error('The last staff administrator cannot be revoked or downgraded');
 }
+
+/**
+ * Capabilities can only be granted by an administrator who holds them, so a
+ * change must never leave a capability the Store has today without an active
+ * staff administrator (user management + dashboard) holding it — otherwise it
+ * could never be restored without a global escape hatch. Which capabilities a
+ * Store may deliberately retire is a merchant policy question (NEEDS OWNER);
+ * until decided, every currently held capability stays recoverable.
+ */
+export function assertCapabilitiesRecoverable(staff: Array<{ id: string; role: Record<string, unknown> | null }>, targetId: string, next: StaffCapabilities) {
+  const after = staff.map((member) => member.id === targetId ? { id: member.id, role: next as Record<string, unknown> } : member);
+  const administrators = after.filter((member) => member.role?.canManageUsers === true && member.role?.canAccessDashboard === true);
+  for (const capability of STAFF_CAPABILITIES) {
+    const heldToday = staff.some((member) => member.role?.[capability] === true);
+    if (heldToday && !administrators.some((member) => member.role?.[capability] === true)) {
+      throw new Error(`This change would leave no staff administrator able to grant ${capability}; give it to another administrator first`);
+    }
+  }
+}

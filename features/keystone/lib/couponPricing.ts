@@ -1,3 +1,6 @@
+import { publicError } from './publicError';
+import { couponRestrictionsValid, isCouponLineEligible } from './commercialPricing';
+
 export type CouponCandidate = {
   id: string;
   code: string;
@@ -13,27 +16,21 @@ export type CouponCandidate = {
   currentUses?: number | null;
   productCategories?: unknown;
   excludedProducts?: unknown;
+  categoryTaxonomy?: string | null;
 };
 
-export function calculateCouponDiscount(coupon: CouponCandidate, items: Array<{ quantity: number; product?: { id?: string; price?: number; priceCents?: number; department?: string | null } | null }>, now = new Date()) {
-  if (!coupon.isActive) throw new Error(`Coupon ${coupon.code} is inactive`);
-  if (coupon.validFrom && new Date(coupon.validFrom) > now) throw new Error(`Coupon ${coupon.code} is not yet valid`);
-  if (coupon.validTo && new Date(coupon.validTo) < now) throw new Error(`Coupon ${coupon.code} has expired`);
-  if ((coupon.maxUses || 0) > 0 && (coupon.currentUses || 0) >= (coupon.maxUses || 0)) throw new Error(`Coupon ${coupon.code} has reached its maximum uses`);
+export function calculateCouponDiscount(coupon: CouponCandidate, items: Array<{ quantity: number; product?: { id?: string; price?: number; priceCents?: number; department?: string | null; departmentRef?: { handle?: string | null } | null } | null }>, now = new Date()) {
+  if (!coupon.isActive) throw publicError(`Coupon ${coupon.code} is not active. Remove it to continue.`, 'COUPON_INVALID');
+  if (coupon.validFrom && new Date(coupon.validFrom) > now) throw publicError(`Coupon ${coupon.code} is not valid yet. Remove it to continue.`, 'COUPON_INVALID');
+  if (coupon.validTo && new Date(coupon.validTo) < now) throw publicError(`Coupon ${coupon.code} has expired. Remove it to continue.`, 'COUPON_INVALID');
+  if ((coupon.maxUses || 0) > 0 && (coupon.currentUses || 0) >= (coupon.maxUses || 0)) throw publicError(`Coupon ${coupon.code} has been fully redeemed. Remove it to continue.`, 'COUPON_INVALID');
 
   const subtotalCents = items.reduce((sum, item) => sum + (Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity), 0);
   const minPurchaseCents = Number(coupon.minPurchaseCents || Math.round(Number(coupon.minPurchase || 0) * 100));
-  if (minPurchaseCents && subtotalCents < minPurchaseCents) throw new Error(`Coupon ${coupon.code} requires a minimum purchase of ${(minPurchaseCents / 100).toFixed(2)}`);
+  if (minPurchaseCents && subtotalCents < minPurchaseCents) throw publicError(`Coupon ${coupon.code} requires a minimum purchase of $${(minPurchaseCents / 100).toFixed(2)}.`, 'COUPON_INVALID');
 
-  const categories = Array.isArray(coupon.productCategories) ? coupon.productCategories : [];
-  const excluded = Array.isArray(coupon.excludedProducts) ? coupon.excludedProducts : [];
-  const eligible = items.filter((item) => {
-    const product = item.product;
-    if (!product?.id) return false;
-    if (categories.length && !categories.includes(product.department)) return false;
-    if (excluded.includes(product.id)) return false;
-    return true;
-  });
+  if (!couponRestrictionsValid(coupon)) throw publicError(`Coupon ${coupon.code} cannot be applied right now. Remove it or contact the store.`, 'COUPON_INVALID');
+  const eligible = items.filter((item) => isCouponLineEligible(item.product, coupon));
   const eligibleSubtotalCents = eligible.reduce((sum, item) => sum + Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity, 0);
   let discountCents = 0;
   if (coupon.discountType === 'percentage') discountCents = Math.round(eligibleSubtotalCents * (Number(coupon.discountValue) / 100));

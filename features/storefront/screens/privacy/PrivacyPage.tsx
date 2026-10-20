@@ -1,9 +1,13 @@
 'use client';
 import Link from 'next/link';
+import { Download, ShieldCheck, Trash2 } from 'lucide-react';
 import MarketAccountNav from '../../modules/market/MarketAccountNav';
-import { UrbanButton, UrbanContainer, UrbanPageShell } from '../../modules/urban/UrbanPrimitives';
+import { UrbanBadge, UrbanButton, UrbanContainer, UrbanPageShell } from '../../modules/urban/UrbanPrimitives';
 import { useEffect, useState, useTransition } from 'react';
 import { storefrontGraphQL, throwGraphQLErrors } from '@/features/storefront/lib/data/graphql';
+
+const statusTone = { requested: 'blue', deferred: 'orange', completed: 'primary', rejected: 'danger' } as const;
+
 export default function PrivacyPage() {
   const [data,setData] = useState<any>(null); const [loading,setLoading] = useState(true); const [confirmErasure,setConfirmErasure] = useState(false); const [message,setMessage] = useState(''); const [pending,start] = useTransition();
   async function call(query:string, variables?:Record<string,unknown>) { const response=await storefrontGraphQL(query,variables); throwGraphQLErrors(response.errors); return response.data; }
@@ -38,8 +42,73 @@ export default function PrivacyPage() {
       } catch(error) {setMessage(error instanceof Error?error.message:'Request failed');}
     });
   }
-  return <UrbanPageShell><UrbanContainer className="sf-account-page space-y-7 py-8 sm:py-10"><header className="border-b border-[var(--sf-rule)] pb-6"><p className="sf-eyebrow">Your account</p><h1 className="sf-title mt-2">Privacy & account data</h1><p className="sf-copy mt-3">Download your information and follow the progress of privacy requests.</p></header><MarketAccountNav active="privacy" />
-    {loading && !data ? <p role="status" className="sf-panel p-5">Loading your privacy details…</p> : data ? <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]"><section className="sf-panel space-y-5 p-5 sm:p-7"><h2 className="font-[family-name:var(--sf-font-display)] text-2xl font-semibold">Your information, your choices</h2><p className="sf-copy">{data.policy.description}</p><p className="sf-copy text-sm">Policy {data.policy.version}. Transaction and audit records are retained as described; staff will review your request.</p><UrbanButton disabled={pending || loading} onClick={()=>request('export')}>{pending ? 'Processing request…' : 'Download my data'}</UrbanButton><div className="space-y-3 border-t border-[var(--sf-rule)] pt-5"><h3 className="font-semibold">Request account erasure</h3><p className="sf-copy text-sm">This sends a request for review. It does not immediately delete your account or records that must be retained.</p>{confirmErasure ? <div className="space-y-3"><p className="text-sm font-medium">Submit an erasure request for this account?</p><div className="flex flex-wrap gap-3"><UrbanButton disabled={pending || loading} onClick={()=>request('erasure')}>Submit erasure request</UrbanButton><UrbanButton variant="ghost" disabled={pending} onClick={()=>setConfirmErasure(false)}>Keep account</UrbanButton></div></div> : <UrbanButton variant="ghost" disabled={pending || loading} onClick={()=>setConfirmErasure(true)}>Request erasure review</UrbanButton>}</div></section><section className="sf-panel space-y-4 p-5 sm:p-7" aria-busy={loading}><h2 className="font-[family-name:var(--sf-font-display)] text-2xl font-semibold">Request history</h2>{data.requests.length ? <ul className="divide-y divide-[var(--sf-rule)]">{data.requests.map((item:any)=><li className="space-y-2 py-4" key={item.id}><p className="font-semibold capitalize">{item.kind} · {String(item.status).replace(/_/g,' ')}</p>{item.reviewReason?<p className="sf-copy">{item.reviewReason}</p>:null}{item.eligibleAt?<p className="sf-copy text-sm">Review after {new Date(item.eligibleAt).toLocaleDateString()}</p>:null}</li>)}</ul> : <p className="sf-copy">You haven’t made a privacy request.</p>}<nav className="flex flex-wrap items-center justify-between gap-3" aria-label="Privacy request pages"><UrbanButton variant="ghost" disabled={pending||loading||data.pagination.page<=1} onClick={()=>refresh(data.pagination.page-1).catch(error=>setMessage(error.message))}>Previous</UrbanButton><span className="text-sm">Page {data.pagination.page} of {Math.max(1,data.pagination.totalPages)}</span><UrbanButton variant="ghost" disabled={pending||loading||data.pagination.page>=data.pagination.totalPages} onClick={()=>refresh(data.pagination.page+1).catch(error=>setMessage(error.message))}>Next</UrbanButton></nav></section></div> : <div className="sf-panel space-y-4 p-5"><p>Sign in with your customer account to manage your data. If you are already signed in, try loading it again.</p><div className="flex flex-wrap gap-4"><Link className="inline-flex min-h-11 items-center font-semibold underline" href="/dashboard/signin?from=%2Faccount%2Fprivacy">Sign in</Link><UrbanButton variant="ghost" onClick={()=>refresh().catch(error=>setMessage(error.message))}>Try again</UrbanButton></div></div>}
-    {message ? <p role="status" className="sf-panel p-4 text-sm leading-6">{message}</p> : null}
+
+  return <UrbanPageShell><UrbanContainer className="space-y-7 py-8 sm:py-10">
+    <header>
+      <h1 className="sf-title">Privacy & account data</h1>
+      <p className="sf-copy mt-2">Download your information and follow the progress of privacy requests.</p>
+    </header>
+    <MarketAccountNav active="privacy" />
+
+    {loading && !data ? (
+      <div role="status" className="grid gap-5 lg:grid-cols-2"><span className="sr-only">Loading your privacy details…</span><div aria-hidden="true" className="sf-skeleton h-72" /><div aria-hidden="true" className="sf-skeleton h-72" /></div>
+    ) : data ? (
+      <div className="grid items-start gap-5 lg:grid-cols-2 lg:gap-6">
+        <section aria-labelledby="privacy-choices-title" className="sf-panel overflow-hidden">
+          <div className="space-y-4 p-5 sm:p-7">
+            <span className="grid h-12 w-12 place-items-center rounded-full bg-[var(--sf-sage-light)] text-[var(--sf-sage)]"><ShieldCheck className="h-5 w-5" aria-hidden="true" /></span>
+            <h2 id="privacy-choices-title" className="sf-subtitle">Your information, your choices</h2>
+            <p className="sf-copy">{data.policy.description}</p>
+            <p className="text-xs leading-6 text-[var(--sf-ink-faint)]">Policy <span className="sf-mono">{data.policy.version}</span>. Transaction and audit records are retained as described; staff will review your request.</p>
+          </div>
+          <div className="grid gap-px border-t border-[var(--sf-rule)] bg-[var(--sf-rule)]">
+            <div className="space-y-3 bg-[var(--sf-card)] p-5 sm:p-7">
+              <h3 className="flex items-center gap-2 font-semibold"><Download className="h-4 w-4 text-[var(--sf-sage)]" aria-hidden="true" />Download a copy</h3>
+              <p className="text-sm leading-6 text-[var(--sf-ink-muted)]">Your orders and account records, saved as a JSON file on this device.</p>
+              <UrbanButton variant="dark" disabled={pending || loading} onClick={()=>request('export')}>{pending ? 'Processing request…' : 'Download my data'}</UrbanButton>
+            </div>
+            <div className="space-y-3 bg-[var(--sf-card)] p-5 sm:p-7">
+              <h3 className="flex items-center gap-2 font-semibold"><Trash2 className="h-4 w-4 text-[var(--sf-danger)]" aria-hidden="true" />Request account erasure</h3>
+              <p className="text-sm leading-6 text-[var(--sf-ink-muted)]">This sends a request for review. It does not immediately delete your account or records that must be retained.</p>
+              {confirmErasure ? (
+                <div role="alert" className="space-y-3 rounded-[var(--sf-radius-md)] bg-[var(--sf-danger-bg)] p-4">
+                  <p className="text-sm font-semibold text-[var(--sf-ink)]">Submit an erasure request for this account?</p>
+                  <div className="flex flex-wrap gap-3"><UrbanButton disabled={pending || loading} onClick={()=>request('erasure')}>Submit erasure request</UrbanButton><UrbanButton variant="ghost" disabled={pending} onClick={()=>setConfirmErasure(false)}>Keep account</UrbanButton></div>
+                </div>
+              ) : <UrbanButton variant="ghost" disabled={pending || loading} onClick={()=>setConfirmErasure(true)}>Request erasure review</UrbanButton>}
+            </div>
+          </div>
+        </section>
+
+        <section aria-labelledby="privacy-history-title" className="sf-panel space-y-4 p-5 sm:p-7" aria-busy={loading}>
+          <h2 id="privacy-history-title" className="sf-subtitle">Request history</h2>
+          {data.requests.length ? (
+            <ul className="divide-y divide-[var(--sf-rule)] border-y border-[var(--sf-rule)]">
+              {data.requests.map((item:any)=><li className="space-y-1.5 py-4" key={item.id}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold capitalize">{item.kind === 'export' ? 'Data download' : item.kind === 'erasure' ? 'Erasure review' : item.kind}</p>
+                  <UrbanBadge tone={statusTone[item.status as keyof typeof statusTone] || 'muted'} className="capitalize">{String(item.status).replace(/_/g,' ')}</UrbanBadge>
+                </div>
+                {item.reviewReason?<p className="text-sm leading-6 text-[var(--sf-ink-muted)]">{item.reviewReason}</p>:null}
+                {item.eligibleAt?<p className="text-xs text-[var(--sf-ink-faint)]">Review after {new Date(item.eligibleAt).toLocaleDateString()}</p>:null}
+              </li>)}
+            </ul>
+          ) : <p className="sf-note">You haven’t made a privacy request.</p>}
+          {data.pagination.totalPages > 1 ? (
+            <nav className="flex items-center justify-between gap-3" aria-label="Privacy request pages">
+              <UrbanButton variant="ghost" size="sm" disabled={pending||loading||data.pagination.page<=1} onClick={()=>refresh(data.pagination.page-1).catch(error=>setMessage(error.message))}>← Previous</UrbanButton>
+              <span className="text-sm tabular-nums text-[var(--sf-ink-muted)]">Page {data.pagination.page} of {Math.max(1,data.pagination.totalPages)}</span>
+              <UrbanButton variant="ghost" size="sm" disabled={pending||loading||data.pagination.page>=data.pagination.totalPages} onClick={()=>refresh(data.pagination.page+1).catch(error=>setMessage(error.message))}>Next →</UrbanButton>
+            </nav>
+          ) : null}
+        </section>
+      </div>
+    ) : (
+      <div className="sf-panel-soft space-y-4 p-6 sm:p-8">
+        <p className="sf-copy">Sign in with your customer account to manage your data. If you are already signed in, try loading it again.</p>
+        <div className="flex flex-wrap gap-3"><Link className="inline-flex min-h-11 items-center rounded-full bg-[var(--sf-ink)] px-5 text-sm font-semibold text-[var(--sf-paper)] hover:bg-[var(--sf-header-2)]" href="/account/sign-in?from=%2Faccount%2Fprivacy">Sign in</Link><UrbanButton variant="ghost" onClick={()=>refresh().catch(error=>setMessage(error.message))}>Try again</UrbanButton></div>
+      </div>
+    )}
+    {message ? <p role="status" className="rounded-[var(--sf-radius-md)] bg-[var(--sf-paper-2)] p-4 text-sm leading-6">{message}</p> : null}
   </UrbanContainer></UrbanPageShell>;
 }

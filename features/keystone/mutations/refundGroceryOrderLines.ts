@@ -1,3 +1,4 @@
+import { publicError } from '../lib/publicError';
 import { unconvertedLotCapacityMilli } from '../lib/inventoryConversion';
 import { createHash } from 'node:crypto';
 import type { Context } from '.keystone/types';
@@ -22,12 +23,12 @@ async function recordReturnCustody(tx: any, allocations: any[], storeId: string,
   for (const entry of returns) {
     const lot = await tx.inventoryLot.findUnique({ where: { id: entry.lotId } });
     const product = await tx.product.findUnique({ where: { id: entry.line.productId } });
-    if (!lot || !product || lot.storeId !== storeId || product.storeId !== storeId || lot.productId !== product.id) throw new Error('Returned lot is outside the refunded product and store');
-    if (entry.line.disposition === 'return_to_stock' && !isInventoryLotEligible(lot)) throw new Error('Unsafe or expired returned goods require quarantine or waste');
+    if (!lot || !product || lot.storeId !== storeId || product.storeId !== storeId || lot.productId !== product.id) throw publicError('Returned lot is outside the refunded product and store');
+    if (entry.line.disposition === 'return_to_stock' && !isInventoryLotEligible(lot)) throw publicError('Unsafe or expired returned goods require quarantine or waste');
     const delta = entry.line.disposition === 'waste' ? 0 : entry.quantityMilli;
     const nextLot = (quantityMilli(lot.quantityRemaining) + delta) / 1000;
     const nextProduct = (quantityMilli(product.stockQuantity) + delta) / 1000;
-    if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, storeId, lot)) throw new Error('Returned stock exceeds original received quantity remaining after conversions');
+    if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, storeId, lot)) throw publicError('Returned stock exceeds original received quantity remaining after conversions');
     await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot, ...(entry.line.disposition === 'quarantine' && lot.safetyStatus !== 'recalled' ? { safetyStatus: 'quarantined', safetyReason: entry.line.conditionNote } : {}) } });
     await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextProduct, inStock: nextProduct > 0 } });
     await appendInventoryMovement(tx, { storeId, orderId, productId: product.id, inventoryLotId: lot.id, sourceType: `line_refund_${entry.line.disposition}`, sourceId: entry.line.id, idempotencyKey: `line-return:${entry.line.id}:${lot.id}`, actorId, reason: entry.line.conditionNote || entry.line.reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextProduct, metadata: { orderLineRefundId: entry.line.id, quantityMilli: entry.quantityMilli, disposition: entry.line.disposition, custodyAcceptedAt: new Date().toISOString(), paymentOutcomeIndependent: true } });
@@ -39,31 +40,36 @@ export async function refundGroceryOrderLinesWithDependencies(args: Args, contex
   await requireFreshCapability(context, 'canManageOrders');
   const store = await requireSessionStore(context);
   const reason = args.reason?.trim(), requestKey = args.idempotencyKey?.trim();
-  if (!reason || reason.length < 3 || reason.length > 500 || !requestKey || requestKey.length < 12 || requestKey.length > 150 || !Array.isArray(args.lines)) throw new Error('Line refund requires a reason, idempotency key and explicit lines');
+  if (!reason || reason.length < 3 || reason.length > 500 || !requestKey || requestKey.length < 12 || requestKey.length > 150 || !Array.isArray(args.lines)) throw publicError('Line refund requires a reason, idempotency key and explicit lines');
   const fingerprint = canonicalGroceryOutboxPayload({ orderId: args.orderId, paymentId: args.paymentId, reason, lines: [...args.lines].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map(line => ({ ...line, conditionNote: line.conditionNote?.trim() || '', returnedLots: [...(line.returnedLots || [])].sort((a, b) => a.lotId.localeCompare(b.lotId)) })) });
   const providerRefundKey = `line-refund:${createHash('sha256').update(`${store.id}:${args.orderId}:${requestKey}`).digest('hex')}`;
   const claim = await withSerializableRetry(() => context.transaction(async transactionContext => {
     const tx: any = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', args.orderId);
     const order = await tx.order.findUnique({ where: { id: args.orderId } });
-    if (!order || order.storeId !== store.id) throw new Error('Refund order not found in active store');
+    if (!order || order.storeId !== store.id) throw publicError('Refund order not found in active store');
     const existing = await tx.orderLineRefund.findMany({ where: { providerRefundKey }, orderBy: { lineItemId: 'asc' } });
     if (existing.length) {
-      if (existing.some((row: any) => row.storeId !== store.id || row.inputFingerprint !== fingerprint || row.paymentId !== args.paymentId)) throw new Error('Line refund replay differs from original allocations or owner');
+      if (existing.some((row: any) => row.storeId !== store.id || row.inputFingerprint !== fingerprint || row.paymentId !== args.paymentId)) throw publicError('Line refund replay differs from original allocations or owner');
       return { allocations: existing, amountCents: existing.reduce((sum: number, row: any) => sum + row.totalCents, 0), reused: true };
     }
-    if (order.status === 'cancelled' && args.lines.some(line => line.disposition !== 'refund_only')) throw new Error('Cancelled goods already have custody disposition; a new physical return would duplicate it');
+    if (order.status === 'cancelled' && args.lines.some(line => line.disposition !== 'refund_only')) throw publicError('Cancelled goods already have custody disposition; a new physical return would duplicate it');
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', args.paymentId);
     const payment = await tx.payment.findUnique({ where: { id: args.paymentId } });
-    if (!payment || payment.storeId !== store.id || payment.orderId !== order.id || !['succeeded', 'partially_refunded'].includes(payment.status)) throw new Error('Select a settled payment belonging to this order and store');
-    if (!order.currencyCode || payment.currencyCode !== order.currencyCode) throw new Error('Refund payment currency differs from the finalized order');
+    if (!payment || payment.storeId !== store.id || payment.orderId !== order.id || !['succeeded', 'partially_refunded'].includes(payment.status)) throw publicError('Select a settled payment belonging to this order and store');
+    // Payment rows carry no currency column. The finalized settlement recorded the currency the
+    // provider confirmed at capture, so it is the authoritative currency of this settled payment.
+    const settlement = order.metadata?.finalSale?.settlementId ? await tx.orderSettlement.findUnique({ where: { id: order.metadata.finalSale.settlementId } }) : null;
+    const settledCurrency = String(settlement?.providerEvidence?.currency || settlement?.snapshot?.currency || '').toUpperCase();
+    if (!settlement || settlement.orderId !== order.id || settlement.status !== 'finalized' || (payment.providerData?.finalSettlementId !== settlement.id && settlement.providerEvidence?.originalPaymentId !== payment.id)) throw publicError('Finalize the actual sale and select its settled payment before refunding items');
+    if (!order.currencyCode || settledCurrency !== String(order.currencyCode).toUpperCase()) throw publicError('Refund payment currency differs from the finalized order');
     const prior = await tx.orderLineRefund.findMany({ where: { orderId: order.id }, orderBy: { createdAt: 'asc' } });
     const allocations = allocateFinalSaleRefund(order.metadata?.finalSale, args.lines, prior);
     const amountCents = allocations.reduce((sum, line) => sum + line.totalCents, 0);
-    if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 2147483647) throw new Error('Selected line quantities must allocate a positive supported refund amount');
+    if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 2147483647) throw publicError('Selected line quantities must allocate a positive supported refund amount');
     const existingRefunds = await tx.paymentRefund.aggregate({ where: { paymentId: payment.id, status: { in: ['processing', 'succeeded'] } }, _sum: { amountCents: true } });
     const pendingLineCents = await unlinkedLineRefundReservedCents(tx, payment.id, providerRefundKey);
-    if (Number(existingRefunds._sum.amountCents || 0) + pendingLineCents + amountCents > Number(payment.amountCents)) throw new Error('Line refund exceeds unreserved settled payment balance; review other goodwill and pending refunds');
+    if (Number(existingRefunds._sum.amountCents || 0) + pendingLineCents + amountCents > Number(payment.amountCents)) throw publicError('Line refund exceeds unreserved settled payment balance; review other goodwill and pending refunds');
     const records = [];
     for (const allocation of allocations) records.push(await tx.orderLineRefund.create({ data: { ...allocation, storeId: store.id, orderId: order.id, paymentId: payment.id, idempotencyKey: `${providerRefundKey}:${allocation.lineItemId}`, requestKey, providerRefundKey, inputFingerprint: fingerprint, currencyCode: order.currencyCode || store.currencyCode, reason, requestedBy: context.session!.itemId, status: 'reserved', events: [{ action: 'reserved', actorId: context.session!.itemId, at: new Date().toISOString(), quantityMilli: allocation.quantityMilli, disposition: allocation.disposition }] } }));
     await recordReturnCustody(tx, records, store.id, order.id, context.session!.itemId);
@@ -98,7 +104,7 @@ export async function getGroceryOrderRefundLines(_root: unknown, { orderId }: { 
   const store = await requireSessionStore(context);
   const tx: any = context.prisma;
   const order = await tx.order.findUnique({ where: { id: orderId }, select: { id: true, storeId: true, currencyCode: true, metadata: true } });
-  if (!order || order.storeId !== store.id) throw new Error('Order not found in active store');
+  if (!order || order.storeId !== store.id) throw publicError('Order not found in active store');
   const finalSale = order.metadata?.finalSale;
   if (finalSale?.status !== 'finalized') return { orderId, currencyCode: order.currencyCode, lines: [], requests: [], message: 'Finalize actual goods before issuing a line refund.' };
   const prior = await tx.orderLineRefund.findMany({ where: { orderId }, orderBy: { createdAt: 'asc' } });

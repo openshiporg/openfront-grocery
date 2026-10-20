@@ -1,39 +1,40 @@
+import { publicError } from './publicError';
 import { quantityMilli } from './inventoryMovements';
 
-const integer = (value: unknown, label: string) => { const amount = Number(value); if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw new Error(`${label} must be non-negative integer minor units`); return amount; };
+const integer = (value: unknown, label: string) => { const amount = Number(value); if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw publicError(`${label} must be non-negative integer minor units`); return amount; };
 export type RefundLineInput = { lineItemId: string; quantityMilli: number; disposition: string; conditionNote?: string; returnedLots?: Array<{ lotId: string; quantityMilli: number }> };
 function cumulativeShare(total: number, quantity: number, basis: number) { return Number((BigInt(total) * BigInt(quantity) + BigInt(Math.floor(basis / 2))) / BigInt(basis)); }
 
 /** Net goods, discount and tax each round cumulatively; full reversal reproduces every penny. */
 export function allocateFinalSaleRefund(finalSale: any, requested: RefundLineInput[], prior: any[]) {
-  if (finalSale?.status !== 'finalized' || !finalSale.settlementId || !Array.isArray(finalSale.lines) || !Array.isArray(finalSale.actuals)) throw new Error('Line refunds require an immutable finalized sale snapshot');
-  if (!requested.length || requested.length > 500 || new Set(requested.map(line => line.lineItemId)).size !== requested.length) throw new Error('Refund requires distinct final-sale line identities');
+  if (finalSale?.status !== 'finalized' || !finalSale.settlementId || !Array.isArray(finalSale.lines) || !Array.isArray(finalSale.actuals)) throw publicError('Line refunds require an immutable finalized sale snapshot');
+  if (!requested.length || requested.length > 500 || new Set(requested.map(line => line.lineItemId)).size !== requested.length) throw publicError('Refund requires distinct final-sale line identities');
   return [...requested].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map(input => {
     const commercial = finalSale.lines.find((line: any) => line.id === input.lineItemId);
     const actual = finalSale.actuals.find((line: any) => line.lineItemId === input.lineItemId);
-    if (!commercial || !actual) throw new Error('Refund line does not belong to the finalized sale');
+    if (!commercial || !actual) throw publicError('Refund line does not belong to the finalized sale');
     const fulfilledQuantityMilli = integer(actual.quantityMilli, 'Final fulfilled quantity');
     const refundQuantityMilli = integer(input.quantityMilli, 'Refund quantity');
-    if (refundQuantityMilli < 1 || fulfilledQuantityMilli < 1) throw new Error('Refund quantity must be positive for a fulfilled line');
-    if (!['refund_only', 'return_to_stock', 'waste', 'quarantine'].includes(input.disposition)) throw new Error('Explicit refund disposition required');
-    if (input.disposition !== 'refund_only' && !input.conditionNote?.trim()) throw new Error('Returned goods require condition or custody evidence');
+    if (refundQuantityMilli < 1 || fulfilledQuantityMilli < 1) throw publicError('Refund quantity must be positive for a fulfilled line');
+    if (!['refund_only', 'return_to_stock', 'waste', 'quarantine'].includes(input.disposition)) throw publicError('Explicit refund disposition required');
+    if (input.disposition !== 'refund_only' && !input.conditionNote?.trim()) throw publicError('Returned goods require condition or custody evidence');
     const existing = prior.filter(row => (row.lineItemId || row.lineItem?.id) === input.lineItemId);
     const quantityBefore = existing.reduce((total, row) => total + integer(row.quantityMilli, 'Prior refund quantity'), 0);
     const quantityAfter = quantityBefore + refundQuantityMilli;
-    if (quantityAfter > fulfilledQuantityMilli) throw new Error('Cumulative refunded quantity exceeds the final fulfilled quantity');
+    if (quantityAfter > fulfilledQuantityMilli) throw publicError('Cumulative refunded quantity exceeds the final fulfilled quantity');
     const subtotal = integer(commercial.subtotalCents, 'Line subtotal'), discount = integer(commercial.discountCents, 'Line discount'), tax = integer(commercial.taxCents, 'Line tax');
-    if (discount > subtotal) throw new Error('Final sale discount exceeds line subtotal');
+    if (discount > subtotal) throw publicError('Final sale discount exceeds line subtotal');
     const share = (amount: number) => cumulativeShare(amount, quantityAfter, fulfilledQuantityMilli) - cumulativeShare(amount, quantityBefore, fulfilledQuantityMilli);
     const netGoodsCents = share(subtotal - discount), discountCents = share(discount), taxCents = share(tax);
     const returnedLots = input.returnedLots || [];
-    if (new Set(returnedLots.map(lot => lot.lotId)).size !== returnedLots.length) throw new Error('Return lot identities must be distinct');
-    if (input.disposition === 'refund_only' && returnedLots.length) throw new Error('Refund-only requests cannot include physical returns');
+    if (new Set(returnedLots.map(lot => lot.lotId)).size !== returnedLots.length) throw publicError('Return lot identities must be distinct');
+    if (input.disposition === 'refund_only' && returnedLots.length) throw publicError('Refund-only requests cannot include physical returns');
     if (input.disposition !== 'refund_only') {
-      if (returnedLots.reduce((sum, lot) => sum + integer(lot.quantityMilli, 'Returned lot quantity'), 0) !== refundQuantityMilli) throw new Error('Returned lot quantities must equal the refunded physical quantity');
+      if (returnedLots.reduce((sum, lot) => sum + integer(lot.quantityMilli, 'Returned lot quantity'), 0) !== refundQuantityMilli) throw publicError('Returned lot quantities must equal the refunded physical quantity');
       for (const returned of returnedLots) {
         const allocated = (actual.allocations || []).filter((lot: any) => (lot.lotId || lot.inventoryLotId) === returned.lotId).reduce((sum: number, lot: any) => sum + quantityMilli(lot.quantity), 0);
         const previous = existing.flatMap(row => row.returnedLots || []).filter((lot: any) => lot.lotId === returned.lotId).reduce((sum: number, lot: any) => sum + Number(lot.quantityMilli), 0);
-        if (returned.quantityMilli <= 0 || returned.quantityMilli + previous > allocated) throw new Error('Return lot quantity exceeds its original actual allocation');
+        if (returned.quantityMilli <= 0 || returned.quantityMilli + previous > allocated) throw publicError('Return lot quantity exceeds its original actual allocation');
       }
     }
     return { lineItemId: input.lineItemId, finalSettlementId: finalSale.settlementId, finalFulfillmentId: actual.id || '', productId: actual.productId || actual.product?.id, productTitle: actual.productTitle || commercial.id, unitOfMeasure: actual.unitOfMeasure || 'each', quantityMilli: refundQuantityMilli, quantityBefore, quantityAfter, fulfilledQuantityMilli, subtotalCents: netGoodsCents + discountCents, discountCents, netGoodsCents, taxCents, totalCents: netGoodsCents + taxCents, taxRateBasisPoints: commercial.taxRateBasisPoints, disposition: input.disposition, conditionNote: input.conditionNote?.trim() || '', returnedLots };

@@ -21,9 +21,10 @@ export const Department = list({
       delete: permissions.canManageProducts,
     },
     filter: {
+      // Shoppers see only active (published) aisles; product managers also see hidden ones.
       query: async ({ session, context }) => await permissions.canManageProducts({ session, context })
         ? storeScopedFilter({ session, context })
-        : publicStoreScopedFilter(),
+        : { AND: [publicStoreScopedFilter(), { isActive: { equals: true } }] },
       update: storeScopedFilter,
       delete: storeScopedFilter,
     },

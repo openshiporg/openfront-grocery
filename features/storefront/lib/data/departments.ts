@@ -8,10 +8,11 @@ import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 export const getDepartmentsList = cache(async function getDepartmentsList(
   offset: number = 0,
   limit: number = 10
-): Promise<{ departments: GroceryDepartment[] }> {
+): Promise<{ departments: GroceryDepartment[]; total: number }> {
   try {
-    const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
+    const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[]; departmentsCount: number }>(`
       query GetDepartments($take: Int, $skip: Int) {
+        departmentsCount(where: { isActive: { equals: true } })
         departments(
           take: $take
           skip: $skip
@@ -32,7 +33,7 @@ export const getDepartmentsList = cache(async function getDepartmentsList(
     `, { take: limit, skip: offset }, { next: { revalidate: 3600 } });
     throwGraphQLErrors(errors);
     if (!data?.departments) throw new Error('Aisles could not be loaded.');
-    return { departments: data.departments };
+    return { departments: data.departments, total: Number(data.departmentsCount ?? data.departments.length) };
   } catch (error) {
     console.error('Error fetching departments:', error);
     throw error;
@@ -45,7 +46,7 @@ export const getDepartmentByHandle = cache(async function getDepartmentByHandle(
   try {
     const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
       query GetDepartment($handle: String!) {
-        departments(where: { handle: { equals: $handle } }) {
+        departments(where: { handle: { equals: $handle }, isActive: { equals: true } }) {
           id
           name
           handle
@@ -87,3 +88,18 @@ export async function getProductsByDepartment(
     throw error;
   }
 }
+
+const DEPARTMENT_PAGE = 100;
+const MAX_DEPARTMENTS = 500;
+
+/** Every active aisle (bounded), for complete filters and the aisle index. */
+export const getAllDepartments = cache(async function getAllDepartments(): Promise<{ departments: GroceryDepartment[]; total: number }> {
+  const first = await getDepartmentsList(0, DEPARTMENT_PAGE);
+  const departments = [...first.departments];
+  while (departments.length < Math.min(first.total, MAX_DEPARTMENTS)) {
+    const next = await getDepartmentsList(departments.length, DEPARTMENT_PAGE);
+    if (!next.departments.length) break;
+    departments.push(...next.departments);
+  }
+  return { departments, total: first.total };
+});
