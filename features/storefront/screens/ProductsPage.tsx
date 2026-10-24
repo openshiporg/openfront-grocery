@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { getProductsList } from '@/features/storefront/lib/data/products';
@@ -27,15 +28,20 @@ export async function ProductsPage(props: {
   const pageSize = 24;
   const page = parseCatalogPage(searchParams.page);
 
+  const availabilityFilter = availability === 'all' || availability === 'low-stock' ? availability : 'in-stock';
   const { products, count }: { products: GroceryProduct[]; count: number } = await getProductsList({
     department,
     sort,
     search,
-    availability: availability === 'all' || availability === 'low-stock' ? availability : 'in-stock',
+    availability: availabilityFilter,
     organic: organic === 'true',
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
+  // The default in-stock view says how many matches it hides, so a sold-out item never reads as "not carried".
+  const soldOutCount = availabilityFilter === 'in-stock'
+    ? Math.max(0, (await getProductsList({ department, search, availability: 'all', organic: organic === 'true', limit: 1, offset: 0 })).count - count)
+    : 0;
 
   // Filters offer every active aisle, so the last aisle is as reachable as the first.
   const { departments }: { departments: GroceryDepartment[] } = await getAllDepartments();
@@ -58,6 +64,12 @@ export async function ProductsPage(props: {
         />
 
         <CatalogControls departments={departments} activeDepartment={department} search={search} sort={sort || 'name'} availability={availability || 'in-stock'} organic={organic === 'true'}>
+          {soldOutCount ? (
+            <p role="status" className="mb-5 text-sm text-[var(--sf-ink-muted)]">
+              {soldOutCount} sold-out {soldOutCount === 1 ? 'match' : 'matches'} hidden.{' '}
+              <Link href={catalogPageHref('/products', { ...pageParams, availability: 'all' }, 1)} className="font-medium text-[var(--sf-ink)] underline underline-offset-4">Show sold out</Link>
+            </p>
+          ) : null}
           <UrbanProductGrid products={products} columns="narrow" />
           {totalPages > 1 ? (
             <div className="mt-10 border-t border-[var(--sf-rule)]">

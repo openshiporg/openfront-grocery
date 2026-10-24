@@ -30,12 +30,12 @@ export async function MainLayout({ children }: { children: React.ReactNode }) {
 /** Shown instead of the shop while it still has its setup placeholder name. */
 function StoreSetupInProgress() {
   return (
-    <main id="storefront-main" className="sf-shell flex min-h-screen items-center justify-center px-4 py-16">
+    <div id="storefront-main" className="sf-shell flex min-h-screen items-center justify-center px-4 py-16">
       <div className="sf-panel max-w-md space-y-3 p-6 text-center sm:p-8">
         <h1 className="sf-subtitle">This shop is being set up</h1>
         <p className="sf-copy">The store hasn’t finished setting up its online shop yet. Please check back soon.</p>
       </div>
-    </main>
+    </div>
   );
 }
 

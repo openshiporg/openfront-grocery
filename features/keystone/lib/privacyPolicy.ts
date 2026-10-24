@@ -3,7 +3,7 @@
 export const CUSTOMER_PRIVACY_POLICY = {
   version: 'grocery-retention-v1',
   commerceRetentionDays: 2555,
-  description: 'Commerce evidence is retained for 2,555 days after the latest order. Account erasure is deferred while an order is active or within this period; afterward identity/contact fields are pseudonymized while financial, inventory and audit facts remain.',
+  description: 'Order and payment records are kept for 7 years after your latest order. Your account can be erased once no order is active and that period has passed; your name and contact details are then removed, while the store keeps the financial and inventory records it is required to keep.',
 } as const;
 export function privacyErasureEligibility(orders: Array<{ status: string; createdAt: Date | string }>, now = new Date()) {
   if (orders.some((order) => !['delivered', 'cancelled'].includes(order.status))) return { eligible: false, eligibleAt: null, reason: 'An order is still active or awaiting resolution' };

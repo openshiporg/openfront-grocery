@@ -43,6 +43,9 @@ export const getStore = cache(async function getStore(): Promise<GroceryStore> {
           countryCode
           openingHours
           policyNotes
+          deliveryPostalPrefixes
+          deliveryMinimumCents
+          pickupMinimumCents
         }
       }
     `,

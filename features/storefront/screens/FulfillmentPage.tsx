@@ -4,7 +4,8 @@ import { getStore } from '../lib/data/store';
 import { getCheckoutFulfillmentWindows } from '../lib/data/delivery';
 import type { DeliveryWindow } from '../types';
 import { MarketModeChoice } from '../modules/market/MarketMode';
-import { UrbanContainer, UrbanPageHeader, UrbanPageShell, formatMoney, formatSlotDay, formatSlotRange, timezoneLabel } from '../modules/urban/UrbanPrimitives';
+import { UrbanContainer, UrbanPageHeader, UrbanPageShell, formatCents, formatMoney, formatSlotDay, formatSlotRange, timezoneLabel } from '../modules/urban/UrbanPrimitives';
+import { formatDeliveryArea } from '../lib/marketFormatting';
 export const metadata = { title: 'Delivery & pickup', description: 'Explore delivery and pickup availability.' };
 
 function byDay(windows: DeliveryWindow[]) {
@@ -15,6 +16,10 @@ function byDay(windows: DeliveryWindow[]) {
 
 export default async function FulfillmentPage() {
   const [store, availability] = await Promise.all([getStore(), getCheckoutFulfillmentWindows()]);
+  const area = store.deliveryPostalPrefixes || [];
+  const minimum = (cents?: number) => cents ? ` Minimum order ${formatCents(cents)} before tax and fees.` : '';
+  const deliveryText = area.length ? `Delivers to ${formatDeliveryArea(area)}.${minimum(store.deliveryMinimumCents)}` : 'Delivery is not available right now. Choose pickup instead.';
+  const pickupText = `${store.address || 'Contact the store to confirm the pickup location.'}${minimum(store.pickupMinimumCents)}`;
   return <UrbanPageShell><UrbanContainer className="space-y-8 py-8 sm:py-10">
     <UrbanPageHeader title="Groceries, on your schedule." description="The week ahead at a glance. Pick your exact time at checkout — viewing a time here doesn’t reserve it." breadcrumb={[{ label: 'Shop', href: '/products' }, { label: 'Delivery & pickup' }]} />
     <p className="sf-note">Times are shown in {store.timezone ? `${timezoneLabel(store.timezone)} (${store.timezone})` : 'the store’s local timezone'}. Availability can change. Delivery eligibility and fees are confirmed with your postal code at checkout.</p>
@@ -27,7 +32,7 @@ export default async function FulfillmentPage() {
           <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-full ${mode === 'delivery' ? 'bg-[var(--sf-header-2)]' : 'bg-[var(--sf-card)] text-[var(--sf-sage)]'}`}><Icon className="h-5 w-5" aria-hidden="true" /></span>
           <div className="min-w-0">
             <h2 id={`${mode}-times`} className="sf-subtitle">{mode === 'delivery' ? 'Home delivery' : 'Store pickup'}</h2>
-            <p className={`mt-1 text-sm leading-6 ${mode === 'delivery' ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-muted)]'}`}>{mode === 'delivery' ? 'Choose a delivery window and share any access instructions when you check out.' : store.address || 'Contact the store to confirm the pickup location.'}</p>
+            <p className={`mt-1 text-sm leading-6 ${mode === 'delivery' ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-muted)]'}`}>{mode === 'delivery' ? deliveryText : pickupText}</p>
           </div>
         </div>
         <div className="p-6 sm:p-7">

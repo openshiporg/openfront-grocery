@@ -50,7 +50,7 @@ export default function ListManager({ initialLists }: { initialLists: ShoppingLi
             const done = list.items.filter((item) => item.checked).length;
             return <button key={list.id} type="button" disabled={disabled} aria-current={current ? 'page' : undefined} onClick={() => select(list.id)} className={`min-w-[10rem] rounded-[var(--sf-radius-md)] px-4 py-3 text-left transition-colors lg:w-full ${current ? 'bg-[var(--sf-ink)] text-[var(--sf-paper)]' : 'bg-[var(--sf-paper-2)] hover:bg-[var(--sf-paper-3)]'}`}>
               <span className="block truncate text-sm font-semibold">{list.name}</span>
-              <span className={`mt-0.5 block text-xs ${current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{list.items.length} items{list.isDefault ? ' · default' : ''}</span>
+              <span className={`mt-0.5 block text-xs ${current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{list.items.length} {list.items.length === 1 ? 'item' : 'items'}{list.isDefault ? ' · default' : ''}</span>
               <span aria-hidden="true" className={`mt-2 block h-1 overflow-hidden rounded-full ${current ? 'bg-[var(--sf-header-2)]' : 'bg-[var(--sf-rule)]'}`}><span className="block h-full rounded-full bg-[var(--sf-tag-deep)]" style={{ width: `${list.items.length ? (done / list.items.length) * 100 : 0}%` }} /></span>
             </button>;
           })}</div>
@@ -72,7 +72,7 @@ export default function ListManager({ initialLists }: { initialLists: ShoppingLi
               });
               batchKey.current = null;
               if (!result.success && !result.addedCount) throw new Error(result.message || 'No items could be added.');
-              setMessage(`${result.addedCount} items added to your basket.${result.skippedCount ? ` ${result.skippedCount} skipped: ${result.skippedItems.join(', ')}.` : ''} Review your basket for current quantities and prices.`);
+              setMessage(`${result.addedCount} ${result.addedCount === 1 ? 'item' : 'items'} added to your basket.${result.skippedCount ? ` ${result.skippedCount} skipped: ${result.skippedItems.join(', ')}.` : ''} Review your basket for current quantities and prices.`);
             });
           })}><ShoppingBasket className="h-4 w-4 shrink-0" aria-hidden="true" />Add list to basket</UrbanButton>
         </div>

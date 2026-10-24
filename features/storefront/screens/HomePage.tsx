@@ -6,6 +6,7 @@ import { getProductsList } from '../lib/data/products';
 import { getStore } from '../lib/data/store';
 import { getCheckoutFulfillmentWindows } from '../lib/data/delivery';
 import { getDeals } from '../lib/data/deals';
+import { formatDeliveryArea } from '../lib/marketFormatting';
 import type { DeliveryWindow } from '../types';
 import UrbanProductGrid from '../modules/urban/UrbanProductGrid';
 import UrbanDepartmentCard from '../modules/urban/UrbanDepartmentCard';
@@ -109,7 +110,7 @@ export async function HomePage(props: { params: Promise<{ countryCode?: string }
               <p className="py-4 text-sm leading-6 text-[var(--sf-header-ink-muted)]">Times couldn’t be loaded right now. You’ll choose an available time at checkout.</p>
             )}
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--sf-header-2)] pt-3">
-              <p className="text-xs text-[var(--sf-header-ink-muted)]">Viewing a time doesn’t reserve it.</p>
+              <p className="text-xs text-[var(--sf-header-ink-muted)]">{store.deliveryPostalPrefixes?.length ? `Delivers to ${formatDeliveryArea(store.deliveryPostalPrefixes, 3)}. ` : ''}Viewing a time doesn’t reserve it.</p>
               <Link prefetch={false} href="/fulfillment" className="inline-flex min-h-10 items-center gap-1 text-sm font-semibold underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">All times <ArrowRight className="h-4 w-4" aria-hidden="true" /></Link>
             </div>
           </section>

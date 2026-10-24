@@ -148,6 +148,9 @@ export interface GroceryStore {
   /** Weekly hours, Monday first; an empty ranges list means closed that day. */
   openingHours?: Array<{ day: string; ranges: Array<{ start: string; end: string }> }>;
   policyNotes?: string | null;
+  deliveryPostalPrefixes?: string[];
+  deliveryMinimumCents?: number;
+  pickupMinimumCents?: number;
 }
 
 export interface ShippingAddress {

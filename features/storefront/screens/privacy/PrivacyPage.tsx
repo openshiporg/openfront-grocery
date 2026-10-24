@@ -59,7 +59,7 @@ export default function PrivacyPage() {
             <span className="grid h-12 w-12 place-items-center rounded-full bg-[var(--sf-sage-light)] text-[var(--sf-sage)]"><ShieldCheck className="h-5 w-5" aria-hidden="true" /></span>
             <h2 id="privacy-choices-title" className="sf-subtitle">Your information, your choices</h2>
             <p className="sf-copy">{data.policy.description}</p>
-            <p className="text-xs leading-6 text-[var(--sf-ink-faint)]">Policy <span className="sf-mono">{data.policy.version}</span>. Transaction and audit records are retained as described; staff will review your request.</p>
+            <p className="text-xs leading-6 text-[var(--sf-ink-faint)]">Staff review every erasure request.</p>
           </div>
           <div className="grid gap-px border-t border-[var(--sf-rule)] bg-[var(--sf-rule)]">
             <div className="space-y-3 bg-[var(--sf-card)] p-5 sm:p-7">

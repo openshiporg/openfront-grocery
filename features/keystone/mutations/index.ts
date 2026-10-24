@@ -405,6 +405,9 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         countryCode: String
         openingHours: JSON!
         policyNotes: String
+        deliveryPostalPrefixes: [String!]!
+        deliveryMinimumCents: Int!
+        pickupMinimumCents: Int!
       }
 
       input GroceryContactMessageInput {

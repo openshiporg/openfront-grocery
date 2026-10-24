@@ -21,7 +21,19 @@ export function departmentHref(department: Pick<GroceryDepartment, 'handle'>) {
 }
 
 export function statusLabel(status?: string | null) {
-  return (status || 'pending').replace(/_/g, ' ');
+  const label = (status || 'pending').replace(/_/g, ' ');
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+const ORDER_STATUS_LABELS: Record<string, string> = {
+  pending: 'Awaiting confirmation',
+  processing: 'Preparing',
+  returned: 'Returned to store',
+};
+
+/** Shopper-facing order status: "pending" reads as the step it is waiting on. */
+export function orderStatusLabel(status?: string | null) {
+  return ORDER_STATUS_LABELS[status || 'pending'] || statusLabel(status);
 }
 
 export function totalCartLines(cart?: GroceryCart | null) {
@@ -30,9 +42,9 @@ export function totalCartLines(cart?: GroceryCart | null) {
 
 export function UrbanPageShell({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
-    <main id="storefront-main" tabIndex={-1} className={`min-w-0 flex-1 text-[var(--sf-ink)] outline-none ${className}`}>
+    <div id="storefront-main" tabIndex={-1} className={`min-w-0 flex-1 text-[var(--sf-ink)] outline-none ${className}`}>
       {children}
-    </main>
+    </div>
   );
 }
 

@@ -1,3 +1,3 @@
-import { AddressesPage, generateMetadata } from '@/features/storefront/screens/AccountPage';
-export { generateMetadata };
+import { AddressesPage, addressesMetadata } from '@/features/storefront/screens/AccountPage';
+export const metadata = addressesMetadata;
 export default AddressesPage;

@@ -9407,6 +9407,9 @@ type PublicGroceryStorefrontSettings {
   countryCode: String
   openingHours: JSON!
   policyNotes: String
+  deliveryPostalPrefixes: [String!]!
+  deliveryMinimumCents: Int!
+  pickupMinimumCents: Int!
 }
 
 input GroceryContactMessageInput {

@@ -15,11 +15,15 @@ import { ReorderButton } from '../modules/account/ReorderButton';
 import { ProfileForm } from '../modules/account/ProfileForm';
 import { AddressBook } from '../modules/account/AddressBook';
 import { getSavedAddresses } from '../lib/data/addresses';
-import { UrbanBadge, UrbanButton, UrbanButtonLink, UrbanContainer, UrbanEmptyState, UrbanPageShell, UrbanPager, formatCents, statusLabel } from '../modules/urban/UrbanPrimitives';
+import { UrbanBadge, UrbanButton, UrbanButtonLink, UrbanContainer, UrbanEmptyState, UrbanPageShell, UrbanPager, formatCents, orderStatusLabel } from '../modules/urban/UrbanPrimitives';
 
 export async function generateMetadata(): Promise<Metadata> {
   return storefrontMetadata({ title: 'Your account', description: 'Find your grocery orders, shop your favorites again, and manage your details.' });
 }
+
+export const orderHistoryMetadata: Metadata = storefrontMetadata({ title: 'Your orders', description: 'Track current grocery orders and shop past baskets again.' });
+export const profileMetadata: Metadata = storefrontMetadata({ title: 'Your profile', description: 'Manage your name, contact details, password and notifications.' });
+export const addressesMetadata: Metadata = storefrontMetadata({ title: 'Saved addresses', description: 'Manage the delivery addresses saved to your account.' });
 
 type Props = { searchParams?: Promise<{ page?: string }> };
 
@@ -46,7 +50,7 @@ function OrderRow({ order }: { order: GroceryOrder }) {
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-lg font-bold tracking-[-0.02em]"><Link className="hover:underline hover:underline-offset-4" href={`/order/${order.id}`}>Order #{order.orderNumber}</Link></h3>
-          <UrbanBadge tone={exception ? 'danger' : order.status === 'delivered' ? 'muted' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : statusLabel(order.status)}</UrbanBadge>
+          <UrbanBadge tone={exception ? 'danger' : order.status === 'delivered' ? 'muted' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : orderStatusLabel(order.status)}</UrbanBadge>
         </div>
         <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">{new Date(order.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · {order.items.length} product{order.items.length === 1 ? '' : 's'} · {pickup ? 'Pickup' : 'Delivery'}</p>
         <Link href={`/order/${order.id}`} className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-4 hover:decoration-[var(--sf-ink)]">View order & receipt</Link>

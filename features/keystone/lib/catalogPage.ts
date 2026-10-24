@@ -12,9 +12,11 @@ export function catalogPageQuery(args: {storeId:string;now:Date;department?:stri
   if(args.search?.trim()) {const p=bind(`%${args.search.trim().slice(0,200).replace(/[\\%_]/g,'\\$&')}%`);filters.push(`(p."title" ILIKE ${p} OR p."sku" ILIKE ${p} OR p."handle" ILIKE ${p})`);}
   if(args.organic===true) filters.push('p."organicCertified" = true');
   const availability=args.availability || 'in-stock';
-  if(!['all','in-stock','low-stock'].includes(availability)) throw new Error('Unsupported catalog availability filter');
+  if(!['all','in-stock','low-stock','on-sale'].includes(availability)) throw new Error('Unsupported catalog availability filter');
   if(availability!=='all') filters.push('COALESCE(stock.quantity,0)>0');
   if(availability==='low-stock') filters.push('COALESCE(stock.quantity,0)<10');
+  // Specials: in stock with a compare-at price above today's price.
+  if(availability==='on-sale') filters.push('p."compareAtPrice" > p."price"');
   const order:Record<string,string>={'price-asc':'p."priceCents" ASC','price-desc':'p."priceCents" DESC',newest:'p."createdAt" DESC','low-stock':'COALESCE(stock.quantity,0) ASC'};
   const from=`FROM "Product" p LEFT JOIN "Department" d ON d."id"=p."departmentRef"
     LEFT JOIN (SELECT "product",SUM("quantityRemaining") AS quantity FROM "InventoryLot"

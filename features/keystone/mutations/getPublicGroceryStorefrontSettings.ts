@@ -5,6 +5,7 @@ import { normalizeStoreLogoColor } from '../../lib/store-logo';
 import { requireFreshCapability } from '../access';
 import { publicStore, requireSessionStore } from '../lib/storeScope';
 import { publicOpeningHours } from '../lib/rollingFulfillment';
+import { normalizeDeliveryPolicy } from '../lib/deliveryPolicy';
 import { isOnboardingPlaceholder } from '../../lib/onboarding-placeholders';
 import {
   effectiveStorefrontBrandHue,
@@ -48,6 +49,7 @@ export async function getPublicGroceryStorefrontSettings(
       countryCode: true,
       hours: true,
       policyNotes: true,
+      deliveryPolicy: true,
       isActive: true,
     },
   });
@@ -58,6 +60,9 @@ export async function getPublicGroceryStorefrontSettings(
   // setup is incomplete rather than inventing one.
   const name = publicText(settings.name) || publicText(store.name);
   const brandHue = normalizeStorefrontBrandHue(settings.brandHue);
+  // Shoppers see the delivery area and minimums before checkout; checkout enforces the same policy.
+  let deliveryPolicy: ReturnType<typeof normalizeDeliveryPolicy> | null = null;
+  try { deliveryPolicy = normalizeDeliveryPolicy(settings.deliveryPolicy); } catch { deliveryPolicy = null; }
 
   return {
     id: String(settings.id),
@@ -80,6 +85,9 @@ export async function getPublicGroceryStorefrontSettings(
     countryCode: optionalText(settings.countryCode),
     openingHours: publicOpeningHours(settings.hours),
     policyNotes: publicText(settings.policyNotes),
+    deliveryPostalPrefixes: deliveryPolicy?.postalPrefixes ?? [],
+    deliveryMinimumCents: deliveryPolicy?.deliveryMinimumCents ?? 0,
+    pickupMinimumCents: deliveryPolicy?.pickupMinimumCents ?? 0,
   };
 }
 

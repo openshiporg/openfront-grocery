@@ -1,4 +1,5 @@
 import { publicError } from './publicError';
+import { formatDeliveryArea } from '../../storefront/lib/marketFormatting';
 
 export type DeliveryPolicy = { version: 1; pickupMinimumCents: number; deliveryMinimumCents: number; postalPrefixes: string[]; deliveryFeeCents: number; feeTaxRateBasisPoints: number };
 export function normalizeDeliveryPolicy(raw: any): DeliveryPolicy {
@@ -28,7 +29,7 @@ export function evaluateDeliveryPolicy(raw: unknown, method: 'delivery'|'pickup'
     const postal = postalCode.replace(/\s/g,'').toUpperCase();
     if (!/^[A-Z0-9-]{3,12}$/.test(postal)) throw publicError('Enter a valid delivery postal code.', 'DELIVERY_AREA');
     if (!policy.postalPrefixes.some(prefix=>postal.startsWith(prefix))) throw publicError(policy.postalPrefixes.length
-      ? `We don't deliver to postal code ${postal}. We deliver to postal codes starting with ${policy.postalPrefixes.slice(0, 10).join(', ')}. Change the address or choose pickup.`
+      ? `We don't deliver to postal code ${postal}. We deliver to ${formatDeliveryArea(policy.postalPrefixes)}. Change the address or choose pickup.`
       : 'Delivery is not available right now. Choose pickup instead.', 'DELIVERY_AREA');
   }
   return {policy,feeCents:method==='delivery'?policy.deliveryFeeCents:0,feeTaxRateBasisPoints:method==='delivery'?policy.feeTaxRateBasisPoints:0};

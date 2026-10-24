@@ -3,7 +3,7 @@ import type { GroceryProduct } from '../../types';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
 export type ProductSortOption = 'name' | 'price-asc' | 'price-desc' | 'newest' | 'low-stock';
-export type ProductAvailabilityFilter = 'in-stock' | 'all' | 'low-stock';
+export type ProductAvailabilityFilter = 'in-stock' | 'all' | 'low-stock' | 'on-sale';
 
 type PublicCatalogProduct = {
   id: string;

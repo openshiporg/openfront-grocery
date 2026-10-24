@@ -95,6 +95,10 @@ export const groceryOnboardingSeedSchema = z.object({
     unitOfMeasure: z.enum(['each', 'lb', 'oz', 'kg', 'g', 'L', 'mL', 'gallon', 'quart', 'pint']),
     organicCertified: z.boolean(),
     allergens: z.array(z.enum(['milk', 'eggs', 'fish', 'shellfish', 'tree_nuts', 'peanuts', 'wheat', 'soybeans', 'sesame'])),
+    description: z.string().max(5000).optional(),
+    nutrition: z.record(z.union([z.string(), z.number()])).optional(),
+    // Blank inherits the store rate; 0 marks exempt food.
+    taxRateBasisPoints: z.number().int().min(0).max(10_000).optional(),
   })).min(1),
   inventoryLots: z.array(z.object({
     lotNumber: nonEmpty,

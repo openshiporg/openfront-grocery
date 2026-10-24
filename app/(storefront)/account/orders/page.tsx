@@ -1,3 +1,3 @@
-import { OrderHistoryPage, generateMetadata } from '@/features/storefront/screens/AccountPage';
-export { generateMetadata };
+import { OrderHistoryPage, orderHistoryMetadata } from '@/features/storefront/screens/AccountPage';
+export const metadata = orderHistoryMetadata;
 export default OrderHistoryPage;

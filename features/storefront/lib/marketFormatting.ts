@@ -102,3 +102,16 @@ export function legacyWindowTimes(code: string | null | undefined) {
   const clock = (hour: number) => `${String(hour).padStart(2, '0')}:00`;
   return { startTime: clock(start), endTime: clock(end) };
 }
+
+/** "postal code 94107", "postal codes 94107, 94110", or "postal codes starting with 941". */
+export function formatDeliveryArea(prefixes: string[], limit = 10) {
+  const shown = prefixes.slice(0, limit);
+  const full = shown.filter((prefix) => /^\d{5}(-\d{4})?$/.test(prefix));
+  const partial = shown.filter((prefix) => !full.includes(prefix));
+  const parts = [
+    full.length ? `${full.length === 1 && !partial.length ? 'postal code' : 'postal codes'} ${full.join(', ')}` : '',
+    partial.length ? `${full.length ? '' : 'postal codes '}starting with ${partial.join(', ')}` : '',
+  ].filter(Boolean);
+  const more = prefixes.length > shown.length ? ` and ${prefixes.length - shown.length} more` : '';
+  return `${parts.join(' and ')}${more}`;
+}

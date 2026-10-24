@@ -20,11 +20,26 @@ function plainDescription(description: unknown): string {
   }
   return '';
 }
+function siteOrigin() {
+  try { return process.env.NEXT_PUBLIC_SITE_URL ? new URL(process.env.NEXT_PUBLIC_SITE_URL).origin : null; } catch { return null; }
+}
 export async function generateMetadata(props: Props): Promise<Metadata> {
   const { slug } = await props.params;
   const product = await getProductByHandle(slug);
   if (!product) notFound();
-  return storefrontMetadata({ title: product.name, description: plainDescription(product.description) || `Shop ${product.name}.`, canonical: `/products/${slug}` });
+  const description = plainDescription(product.description) || `Shop ${product.name}.`;
+  const image = product.imageUrl || product.thumbnailUrl;
+  const origin = siteOrigin();
+  return {
+    ...storefrontMetadata({ title: product.name, description, canonical: `/products/${slug}` }),
+    // Same shape as E-commerce's product metadata; image URLs are made absolute against the store origin.
+    openGraph: {
+      title: product.name,
+      description,
+      ...(origin ? { url: new URL(`/products/${slug}`, origin).toString() } : {}),
+      images: image && (origin || /^https?:\/\//.test(image)) ? [new URL(image, origin || undefined).toString()] : [],
+    },
+  };
 }
 export async function ProductPage(props: Props) {
   const { slug } = await props.params;

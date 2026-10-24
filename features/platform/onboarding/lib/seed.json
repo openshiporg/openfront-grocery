@@ -156,6 +156,9 @@
     {
       "title": "Organic Bananas",
       "handle": "organic-bananas",
+      "description": "Ripe organic Cavendish bananas, sold loose by the pound. A medium banana weighs about 0.4 lb.",
+      "nutrition": {"servingSize": "1 medium banana (118 g)", "ingredients": "Organic bananas.", "calories": 105, "fatGrams": 0.4, "carbohydrateGrams": 27, "sugarGrams": 14, "proteinGrams": 1.3, "sodiumMilligrams": 1},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-BAN-001",
       "status": "published",
       "price": 0.79,
@@ -179,6 +182,9 @@
     {
       "title": "Hass Avocados",
       "handle": "avocados-hass",
+      "description": "Hass avocados, sold each. Ready to eat when the skin is dark and the fruit gives slightly to gentle pressure.",
+      "nutrition": {"servingSize": "1/3 medium avocado (50 g)", "ingredients": "Avocado.", "calories": 80, "fatGrams": 7, "saturatedFatGrams": 1, "carbohydrateGrams": 4, "sugarGrams": 0, "proteinGrams": 1, "sodiumMilligrams": 0},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-AVO-001",
       "status": "published",
       "price": 1.99,
@@ -202,6 +208,9 @@
     {
       "title": "Whole Milk",
       "handle": "whole-milk-gallon",
+      "description": "Pasteurized whole milk, vitamin D added. One gallon jug. Keep refrigerated.",
+      "nutrition": {"servingSize": "1 cup (240 mL)", "ingredients": "Grade A whole milk, vitamin D3.", "calories": 150, "fatGrams": 8, "saturatedFatGrams": 5, "carbohydrateGrams": 12, "sugarGrams": 12, "proteinGrams": 8, "sodiumMilligrams": 120},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-MILK-001",
       "status": "published",
       "price": 4.69,
@@ -227,6 +236,9 @@
     {
       "title": "Plain Greek Yogurt",
       "handle": "greek-yogurt-plain",
+      "description": "Plain, unsweetened Greek yogurt with live and active cultures. 32 oz tub. Keep refrigerated.",
+      "nutrition": {"servingSize": "3/4 cup (170 g)", "ingredients": "Cultured pasteurized nonfat milk, live and active cultures.", "calories": 100, "fatGrams": 0, "saturatedFatGrams": 0, "carbohydrateGrams": 6, "sugarGrams": 4, "proteinGrams": 18, "sodiumMilligrams": 65},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-YOG-001",
       "status": "published",
       "price": 5.49,
@@ -252,6 +264,9 @@
     {
       "title": "Fresh Salmon Fillet",
       "handle": "fresh-salmon-fillet",
+      "description": "Fresh Atlantic salmon fillet, skin on, cut to order and sold by the pound. Keep refrigerated and cook within two days.",
+      "nutrition": {"servingSize": "4 oz (113 g)", "ingredients": "Atlantic salmon.", "calories": 230, "fatGrams": 15, "saturatedFatGrams": 3, "carbohydrateGrams": 0, "sugarGrams": 0, "proteinGrams": 23, "sodiumMilligrams": 65},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-SAL-001",
       "status": "published",
       "price": 14.99,
@@ -277,6 +292,9 @@
     {
       "title": "Sourdough Bread",
       "handle": "sourdough-bread",
+      "description": "Naturally leavened sourdough loaf, baked fresh each morning. About 24 oz.",
+      "nutrition": {"servingSize": "1 slice (50 g)", "ingredients": "Unbleached wheat flour, water, sourdough culture (wheat flour, water), salt.", "calories": 130, "fatGrams": 0.5, "saturatedFatGrams": 0, "carbohydrateGrams": 26, "sugarGrams": 1, "proteinGrams": 5, "sodiumMilligrams": 290},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-BREAD-001",
       "status": "published",
       "price": 4.29,
@@ -302,6 +320,9 @@
     {
       "title": "Frozen Blueberries",
       "handle": "frozen-blueberries",
+      "description": "Wild blueberries, individually quick frozen. 16 oz bag. Keep frozen.",
+      "nutrition": {"servingSize": "1 cup (140 g)", "ingredients": "Blueberries.", "calories": 80, "fatGrams": 1, "saturatedFatGrams": 0, "carbohydrateGrams": 19, "sugarGrams": 13, "proteinGrams": 1, "sodiumMilligrams": 0},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-BLUE-001",
       "status": "published",
       "price": 6.49,
@@ -325,6 +346,9 @@
     {
       "title": "Jasmine Rice",
       "handle": "jasmine-rice",
+      "description": "Long-grain Thai jasmine rice, sold loose from the bulk bin by the pound.",
+      "nutrition": {"servingSize": "1/4 cup dry (45 g)", "ingredients": "Jasmine rice.", "calories": 160, "fatGrams": 0, "saturatedFatGrams": 0, "carbohydrateGrams": 36, "sugarGrams": 0, "proteinGrams": 3, "sodiumMilligrams": 0},
+      "taxRateBasisPoints": 0,
       "sku": "PROD-RICE-001",
       "status": "published",
       "price": 8.99,

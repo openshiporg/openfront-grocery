@@ -10,7 +10,7 @@ import { OrderAdjustment, OrderAdjustmentReturnNotice } from '../modules/order-a
 import { PickupCheckInPanel } from '../modules/urban/PickupCheckInPanel';
 import { SubstitutionDecisions } from '../modules/order-substitution/SubstitutionDecisions';
 import { ArrowLeft, Check, Store, Truck } from 'lucide-react';
-import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanPageShell, formatCents, formatSlotDay, formatSlotRange, formatUnit, statusLabel, timezoneLabel } from '../modules/urban/UrbanPrimitives';
+import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanPageShell, formatCents, formatSlotDay, formatSlotRange, formatUnit, orderStatusLabel, statusLabel, timezoneLabel } from '../modules/urban/UrbanPrimitives';
 
 type Props = { params: Promise<{ id: string }> };
 export async function generateMetadata(): Promise<Metadata> {
@@ -19,7 +19,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 const progress: Record<GroceryOrder['status'], number> = { pending: -1, confirmed: 0, processing: 1, picking: 1, ready_for_pickup: 2, out_for_delivery: 2, delivered: 3, cancelled: -1, delivery_failed: -1, delivery_refused: -1, returned: -1 };
 const statusCopy: Record<GroceryOrder['status'], string> = {
-  pending: 'Your order is recorded. Confirmation and payment processing may still be in progress.',
+  pending: 'The shop has your order and will confirm it soon. Payment confirmation may still be in progress.',
   confirmed: 'Your order is confirmed. Check here for updates as the shop prepares your groceries.',
   processing: 'The shop is preparing your groceries.', picking: 'Your groceries are being picked. Any available changes appear in your item details below.',
   ready_for_pickup: 'Your groceries are ready. Check in below when you arrive at the shop.',
@@ -79,7 +79,7 @@ export async function OrderTrackingPage(props: Props) {
     <Link href="/account/orders" className="inline-flex min-h-10 items-center gap-1.5 text-sm font-semibold text-[var(--sf-ink-muted)] hover:text-[var(--sf-ink)]"><ArrowLeft className="h-4 w-4" aria-hidden="true" />Your orders</Link>
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="sf-eyebrow">{pickup ? 'Pickup' : 'Delivery'} order · placed {placed.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p><h1 className="sf-title mt-1">Order #{order.orderNumber}</h1></div>
-      <UrbanBadge tone={exception ? 'danger' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : statusLabel(order.status)}</UrbanBadge>
+      <UrbanBadge tone={exception ? 'danger' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : orderStatusLabel(order.status)}</UrbanBadge>
     </header>
 
     <section aria-labelledby="order-progress" className={`rounded-[28px] p-6 sm:p-8 ${exception ? 'bg-[var(--sf-danger-bg)]' : 'sf-dark'}`}>
