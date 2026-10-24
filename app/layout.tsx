@@ -12,8 +12,9 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// No root title: the storefront and dashboard layouts set their own, and the
+// unmatched-path 404 (app/not-found.tsx) names the store itself.
 export const metadata: Metadata = {
-  title: "Openfront Grocery",
   description: "Grocery delivery and pickup.",
   applicationName: "Openfront Grocery",
   icons: {

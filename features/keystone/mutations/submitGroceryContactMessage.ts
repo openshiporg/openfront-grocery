@@ -4,6 +4,7 @@ import type { Context } from '.keystone/types';
 import { consumeActionBuckets } from '../lib/graphqlRateLimit';
 import { publicError } from '../lib/publicError';
 import { publicStore } from '../lib/storeScope';
+import { zonedDateKey } from '../lib/storeTime';
 
 export const CONTACT_TOPICS: Record<string, string> = {
   order_problem: 'Missing, wrong or damaged item',
@@ -49,7 +50,10 @@ export async function submitGroceryContactMessage(_root: unknown, { data }: { da
     ? (await (context.prisma as any).user.findUnique({ where: { id: context.session.itemId }, select: { id: true, storeId: true } }))
     : null;
   const now = new Date();
-  const reference = `JUN-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(4).toString('hex').toUpperCase()}`;
+  // The date part is the store's calendar day, so a shopper quoting it reads the same day the store does.
+  let referenceDay: string;
+  try { referenceDay = zonedDateKey(now, store.timezone || 'UTC'); } catch { referenceDay = now.toISOString().slice(0, 10); }
+  const reference = `JUN-${referenceDay.replace(/-/g, '')}-${randomBytes(4).toString('hex').toUpperCase()}`;
   await context.sudo().db.ContactMessage.createOne({
     data: {
       store: { connect: { id: store.id } },
