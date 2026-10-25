@@ -12,8 +12,8 @@ Openfront Grocery is a self-hostable grocery storefront and store-operations pla
 |---|---|
 | **Demo name** | Juniper Market |
 | **Product** | [Openfront Grocery](https://openship.org/products/openfront-grocery) |
-| **Storefront** | [juniper.openship.org](https://juniper.openship.org) |
-| **Dashboard** | [juniper.openship.org/dashboard](https://juniper.openship.org/dashboard) |
+| **Storefront** | [grocery.openship.org](https://grocery.openship.org) |
+| **Dashboard** | [grocery.openship.org/dashboard](https://grocery.openship.org/dashboard) |
 | **User** | `juniper@openship.org` |
 | **Password** | `48dUYWcxNparnRLHFZKY` |
 
