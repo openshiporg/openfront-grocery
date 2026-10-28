@@ -12,7 +12,7 @@ export async function DealsPage() {
   // Coupon-linked products first, then everything with a sale price.
   const products = [...new Map([...deals.filter((deal) => deal.product).map((deal) => deal.product!), ...saleProducts].map((product) => [product.id, product])).values()];
   return <UrbanPageShell><UrbanContainer className="space-y-10 py-8 sm:py-10">
-    <UrbanPageHeader breadcrumb={[{ label: 'Shop', href: '/products' }, { label: 'Specials' }]} title="Specials" description="Sale prices and current offers from the store. Coupon eligibility is confirmed against your basket before you pay." />
+    <UrbanPageHeader breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Specials' }]} title="Specials" description="Sale prices and current offers from the store. Coupon eligibility is confirmed against your basket before you pay." />
     {products.length ? <section aria-labelledby="deal-products"><UrbanSectionTitle id="deal-products" title="On sale" /><UrbanProductGrid products={products} /></section> : null}
     {deals.length ? <section aria-labelledby="deal-coupons"><UrbanSectionTitle id="deal-coupons" title="Coupons" /><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{deals.map((deal) => <DealTicket key={deal.id} deal={deal} />)}</div></section> : products.length ? null : <UrbanEmptyState icon={Ticket} title="No specials right now" actionHref="/products" actionLabel="Shop groceries">Check back here for the next sale or coupon.</UrbanEmptyState>}
     <UrbanButtonLink href="/products" variant="ghost">Browse all groceries</UrbanButtonLink>

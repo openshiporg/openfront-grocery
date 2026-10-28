@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Leaf, Minus, Plus } from 'lucide-react';
 import type { GroceryProduct } from '../../types';
 import { useMarketBasket } from '../market/MarketBasket';
-import { formatMoney, formatUnit, UrbanPrice, UrbanProductArtwork } from './UrbanPrimitives';
+import { formatMoney, perUnitLabel, UrbanPrice, UrbanProductArtwork } from './UrbanPrimitives';
 
 export default function UrbanProductCard({ product, eager = false }: { product: GroceryProduct; featured?: boolean; eager?: boolean }) {
   const { cart, busy, change } = useMarketBasket();
@@ -55,7 +55,7 @@ export default function UrbanProductCard({ product, eager = false }: { product: 
         <span className={hasSavings ? 'sf-price-tag' : ''}><UrbanPrice value={product.price} className="text-[1.375rem]" /></span>
         {hasSavings ? <span className="sf-was"><span className="sr-only">Was </span>{formatMoney(product.compareAtPrice)}</span> : null}
       </div>
-      <p className="mt-1 text-xs text-[var(--sf-ink-faint)]">{measured ? `per ${formatUnit(product.unit)} · estimated` : `per ${formatUnit(product.unit)}`}</p>
+      <p className="mt-1 text-xs text-[var(--sf-ink-faint)]">{measured ? `${perUnitLabel(product.unit)} · estimated` : perUnitLabel(product.unit)}</p>
       <Link prefetch={false} href={`/products/${product.handle}`} className="mt-1.5 after:absolute after:inset-0 after:rounded-[var(--sf-radius-lg)] after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-4 focus-visible:after:outline-[var(--sf-focus)] focus-visible:after:[outline-style:solid]">
         <h3 className="line-clamp-2 font-[family-name:var(--sf-font-body)] text-[0.9375rem] font-semibold leading-snug tracking-normal text-[var(--sf-ink)] group-hover:underline group-hover:decoration-[var(--sf-rule-strong)] group-hover:underline-offset-4">{product.name}</h3>
       </Link>

@@ -2,7 +2,8 @@
 import Link from 'next/link';
 import { startTransition, useEffect, useMemo, useState } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
-import { loadStripe } from '@stripe/stripe-js';
+import { loadStripe, type Appearance } from '@stripe/stripe-js';
+import { storefrontStripeAppearance, storefrontStripeFonts } from '../urban/stripeAppearance';
 import { requestAdjustmentAuthorization } from './actions';
 import { UrbanButton, formatCents } from '../urban/UrbanPrimitives';
 
@@ -31,6 +32,8 @@ function Confirm() {
 export function OrderAdjustment({ orderId, totalCents }: { orderId: string; totalCents: number }) {
   const [secret, setSecret] = useState(''), [error, setError] = useState(''), [busy, setBusy] = useState(false), [returnMessage, setReturnMessage] = useState('');
   const [authorizedTotal, setAuthorizedTotal] = useState(totalCents);
+  const [stripeAppearance, setStripeAppearance] = useState<Appearance | undefined>(undefined);
+  useEffect(() => { setStripeAppearance(storefrontStripeAppearance()); }, []);
   const stripe = useMemo(() => process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ? loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY) : null, []);
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -42,7 +45,7 @@ export function OrderAdjustment({ orderId, totalCents }: { orderId: string; tota
     // Redirect parameters are not order-bound payment proof; only the server can finalize this order.
     startTransition(() => setReturnMessage('You returned from payment. The shop has not finalized this order yet. Refresh the order or contact the shop before trying another payment.'));
   }, [stripe]);
-  return <section className="sf-panel space-y-4 border-2 border-[var(--sf-accent)] p-5 sm:p-7" aria-labelledby="adjustment-title"><p className="sf-eyebrow">Your review is needed</p><h2 id="adjustment-title" className="sf-subtitle">Approve the picked total</h2><p className="sf-copy">Your proposed picked total is <strong className="text-[var(--sf-ink)]">{formatCents(authorizedTotal)}</strong>. Review the item changes below before authorizing this amount. The shop must complete settlement of the original and revised payments before finalizing your order.</p>{returnMessage ? <div className="space-y-3"><p role="status" className="text-sm leading-6">{returnMessage}</p><UrbanButton variant="ghost" onClick={() => window.location.reload()}>Refresh order status</UrbanButton></div> : !stripe ? <p role="status">Online authorization is unavailable. Contact the shop to resolve this order.</p> : secret ? <Elements stripe={stripe} options={{ clientSecret: secret }}><Confirm /></Elements> : <UrbanButton disabled={busy} onClick={async () => {
+  return <section className="sf-panel space-y-4 border-2 border-[var(--sf-accent)] p-5 sm:p-7" aria-labelledby="adjustment-title"><p className="sf-eyebrow">Your review is needed</p><h2 id="adjustment-title" className="sf-subtitle">Approve the picked total</h2><p className="sf-copy">Your proposed picked total is <strong className="text-[var(--sf-ink)]">{formatCents(authorizedTotal)}</strong>. Review the item changes below before authorizing this amount. The shop must complete settlement of the original and revised payments before finalizing your order.</p>{returnMessage ? <div className="space-y-3"><p role="status" className="text-sm leading-6">{returnMessage}</p><UrbanButton variant="ghost" onClick={() => window.location.reload()}>Refresh order status</UrbanButton></div> : !stripe ? <p role="status">Online authorization is unavailable. Contact the shop to resolve this order.</p> : secret ? <Elements stripe={stripe} options={{ clientSecret: secret, appearance: stripeAppearance, fonts: storefrontStripeFonts }}><Confirm /></Elements> : <UrbanButton disabled={busy} onClick={async () => {
     setBusy(true); setError('');
     try { const result = await requestAdjustmentAuthorization(orderId); if (!result.clientSecret) throw new Error('Authorization is unavailable. Contact the shop.'); setAuthorizedTotal(result.totalCents); setSecret(result.clientSecret); }
     catch (error) { setError(error instanceof Error ? error.message : 'Unable to prepare authorization'); }

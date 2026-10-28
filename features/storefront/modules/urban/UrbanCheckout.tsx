@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js';
-import { loadStripe } from '@stripe/stripe-js';
+import { loadStripe, type Appearance } from '@stripe/stripe-js';
+import { storefrontStripeAppearance, storefrontStripeFonts } from './stripeAppearance';
 import Link from 'next/link';
 import { Check, Lock, MapPin, RotateCcw, ShieldCheck, Store, Ticket, Truck } from 'lucide-react';
 import { initiatePaymentSession, restartCheckoutAttempt, resumeCheckout } from '../../lib/data/checkout';
@@ -72,6 +73,8 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
   const messageRef = useRef<HTMLParagraphElement | null>(null);
   const initialRecovery = useRef(false);
   const register = useCallback((confirm: StripeConfirm | null) => { confirmRef.current = confirm; }, []);
+  const [stripeAppearance, setStripeAppearance] = useState<Appearance | undefined>(undefined);
+  useEffect(() => { setStripeAppearance(storefrontStripeAppearance()); }, []);
   const stripeKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY || '';
   const stripePromise = useMemo(() => stripeKey ? loadStripe(stripeKey) : null, [stripeKey]);
   const provider = paymentProviders.find((item) => item.code.includes('stripe')) || paymentProviders[0];
@@ -230,7 +233,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
       <p className="sf-copy">The previous payment was confirmed canceled or refunded. Your basket, time, address, and picking instructions are unchanged. Authorize one fresh payment to finish.</p>
       {error ? <p role="alert" className="sf-note">{error}</p> : null}
       {!noCharge && restartPayment.data?.clientSecret && provider?.code.includes('stripe') && stripePromise
-        ? <Elements key={restartPayment.id} stripe={stripePromise} options={{ clientSecret: restartPayment.data.clientSecret }}><StripePaymentFields register={register} /></Elements>
+        ? <Elements key={restartPayment.id} stripe={stripePromise} options={{ clientSecret: restartPayment.data.clientSecret, appearance: stripeAppearance, fonts: storefrontStripeFonts }}><StripePaymentFields register={register} /></Elements>
         : null}
       {!noCharge && !restartPayment.data?.clientSecret ? <p role="alert" className="sf-note">The new payment form is unavailable. Check this checkout or contact the store before trying again.</p> : null}
       <UrbanButton type="button" size="lg" disabled={pending || (!noCharge && (!provider?.code.includes('stripe') || !stripePromise || !restartPayment.data?.clientSecret))} onClick={confirmRestartedCheckout} className="w-full">
@@ -393,7 +396,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
           <dl className="mt-5 space-y-2 text-sm"><div className="flex justify-between gap-3 text-[var(--sf-ink-muted)]"><dt>Subtotal</dt><dd className="tabular-nums">{formatMoney(active?.subtotal ?? cart.subtotal)}</dd></div><div className="flex justify-between gap-3 text-[var(--sf-ink-muted)]"><dt>Estimated tax</dt><dd className="tabular-nums">{formatMoney(active?.tax ?? cart.tax)}</dd></div><div className="flex justify-between gap-3 text-[var(--sf-ink-muted)]"><dt>{method === 'pickup' ? 'Pickup' : 'Delivery fee'}</dt><dd className="text-right tabular-nums">{active ? formatMoney(active.deliveryFee) : selectedWindow ? `${formatMoney(selectedWindow.fee)}${method === 'delivery' ? ' + service fee if applicable' : ''}` : 'Choose a time'}</dd></div>{active && active.discount > 0 ? <div className="flex justify-between gap-3 font-semibold text-[var(--sf-sage)]"><dt>Discount · {active.couponCode}</dt><dd className="tabular-nums">−{formatMoney(active.discount)}</dd></div> : null}<div className="flex items-baseline justify-between gap-3 border-t border-[var(--sf-rule)] pt-3"><dt className="font-semibold">{active ? 'Amount to authorize' : 'Estimated total'}</dt><dd><UrbanPrice value={total} className="text-[1.75rem]" /></dd></div></dl>
           <p className="mt-3 text-xs leading-5 text-[var(--sf-ink-muted)]">{active ? 'This is the amount to authorize. Final picked quantities, unavailable items and substitutions can change the final charge.' : 'Review checks your address, time, prices and coupon before payment confirmation.'}</p>
           {message ? <p ref={messageRef} tabIndex={-1} role="status" className="mt-3 rounded-[var(--sf-radius-md)] bg-[var(--sf-sage-light)] px-3 py-2.5 text-sm font-medium text-[var(--sf-sage)] outline-none">{message}</p> : null}
-          {active && !active.noCharge && provider?.code.includes('stripe') && stripePromise ? <Elements key={active.id} stripe={stripePromise} options={{ clientSecret: active.clientSecret }}><StripePaymentFields register={register} /></Elements> : null}
+          {active && !active.noCharge && provider?.code.includes('stripe') && stripePromise ? <Elements key={active.id} stripe={stripePromise} options={{ clientSecret: active.clientSecret, appearance: stripeAppearance, fonts: storefrontStripeFonts }}><StripePaymentFields register={register} /></Elements> : null}
           {!provider ? <p role="status" className="sf-note mt-3">Online payment is unavailable. <Link href="/support" className="font-semibold underline">Contact the store</Link> for help.</p> : null}
           <UrbanButton type="submit" size="lg" disabled={pending || !selectedWindow || !provider || Boolean(inventoryIssue) || confirmationStarted} className="mt-4 w-full">{pending ? 'Working…' : active ? active.noCharge ? 'Place order · no payment due' : `Authorize ${formatMoney(active.total)} & place order` : 'Review checkout estimate'}</UrbanButton>
           {provider ? <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-[var(--sf-ink-faint)]"><Lock className="h-3.5 w-3.5" aria-hidden="true" />Payment handled securely by {provider.code.includes('stripe') ? 'Stripe' : provider.name}</p> : null}

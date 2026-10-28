@@ -12,7 +12,7 @@ import { UrbanStoreLogo, type UrbanStoreLogoProps } from './UrbanStoreLogo';
 
 function StoreMark(props: UrbanStoreLogoProps) {
   return (
-    <Link prefetch={false} href="/" className="flex min-w-0 items-center gap-2.5" aria-label={`${props.name} home`}>
+    <Link prefetch={false} href="/" className="flex min-h-11 min-w-0 items-center gap-2.5" aria-label={`${props.name} home`}>
       <UrbanStoreLogo {...props} />
       <span className="truncate font-[family-name:var(--sf-font-display)] text-[1.2rem] font-bold leading-none tracking-[-0.035em] sm:text-[1.4rem]">{props.name}</span>
     </Link>
@@ -33,7 +33,7 @@ export default async function UrbanNav() {
         </nav>
       </div>
     </div>
-    <header className="sticky top-0 z-40 border-b border-[var(--sf-rule)] bg-[color-mix(in_oklch,var(--sf-paper)_94%,transparent)] backdrop-blur-md backdrop-saturate-150">
+    <header className="sticky top-0 z-40 border-b border-[var(--sf-rule)] bg-[color-mix(in_oklch,var(--sf-paper)_98%,transparent)] backdrop-blur-md backdrop-saturate-150">
       <div className="mx-auto flex max-w-[84rem] items-center gap-2 px-4 py-2.5 sm:gap-4 sm:px-6 lg:px-8 lg:py-3">
         <UrbanMobileMenu signedIn={Boolean(user)} storeName={store.name} logoUrl={store.logoUrl} logoIcon={store.logoIcon} logoColor={store.logoColor} departments={departments.map((d) => ({ href: `/departments/${d.handle}`, label: d.name }))} />
         <div className="min-w-0 flex-1 md:flex-none lg:w-[15rem]"><StoreMark name={store.name} logoUrl={store.logoUrl} logoIcon={store.logoIcon} logoColor={store.logoColor} /></div>

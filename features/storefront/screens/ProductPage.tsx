@@ -8,7 +8,7 @@ import { getUser } from '../lib/data/user';
 import { storefrontMetadata } from '../lib/metadata';
 import ProductActions from '../modules/products/components/product-actions';
 import { ArrowRight, Leaf, Truck } from 'lucide-react';
-import { UrbanBreadcrumb, UrbanContainer, UrbanPageShell, UrbanPrice, UrbanProductArtwork, formatMoney, formatUnit } from '../modules/urban/UrbanPrimitives';
+import { UrbanBreadcrumb, UrbanContainer, UrbanPageShell, UrbanPrice, UrbanProductArtwork, formatMoney, perUnitLabel } from '../modules/urban/UrbanPrimitives';
 
 type Props = { params: Promise<{ slug: string; countryCode?: string }> };
 function plainDescription(description: unknown): string {
@@ -51,7 +51,7 @@ export async function ProductPage(props: Props) {
   const nutrition = product.nutrition && Object.keys(product.nutrition).length ? Object.entries(product.nutrition) : null;
   return <UrbanPageShell><UrbanContainer className="space-y-10 py-6 sm:space-y-16 sm:py-8">
     <div className="space-y-5">
-      <UrbanBreadcrumb items={[{ label: 'Shop', href: '/products' }, ...(product.department ? [{ label: product.department.name, href: `/departments/${product.department.handle}` }] : []), { label: product.name }]} />
+      <UrbanBreadcrumb items={[{ label: 'Home', href: '/' }, { label: 'Shop', href: '/products' }, ...(product.department ? [{ label: product.department.name, href: `/departments/${product.department.handle}` }] : []), { label: product.name }]} />
       <section className="grid items-start gap-7 md:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] lg:gap-14">
         <div className="relative overflow-hidden rounded-[28px] bg-[var(--sf-paper-3)] md:sticky md:top-[calc(var(--sf-header-offset)+1rem)]">
           <div className="aspect-square"><UrbanProductArtwork product={product} eager /></div>
@@ -68,7 +68,7 @@ export async function ProductPage(props: Props) {
           <div className="mt-6 flex flex-wrap items-end gap-x-4 gap-y-2">
             <span className={hasSavings ? 'sf-price-tag px-3 py-2' : ''}><UrbanPrice value={product.price} className="text-[2.75rem]" /></span>
             <div className="pb-1">
-              <p className="text-sm font-semibold">per {formatUnit(product.unit)}{measured ? ' · estimated' : ''}</p>
+              <p className="text-sm font-semibold">{perUnitLabel(product.unit)}{measured ? ' · estimated' : ''}</p>
               {hasSavings ? <p className="text-sm text-[var(--sf-ink-muted)]"><span className="sf-was">{formatMoney(product.compareAtPrice)}</span> · you save {formatMoney(product.compareAtPrice! - product.price)}</p> : null}
             </div>
           </div>

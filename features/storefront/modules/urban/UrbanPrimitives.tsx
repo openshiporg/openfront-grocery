@@ -12,6 +12,12 @@ export function formatUnit(unit?: string | null) {
   return unit.replace(/^unit_/, '').replace(/_/g, ' ');
 }
 
+/** Price-unit label: "each" for counted items, "per lb" for measured ones. */
+export function perUnitLabel(unit?: string | null) {
+  const label = formatUnit(unit);
+  return label === 'each' ? 'each' : `per ${label}`;
+}
+
 export function productImage(product?: Pick<GroceryProduct, 'imageUrl' | 'thumbnailUrl'> | null) {
   return product?.imageUrl || product?.thumbnailUrl || null;
 }
@@ -186,7 +192,7 @@ const buttonVariants: Record<ButtonVariant, string> = {
 };
 
 const buttonSizes: Record<ButtonSize, string> = {
-  sm: 'min-h-9 px-3.5 text-[0.8125rem]',
+  sm: 'min-h-10 px-3.5 text-[0.8125rem]',
   md: 'min-h-11 px-5 text-sm',
   lg: 'min-h-13 px-6 text-[0.9375rem]',
 };
@@ -273,7 +279,7 @@ export function UrbanSearchStrip({
       />
       <button
         type="submit"
-        className={`absolute right-1.5 inline-flex items-center justify-center rounded-full bg-[var(--sf-ink)] px-4 text-[0.8125rem] font-semibold text-[var(--sf-paper)] transition-colors hover:bg-[var(--sf-header-2)] ${tall ? 'h-11' : 'h-9'}`}
+        className={`absolute right-1.5 inline-flex items-center justify-center rounded-full bg-[var(--sf-ink)] px-4 text-[0.8125rem] font-semibold text-[var(--sf-paper)] transition-colors hover:bg-[var(--sf-header-2)] ${tall ? 'h-11' : 'h-10'}`}
       >
         Search
       </button>
