@@ -1,4 +1,4 @@
-![Openfront Grocery](https://openship.org/og/openfront-grocery.png)
+![openfront-grocery](.github/logo.svg)
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fopenshiporg%2Fopenfront-grocery&env=DATABASE_URL%2CSESSION_SECRET%2CPUBLIC_STORE_ID%2CNEXT_PUBLIC_SITE_URL%2CS3_BUCKET_NAME%2CS3_REGION%2CS3_ENDPOINT%2CS3_ACCESS_KEY_ID%2CS3_SECRET_ACCESS_KEY)
 
