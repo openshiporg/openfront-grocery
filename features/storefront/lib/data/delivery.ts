@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import type { DeliveryWindow } from '../../types';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
 
@@ -107,3 +108,8 @@ export async function getAvailableDates(method: 'delivery' | 'pickup' = 'deliver
   const uniqueDates = Array.from(new Set(windows.map((window) => window.date)));
   return uniqueDates.filter(Boolean).slice(0, 7);
 }
+
+/** One availability read per server render, shared by the shop chrome and the page (a preview; checkout re-reads). */
+export const getShopFulfillmentWindows = cache(async function getShopFulfillmentWindows() {
+  return getCheckoutFulfillmentWindows().catch(() => null);
+});

@@ -67,7 +67,7 @@ function CartLine({
             <span aria-live="polite">{item.quantity}</span>
             <button type="button" aria-label={`Increase ${item.product.name} quantity`} onClick={() => updateQuantity(item.quantity + 1)} disabled={disabled || item.quantity >= item.product.stockQuantity}><Plus className="h-3.5 w-3.5" aria-hidden="true" /></button>
           </div>
-          <button type="button" aria-label={`Remove ${item.product.name} from basket`} onClick={() => void commit(() => removeFromCart(item.id))} disabled={disabled} className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-2 text-[0.8125rem] font-semibold text-[var(--sf-ink-muted)] transition-colors hover:text-[var(--sf-danger)] disabled:opacity-50">
+          <button type="button" aria-label={`Remove ${item.product.name} from cart`} onClick={() => void commit(() => removeFromCart(item.id))} disabled={disabled} className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-2 text-[0.8125rem] font-semibold text-[var(--sf-ink-muted)] transition-colors hover:text-[var(--sf-danger)] disabled:opacity-50">
             <Trash2 className="h-4 w-4" aria-hidden="true" /> Remove
           </button>
         </div>
@@ -105,8 +105,8 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
     if (!mutationInFlight.current) setCurrentCart(cart);
   }, [cart]);
 
-  // Basket changes confirmed elsewhere (the drawer, a product page in another
-  // component, or moving a guest basket into the account) replace this view.
+  // Cart changes confirmed elsewhere (the drawer, a product page in another
+  // component, or moving a guest cart into the account) replace this view.
   useEffect(() => {
     const receive = (event: Event) => {
       const next = (event as CustomEvent<GroceryCart | null>).detail;
@@ -125,7 +125,7 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
     try {
       const confirmedCart = await mutation();
       if (!confirmedCart) {
-        setMutationError('Your basket was not updated. Please try again.');
+        setMutationError('Your cart was not updated. Please try again.');
         return;
       }
       // Quantity, line money, subtotal, tax, and total are replaced together
@@ -133,7 +133,7 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
       // projection is exposed to checkout.
       setCurrentCart(confirmedCart);
     } catch (error) {
-      setMutationError(error instanceof Error ? error.message : 'Your basket was not updated. Please try again.');
+      setMutationError(error instanceof Error ? error.message : 'Your cart was not updated. Please try again.');
     } finally {
       mutationInFlight.current = false;
       setIsMutating(false);
@@ -141,13 +141,13 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
   };
 
   if (!currentCart || currentCart.items.length === 0) {
-    return <UrbanEmptyState title="Your basket is empty" actionHref="/products" actionLabel="Start shopping">Add items from produce, pantry, dairy, and household aisles.</UrbanEmptyState>;
+    return <UrbanEmptyState title="Your cart is empty" actionHref="/products" actionLabel="Start shopping">Add items from produce, pantry, dairy, and household aisles.</UrbanEmptyState>;
   }
 
   const requiresRemediation = currentCart.items.some((item) => !item.product.inStock);
   const count = currentCart.items.reduce((sum, item) => sum + item.quantity, 0);
   const checkoutAction = isMutating ? (
-    <UrbanButton type="button" size="lg" className="w-full" disabled>Updating basket…</UrbanButton>
+    <UrbanButton type="button" size="lg" className="w-full" disabled>Updating cart…</UrbanButton>
   ) : requiresRemediation ? (
     <UrbanButton type="button" size="lg" className="w-full" disabled>Resolve unavailable items</UrbanButton>
   ) : (
@@ -156,7 +156,7 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
 
   return (
     <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_23rem] lg:gap-12" aria-busy={isMutating}>
-      <section aria-label="Basket items" className="min-w-0">
+      <section aria-label="Cart items" className="min-w-0">
         <p className="flex items-start gap-2.5 rounded-[var(--sf-radius-md)] bg-[var(--sf-juniper-soft)] px-4 py-3 text-sm leading-6 text-[var(--sf-ink-muted)]"><RefreshCw className="mt-1 h-4 w-4 shrink-0 text-[var(--sf-sage)]" aria-hidden="true" />Choose what the picker should do for each item if it’s out when your order is packed.</p>
         <ul className="divide-y divide-[var(--sf-rule)]">
           {currentCart.items.map((item) => <CartLine key={item.id} item={item} disabled={isMutating} commit={commit} />)}
@@ -164,7 +164,7 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
       </section>
       <aside className="lg:sticky lg:top-[calc(var(--sf-header-offset)+1rem)]">
         <div className="sf-receipt pb-8">
-          <h2 className="font-[family-name:var(--sf-font-display)] text-xl font-bold tracking-[-0.02em]">Basket estimate</h2>
+          <h2 className="font-[family-name:var(--sf-font-display)] text-xl font-bold tracking-[-0.02em]">Cart estimate</h2>
           <p className="text-xs text-[var(--sf-ink-faint)]">{count} {count === 1 ? 'item' : 'items'}</p>
           <hr className="sf-receipt-rule" />
           <dl className="space-y-1.5">

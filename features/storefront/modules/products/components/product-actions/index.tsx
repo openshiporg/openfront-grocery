@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import Link from 'next/link';
-import { Bell, ChevronDown, Heart, ListPlus, Minus, Plus, ShoppingBasket } from 'lucide-react';
+import { Bell, ChevronDown, Heart, ListPlus, Minus, Plus, ShoppingCart } from 'lucide-react';
 import type { GroceryProduct, ShoppingList } from '@/features/storefront/types';
 import { useMarketBasket } from '@/features/storefront/modules/market/MarketBasket';
 import { requestBackInStockAlert, requestPriceAlert } from '@/features/storefront/lib/data/products';
@@ -95,8 +95,8 @@ export default function ProductActions({ product, lists: initialLists, isSignedI
             <button type="button" onClick={() => setQuantity(Math.min(maxAddable, quantity + 1))} disabled={isPending || busy || quantity >= product.stockQuantity - inBasket} aria-label="Increase quantity"><Plus className="h-4 w-4" aria-hidden="true" /></button>
           </div>
           <UrbanButton type="button" size="lg" onClick={handleAddToCart} disabled={isPending || busy || quantity > product.stockQuantity - inBasket} className="min-w-[12rem] flex-1">
-            <ShoppingBasket className="h-5 w-5" aria-hidden="true" />
-            {isPending ? 'Adding…' : `Add ${quantity > 1 ? `${quantity} ` : ''}to basket`}
+            <ShoppingCart className="h-5 w-5" aria-hidden="true" />
+            {isPending ? 'Adding…' : `Add ${quantity > 1 ? `${quantity} ` : ''}to cart`}
           </UrbanButton>
         </div>
       ) : (

@@ -186,7 +186,7 @@ type ButtonSize = 'sm' | 'md' | 'lg';
 
 const buttonVariants: Record<ButtonVariant, string> = {
   primary: 'bg-[var(--sf-accent)] text-[var(--sf-accent-ink)] hover:bg-[var(--sf-accent-hover)] disabled:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
-  dark: 'bg-[var(--sf-ink)] text-[var(--sf-paper)] hover:bg-[var(--sf-header-2)] disabled:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
+  dark: 'bg-[var(--sf-header)] text-[var(--sf-header-ink)] hover:bg-[var(--sf-header-2)] disabled:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
   ghost: 'bg-[var(--sf-card)] text-[var(--sf-ink)] ring-1 ring-inset ring-[var(--sf-rule-strong)] hover:ring-[var(--sf-ink)] disabled:text-[var(--sf-ink-faint)] disabled:ring-[var(--sf-rule)]',
   soft: 'bg-[var(--sf-paper-2)] text-[var(--sf-ink)] hover:bg-[var(--sf-paper-3)] disabled:text-[var(--sf-ink-faint)]',
 };
@@ -279,7 +279,7 @@ export function UrbanSearchStrip({
       />
       <button
         type="submit"
-        className={`absolute right-1.5 inline-flex items-center justify-center rounded-full bg-[var(--sf-ink)] px-4 text-[0.8125rem] font-semibold text-[var(--sf-paper)] transition-colors hover:bg-[var(--sf-header-2)] ${tall ? 'h-11' : 'h-10'}`}
+        className={`absolute right-1.5 inline-flex items-center justify-center rounded-full bg-[var(--sf-header)] px-4 text-[0.8125rem] font-semibold text-[var(--sf-header-ink)] transition-colors hover:bg-[var(--sf-header-2)] ${tall ? 'h-11' : 'h-10'}`}
       >
         Search
       </button>
@@ -356,18 +356,9 @@ export function UrbanProductArtwork({
   );
 }
 
-/** Shelf-edge price: whole units large, cents raised — read at a glance like a store label. */
+/** Plain, legible price (Rigel): the full amount in one run, tabular figures. */
 export function UrbanPrice({ value, className = '' }: { value?: number | null; className?: string }) {
-  const formatted = formatMoney(value);
-  const match = /^\$(\d+)\.(\d{2})$/.exec(formatted);
-  if (!match) return <span className={`sf-price ${className}`}>{formatted}</span>;
-  return (
-    <span className={`sf-price ${className}`} aria-label={formatted}>
-      <span aria-hidden="true" className="sf-price-symbol">$</span>
-      <span aria-hidden="true">{match[1]}</span>
-      <span aria-hidden="true" className="sf-price-cents">{match[2]}</span>
-    </span>
-  );
+  return <span className={`sf-price tabular-nums ${className}`}>{formatMoney(value)}</span>;
 }
 
 export function UrbanPageHeader({

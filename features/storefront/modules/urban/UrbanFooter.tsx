@@ -16,12 +16,12 @@ export default async function UrbanFooter() {
 
   return (
     <footer className="sf-dark mt-auto">
-      <div className="mx-auto max-w-[84rem] px-4 pb-8 pt-14 sm:px-6 lg:px-8 lg:pt-20">
+      <div className="mx-auto max-w-[96rem] px-4 pb-8 pt-12 sm:px-6 lg:px-8 lg:pt-14">
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-20">
           <div className="min-w-0">
             <div className="flex items-start gap-2.5">
               <UrbanStoreLogo name={store.name} logoUrl={store.logoUrl} logoIcon={store.logoIcon} logoColor={store.logoColor} />
-              <p className="min-w-0 font-[family-name:var(--sf-font-display)] text-[clamp(2.75rem,1.5rem+5vw,5.5rem)] font-bold leading-[0.9] tracking-[-0.05em] [overflow-wrap:anywhere]">{store.name}</p>
+              <p className="min-w-0 font-[family-name:var(--sf-font-display)] text-[clamp(1.75rem,1.3rem+1.5vw,2.5rem)] font-semibold leading-none tracking-[-0.02em] [overflow-wrap:anywhere]">{store.name}</p>
             </div>
             {store.homepageDescription ? <p className="mt-5 max-w-md text-[0.9375rem] leading-7 text-[var(--sf-header-ink-muted)]">{store.homepageDescription}</p> : null}
             <address className="mt-6 grid gap-1 text-[0.9375rem] not-italic leading-7">

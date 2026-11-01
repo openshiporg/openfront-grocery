@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react';
 import type { Metadata } from 'next';
-import { Bricolage_Grotesque, Instrument_Sans } from 'next/font/google';
+import { Figtree } from 'next/font/google';
 import '@/features/storefront/styles/market-tokens.css';
 import { MainLayout } from '@/features/storefront/screens/MainLayout';
 import { getStore } from '@/features/storefront/lib/data/store';
@@ -24,15 +24,9 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-const marketBody = Instrument_Sans({
-  variable: '--font-market-body',
+const rigel = Figtree({
+  variable: '--font-rigel',
   subsets: ['latin'],
-});
-
-const marketDisplay = Bricolage_Grotesque({
-  variable: '--font-market-display',
-  subsets: ['latin'],
-  axes: ['opsz'],
 });
 
 export default async function StorefrontLayout({
@@ -45,7 +39,7 @@ export default async function StorefrontLayout({
   const brandVariables = storefrontBrandCssVariables(storefrontThemeHue(store)) as CSSProperties;
   return (
     <div
-      className={`storefront-ui ${marketBody.variable} ${marketDisplay.variable} min-h-screen font-[family-name:var(--sf-font-body)] antialiased`}
+      className={`storefront-ui ${rigel.variable} min-h-screen font-[family-name:var(--sf-font-body)] antialiased`}
       style={{ ...brandVariables, backgroundColor: 'var(--sf-paper)', color: 'var(--sf-ink)' }}
     >
       <MainLayout>{children}</MainLayout>

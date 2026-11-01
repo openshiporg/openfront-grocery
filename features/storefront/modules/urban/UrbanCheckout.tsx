@@ -53,8 +53,8 @@ function StripePaymentFields({ register }: { register: (confirm: StripeConfirm |
 type Props = { cart: GroceryCart | null; user: GroceryUser | null; savedAddresses?: SavedAddress[]; paymentProviders: Array<{ id: string; name: string; code: string }>; deliveryWindows?: DeliveryWindow[]; pickupWindows?: DeliveryWindow[]; storeAddress?: string; timezone?: string };
 export default function UrbanCheckout({ cart: initialCart, user, savedAddresses = [], paymentProviders, deliveryWindows = [], pickupWindows = [], storeAddress, timezone }: Props) {
   const [pending, startTransition] = useTransition();
-  // The basket being reviewed follows every confirmed basket change (another tab's
-  // edits arrive on the next read); a changed basket invalidates the estimate.
+  // The cart being reviewed follows every confirmed cart change (another tab's
+  // edits arrive on the next read); a changed cart invalidates the estimate.
   const [cart, setCart] = useState(initialCart);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -230,7 +230,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
     return <section className="sf-panel mx-auto max-w-2xl space-y-4 p-6 sm:p-8" aria-busy={pending}>
       <span className="grid h-12 w-12 place-items-center rounded-full bg-[var(--sf-sage-light)] text-[var(--sf-sage)]"><RotateCcw className="h-5 w-5" aria-hidden="true" /></span>
       <h2 className="sf-subtitle">Your checkout is ready to retry</h2>
-      <p className="sf-copy">The previous payment was confirmed canceled or refunded. Your basket, time, address, and picking instructions are unchanged. Authorize one fresh payment to finish.</p>
+      <p className="sf-copy">The previous payment was confirmed canceled or refunded. Your cart, time, address, and picking instructions are unchanged. Authorize one fresh payment to finish.</p>
       {error ? <p role="alert" className="sf-note">{error}</p> : null}
       {!noCharge && restartPayment.data?.clientSecret && provider?.code.includes('stripe') && stripePromise
         ? <Elements key={restartPayment.id} stripe={stripePromise} options={{ clientSecret: restartPayment.data.clientSecret, appearance: stripeAppearance, fonts: storefrontStripeFonts }}><StripePaymentFields register={register} /></Elements>
@@ -254,7 +254,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
     </div> : null}
     <div className="flex flex-wrap gap-5 text-sm font-semibold"><Link href="/order-access" className="underline underline-offset-4">Find an order by email</Link><Link href="/support" className="underline underline-offset-4">Contact the store</Link></div>
   </section>;
-  if (!cart?.items.length) return <UrbanEmptyState title="Your basket is empty" actionHref="/products" actionLabel="Start shopping">Add your groceries, then come back to choose a time.</UrbanEmptyState>;
+  if (!cart?.items.length) return <UrbanEmptyState title="Your cart is empty" actionHref="/products" actionLabel="Start shopping">Add your groceries, then come back to choose a time.</UrbanEmptyState>;
   const inventoryIssue = cart.items.find((item) => !item.product.inStock);
   const total = active?.total ?? cart.subtotal + cart.tax + (selectedWindow?.fee || 0);
 
@@ -279,7 +279,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
     setError(''); setMessage('');
     startTransition(async () => {
       try {
-        if (!cart || inventoryIssue) throw new Error('Review unavailable items in your basket before checkout.');
+        if (!cart || inventoryIssue) throw new Error('Review unavailable items in your cart before checkout.');
         if (!selectedWindow) throw new Error('Choose an available time before continuing.');
         if (!provider) throw new Error('Online payment is not available. Contact the store for help.');
         const request = {
@@ -299,13 +299,13 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
           return;
         }
         if (!active.noCharge && (!provider.code.includes('stripe') || !stripePromise || !confirmRef.current)) throw new Error('The payment form is not ready. Please wait or contact the store if it does not load.');
-        // Re-read the store's basket right before authorizing: an estimate for
+        // Re-read the store's cart right before authorizing: an estimate for
         // different goods must be reviewed again, never paid.
         const confirmedCart = await retrieveCart({ throwOnError: true });
         if (!confirmedCart || confirmedCart.id !== cart.id || basketFingerprint(confirmedCart) !== active.basketFingerprint) {
           if (confirmedCart) setCart(confirmedCart);
           setSnapshot(null);
-          throw new Error('Your basket changed since this estimate. Review the updated estimate before paying.');
+          throw new Error('Your cart changed since this estimate. Review the updated estimate before paying.');
         }
         const pointer = { version: 1 as const, id: active.id, cartId: cart.id };
         try { sessionStorage.setItem(RECOVERY_KEY, JSON.stringify(pointer)); } catch { throw new PaymentInputError('Your browser could not save this checkout reference. Allow site storage before confirming payment so you can safely return to your order.'); }
@@ -343,7 +343,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
     <fieldset disabled={pending || confirmationStarted} className="min-w-0 space-y-5">
       <legend className="sr-only">Checkout details</legend>
       {error ? <p ref={errorRef} tabIndex={-1} role="alert" className="sf-note outline-none">{error}</p> : null}
-      {inventoryIssue ? <p role="alert" className="sf-note">{inventoryIssue.product.name} is no longer available in the requested quantity. <Link href="/cart" className="font-semibold underline">Review your basket</Link>.</p> : null}
+      {inventoryIssue ? <p role="alert" className="sf-note">{inventoryIssue.product.name} is no longer available in the requested quantity. <Link href="/cart" className="font-semibold underline">Review your cart</Link>.</p> : null}
       <section className={sectionClass}>
         {stepTitle(1, 'Delivery or pickup', `Times shown in ${timezoneLabel(timezone)}. A time is reserved when your order is accepted.`)}
         <div className="grid grid-cols-2 gap-3">{(['delivery', 'pickup'] as const).map((value) => {
@@ -370,7 +370,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
         </div>
       </section>
       <section className={sectionClass} onChange={invalidateReview}>
-        {stepTitle(3, 'Picking preferences', 'Your per-item choices from the basket are kept.')}
+        {stepTitle(3, 'Picking preferences', 'Your per-item choices from the cart are kept.')}
         <fieldset>
           <legend className="mb-2 text-sm font-semibold">If an item is unavailable</legend>
           <div className="grid gap-2 sm:grid-cols-3">{([['best_match', 'Allow a suitable substitute', 'The picker chooses the closest match.'], ['call_me', 'Contact me first', 'We reach out before substituting.'], ['refund', 'Leave the item out', 'It’s removed from your total.']] as const).map(([value, label, hint]) => (
@@ -388,9 +388,9 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
       <div className="sf-panel overflow-hidden">
         <div className="flex items-center justify-between gap-3 border-b border-[var(--sf-rule)] px-5 py-4">
           <h2 className="text-lg font-bold tracking-[-0.02em]">{active ? 'Review & confirm' : 'Order estimate'}</h2>
-          <Link href="/cart" className="inline-flex min-h-9 items-center text-sm font-semibold underline underline-offset-4">Edit basket</Link>
+          <Link href="/cart" className="inline-flex min-h-9 items-center text-sm font-semibold underline underline-offset-4">Edit cart</Link>
         </div>
-        <ul className="max-h-64 space-y-3 overflow-y-auto px-5 py-4" aria-label="Basket items">{cart.items.map((item) => <li key={item.id} className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 text-sm"><div className="relative h-11 overflow-hidden rounded-[var(--sf-radius-sm)] bg-[var(--sf-paper-3)]"><UrbanProductArtwork product={item.product} /><span className="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-[var(--sf-ink)] px-1 text-[0.625rem] font-bold text-[var(--sf-paper)]">{item.quantity}</span></div><span className="line-clamp-2 leading-5">{item.product.name}</span><span className="font-semibold tabular-nums">{formatMoney(item.subtotal)}</span></li>)}</ul>
+        <ul className="max-h-64 space-y-3 overflow-y-auto px-5 py-4" aria-label="Cart items">{cart.items.map((item) => <li key={item.id} className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 text-sm"><div className="relative h-11 overflow-hidden rounded-[var(--sf-radius-sm)] bg-[var(--sf-paper-3)]"><UrbanProductArtwork product={item.product} /><span className="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-[var(--sf-ink)] px-1 text-[0.625rem] font-bold text-[var(--sf-paper)]">{item.quantity}</span></div><span className="line-clamp-2 leading-5">{item.product.name}</span><span className="font-semibold tabular-nums">{formatMoney(item.subtotal)}</span></li>)}</ul>
         <div className="border-t border-[var(--sf-rule)] px-5 py-4">
           <label className="sf-label">Coupon code (optional)<div className="relative"><Ticket className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--sf-ink-faint)]" aria-hidden="true" /><UrbanTextInput name="couponCode" value={couponCode} maxLength={100} disabled={pending || confirmationStarted} onChange={(event) => { setCouponCode(event.target.value.toUpperCase()); invalidateReview(); }} autoComplete="off" className="pl-10 font-[family-name:var(--sf-font-mono)] tracking-[0.06em]" /></div></label>
           <dl className="mt-5 space-y-2 text-sm"><div className="flex justify-between gap-3 text-[var(--sf-ink-muted)]"><dt>Subtotal</dt><dd className="tabular-nums">{formatMoney(active?.subtotal ?? cart.subtotal)}</dd></div><div className="flex justify-between gap-3 text-[var(--sf-ink-muted)]"><dt>Estimated tax</dt><dd className="tabular-nums">{formatMoney(active?.tax ?? cart.tax)}</dd></div><div className="flex justify-between gap-3 text-[var(--sf-ink-muted)]"><dt>{method === 'pickup' ? 'Pickup' : 'Delivery fee'}</dt><dd className="text-right tabular-nums">{active ? formatMoney(active.deliveryFee) : selectedWindow ? `${formatMoney(selectedWindow.fee)}${method === 'delivery' ? ' + service fee if applicable' : ''}` : 'Choose a time'}</dd></div>{active && active.discount > 0 ? <div className="flex justify-between gap-3 font-semibold text-[var(--sf-sage)]"><dt>Discount · {active.couponCode}</dt><dd className="tabular-nums">−{formatMoney(active.discount)}</dd></div> : null}<div className="flex items-baseline justify-between gap-3 border-t border-[var(--sf-rule)] pt-3"><dt className="font-semibold">{active ? 'Amount to authorize' : 'Estimated total'}</dt><dd><UrbanPrice value={total} className="text-[1.75rem]" /></dd></div></dl>

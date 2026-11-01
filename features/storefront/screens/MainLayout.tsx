@@ -2,27 +2,47 @@ import { Metadata } from 'next';
 
 import StorefrontServer from './StorefrontServer';
 import UrbanFooter from '@/features/storefront/modules/urban/UrbanFooter';
-import UrbanNav from '@/features/storefront/modules/urban/UrbanNav';
+import RigelHeader from '@/features/storefront/modules/rigel/RigelHeader';
+import { RigelChromeProvider, RigelPhoneCartBar, RigelShell } from '@/features/storefront/modules/rigel/RigelChrome';
+import { RigelFulfillmentProvider } from '@/features/storefront/modules/rigel/RigelFulfillment';
 import UrbanTabBar from '@/features/storefront/modules/urban/UrbanTabBar';
 import { UrbanButtonLink, UrbanPageShell, UrbanSearchStrip } from '@/features/storefront/modules/urban/UrbanPrimitives';
 import { getStore } from '@/features/storefront/lib/data/store';
 import { getUser } from '@/features/storefront/lib/data/user';
-import { configureStorefrontMoney } from '@/features/storefront/lib/marketFormatting';
+import { getAllDepartments } from '@/features/storefront/lib/data/departments';
+import { getShopFulfillmentWindows } from '@/features/storefront/lib/data/delivery';
+import { getSavedAddresses } from '@/features/storefront/lib/data/addresses';
+import { configureStorefrontMoney, formatDeliveryArea } from '@/features/storefront/lib/marketFormatting';
+import { storeToday } from '@/features/storefront/lib/storeToday';
 import { storefrontMetadata } from '@/features/storefront/lib/metadata';
 
 export async function MainLayout({ children }: { children: React.ReactNode }) {
   const [user, store] = await Promise.all([getUser(), getStore()]);
   configureStorefrontMoney(store.currencyCode, store.locale);
   if (store.setupIncomplete) return <StoreSetupInProgress />;
+  // Availability first: the runtime keeps a one-connection pool (see CheckoutPage).
+  const availability = await getShopFulfillmentWindows();
+  const [{ departments }, saved] = await Promise.all([
+    getAllDepartments().catch(() => ({ departments: [] })),
+    user ? getSavedAddresses().catch(() => ({ addresses: [] })) : Promise.resolve({ addresses: [] }),
+  ]);
+  const home = saved.addresses[0];
+  const shopperAddress = home ? `${home.address1}${home.address2 ? `, ${home.address2}` : ''}, ${home.city}, ${home.province} ${home.postalCode}` : null;
+  const deliveryArea = store.deliveryPostalPrefixes?.length ? formatDeliveryArea(store.deliveryPostalPrefixes, 3) : null;
   return (
     <StorefrontServer shopperIdentity={user?.id || 'guest'} currencyCode={store.currencyCode} locale={store.locale} prefetchUser prefetchCart prefetchDepartments>
-      <div className="sf-shell flex min-h-screen flex-col">
-        <a href="#storefront-main" className="sf-skip-link">Skip to shopping content</a>
-        <UrbanNav />
-        {children}
-        <UrbanFooter />
-        <UrbanTabBar />
-      </div>
+      <RigelFulfillmentProvider delivery={availability?.deliveryWindows ?? null} pickup={availability?.pickupWindows ?? null} today={storeToday(store.timezone)}>
+        <RigelChromeProvider storeAddress={store.address} shopperAddress={shopperAddress} deliveryArea={deliveryArea} departments={departments.map(({ id, name, handle }) => ({ id, name, handle }))}>
+          <div className="sf-shell flex min-h-screen flex-col">
+            <a href="#storefront-main" className="sf-skip-link">Skip to shopping content</a>
+            <RigelHeader store={store} user={user} departments={departments} />
+            <RigelShell>{children}</RigelShell>
+            <UrbanFooter />
+            <RigelPhoneCartBar />
+            <UrbanTabBar />
+          </div>
+        </RigelChromeProvider>
+      </RigelFulfillmentProvider>
     </StorefrontServer>
   );
 }

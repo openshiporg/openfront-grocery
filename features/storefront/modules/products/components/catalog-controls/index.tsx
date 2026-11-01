@@ -57,18 +57,9 @@ export default function CatalogControls({ departments, activeDepartment, search 
     </label>
   </div>;
 
-  return <div className="grid items-start gap-8 lg:grid-cols-[15rem_minmax(0,1fr)] xl:gap-12" aria-busy={pending}>
-    <aside aria-label="Filter products" className="hidden lg:sticky lg:top-[calc(var(--sf-header-offset)+1rem)] lg:block">
-      <nav aria-label="Filter by aisle">
-        <p className="mb-2 text-sm font-semibold">Aisles</p>
-        <ul className="grid gap-0.5">
-          {[{ id: 'all', handle: '', name: 'All aisles' }, ...departments].map((department) => {
-            const current = (activeDepartment || '') === department.handle;
-            return <li key={department.id}><button type="button" disabled={pending} aria-pressed={current} onClick={() => update('department', department.handle)} className={`flex min-h-10 w-full items-center rounded-[var(--sf-radius-sm)] px-3 text-left text-sm transition-colors ${current ? 'bg-[var(--sf-ink)] font-semibold text-[var(--sf-paper)]' : 'text-[var(--sf-ink-muted)] hover:bg-[var(--sf-paper-2)] hover:text-[var(--sf-ink)]'}`}>{department.name}</button></li>;
-          })}
-        </ul>
-      </nav>
-      <div className="mt-8 border-t border-[var(--sf-rule)] pt-6">{filterFields('desktop')}</div>
+  return <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_13rem] xl:gap-6" aria-busy={pending}>
+    <aside aria-label="Filter products" className="hidden lg:order-2 lg:sticky lg:top-[calc(var(--sf-header-offset)+1rem)] lg:block">
+      <div className="rounded-[var(--sf-radius-lg)] bg-[var(--sf-card)] p-4 shadow-[var(--sf-shadow-1)]">{filterFields('desktop')}</div>
     </aside>
 
     <div className="min-w-0 space-y-5">
@@ -85,8 +76,8 @@ export default function CatalogControls({ departments, activeDepartment, search 
         </button>
       </div>
 
-      <nav aria-label="Filter by aisle" className="sf-scroll-row sf-bleed-row lg:hidden">
-        {[{ id: 'all', handle: '', name: 'All aisles' }, ...departments].map((department) => <button key={department.id} type="button" disabled={pending} aria-pressed={(activeDepartment || '') === department.handle} onClick={() => update('department', department.handle)} className="sf-chip">{department.name}</button>)}
+      <nav aria-label="Filter by aisle" className="sf-scroll-row sf-bleed-row gap-2 lg:mx-0 lg:flex-wrap lg:overflow-visible lg:px-0">
+        {[{ id: 'all', handle: '', name: 'All aisles' }, ...departments].map((department) => <button key={department.id} type="button" disabled={pending} aria-pressed={(activeDepartment || '') === department.handle} onClick={() => update('department', department.handle)} className="rg-chip aria-pressed:border-[var(--sf-rule-strong)] aria-pressed:bg-[var(--sf-paper-3)] aria-pressed:font-semibold">{department.name}</button>)}
       </nav>
 
       {(search || activeAisle || organic || availability !== 'in-stock') ? (

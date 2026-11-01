@@ -32,7 +32,7 @@ export async function CheckoutPage() {
     <UrbanPageShell>
       <UrbanContainer className="space-y-6 py-7 sm:space-y-8 sm:py-10">
         <UrbanPageHeader
-          breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Basket', href: '/cart' }, { label: 'Checkout' }]}
+          breadcrumb={[{ label: 'Home', href: '/' }, { label: 'Cart', href: '/cart' }, { label: 'Checkout' }]}
           title="Checkout"
           description="Pick a delivery or pickup time, confirm your details, then review the estimate before you pay."
         />

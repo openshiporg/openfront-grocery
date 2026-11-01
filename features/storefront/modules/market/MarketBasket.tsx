@@ -13,9 +13,9 @@ type BasketState = {
   cart: GroceryCart | null;
   loaded: boolean;
   busy: boolean;
-  /** The first authoritative basket read failed; nothing is known about the basket yet. */
+  /** The first authoritative cart read failed; nothing is known about the cart yet. */
   loadError: string | null;
-  /** A guest basket from before sign-in could not be moved into the account yet. */
+  /** A guest cart from before sign-in could not be moved into the account yet. */
   mergeError: string | null;
   reload: () => void;
   retryMerge: () => void;
@@ -26,9 +26,9 @@ type BasketState = {
 const BasketContext = createContext<BasketState | null>(null);
 
 /**
- * Basket state for the storefront. `identity` is the server-derived shopper
+ * Cart state for the storefront. `identity` is the server-derived shopper
  * ("guest" or the signed-in user id): when it changes the previous shopper's
- * basket is cleared at once and responses started under the old identity are
+ * cart is cleared at once and responses started under the old identity are
  * discarded.
  */
 export function MarketBasketProvider({ identity, children }: { identity: string; children: ReactNode }) {
@@ -43,7 +43,7 @@ export function MarketBasketProvider({ identity, children }: { identity: string;
   const lock = useRef(false);
   const [readKey, setReadKey] = useState(`${identity}:${attempt}`);
   setCartShopperIdentity(identity);
-  // A new shopper (or a deliberate retry) starts from an unknown basket at once.
+  // A new shopper (or a deliberate retry) starts from an unknown cart at once.
   if (readKey !== `${identity}:${attempt}`) {
     setReadKey(`${identity}:${attempt}`);
     setCart(null); setLoaded(false); setLoadError(null);
@@ -59,14 +59,14 @@ export function MarketBasketProvider({ identity, children }: { identity: string;
     };
     const receive = (event: Event) => {
       const next = (event as CustomEvent<GroceryCart | null>).detail;
-      // A failed request must not erase the last confirmed basket, and a
-      // response for a basket other than this shopper's confirmed one is stale.
+      // A failed request must not erase the last confirmed cart, and a
+      // response for a cart other than this shopper's confirmed one is stale.
       if (!next || !cartRef.current || next.id !== cartRef.current.id) return;
       accept(next);
     };
     const completed = (event: Event) => {
       if (cartRef.current?.id === (event as CustomEvent<string>).detail) { cartRef.current = null; setCart(null); setLoaded(false); }
-      void retrieveCart({ throwOnError: true }).then(accept).catch(() => { /* The completed basket is gone; wait for the next confirmed response. */ });
+      void retrieveCart({ throwOnError: true }).then(accept).catch(() => { /* The completed cart is gone; wait for the next confirmed response. */ });
     };
     async function load() {
       if (identity !== 'guest' && hasGuestCartSession()) {
@@ -80,7 +80,7 @@ export function MarketBasketProvider({ identity, children }: { identity: string;
       try {
         accept(await retrieveCart({ throwOnError: true }));
       } catch {
-        if (live && epoch.current === current) setLoadError('Your basket could not be loaded.');
+        if (live && epoch.current === current) setLoadError('Your cart could not be loaded.');
       }
     }
     window.addEventListener('cartUpdated', receive);
@@ -90,7 +90,7 @@ export function MarketBasketProvider({ identity, children }: { identity: string;
   }, [identity, attempt]);
 
   async function runExclusive(work: () => Promise<void>) {
-    if (lock.current) throw new Error('Please wait for your basket to finish updating.');
+    if (lock.current) throw new Error('Please wait for your cart to finish updating.');
     const started = epoch.current;
     lock.current = true; setBusy(true);
     try { await work(); }
@@ -109,7 +109,7 @@ export function MarketBasketProvider({ identity, children }: { identity: string;
         : current && current.quantity + delta > 0
           ? await updateCartItem(current.id, current.quantity + delta)
           : current ? await removeFromCart(current.id) : null;
-      if (!next) throw new Error('Your basket could not be updated. Check availability and try again.');
+      if (!next) throw new Error('Your cart could not be updated. Check availability and try again.');
       if (epoch.current !== started) return;
       cartRef.current = next; setCart(next); setLoaded(true);
     });
@@ -134,7 +134,7 @@ export function MarketBasketLink() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const count = cart?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0;
-  // The full basket and checkout pages already show every line; navigate there instead of overlaying them.
+  // The full cart and checkout pages already show every line; navigate there instead of overlaying them.
   const drawerEnabled = pathname !== '/cart' && !pathname?.startsWith('/checkout');
   return <>
     <Link
@@ -143,16 +143,16 @@ export function MarketBasketLink() {
       onClick={(event) => {
         if (!drawerEnabled || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
         event.preventDefault();
-        // Opening the basket after a failed first read tries again.
+        // Opening the cart after a failed first read tries again.
         if (loadError) reload();
         setOpen(true);
       }}
       aria-haspopup={drawerEnabled ? 'dialog' : undefined}
       className="relative inline-flex h-11 items-center gap-2 rounded-full bg-[var(--sf-ink)] pl-4 pr-1.5 text-sm font-semibold text-[var(--sf-paper)] transition-colors hover:bg-[var(--sf-header-2)]"
-      aria-label={loaded ? `Basket, ${count} ${count === 1 ? 'item' : 'items'}${cart?.items.length ? `, ${formatMoney(cart.subtotal)}` : ''}` : 'Basket'}
+      aria-label={loaded ? `Cart, ${count} ${count === 1 ? 'item' : 'items'}${cart?.items.length ? `, ${formatMoney(cart.subtotal)}` : ''}` : 'Cart'}
     >
       <ShoppingBasket className="h-[1.125rem] w-[1.125rem] shrink-0" aria-hidden="true" />
-      <span aria-hidden="true">{loaded && cart?.items.length ? formatMoney(cart.subtotal) : 'Basket'}</span>
+      <span aria-hidden="true">{loaded && cart?.items.length ? formatMoney(cart.subtotal) : 'Cart'}</span>
       <span key={count} aria-hidden="true" className={`grid h-8 min-w-8 place-items-center rounded-full px-2 text-[0.8125rem] tabular-nums ${count ? 'sf-bump bg-[var(--sf-tag)] text-[var(--sf-tag-ink)]' : 'bg-[var(--sf-header-2)] text-[var(--sf-header-ink)]'}`}>{loaded ? count : '·'}</span>
     </Link>
     {drawerEnabled ? <BasketDrawer open={open} onClose={() => setOpen(false)} /> : null}

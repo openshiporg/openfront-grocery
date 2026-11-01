@@ -1,13 +1,13 @@
-import type { GroceryProduct } from '../types';
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { RigelModeToggle, RigelSlotHeading, RigelSlotList } from '../modules/rigel/RigelFulfillment';
 import { notFound } from 'next/navigation';
 import { getProductByHandle } from '../lib/data/products';
 import { getShoppingLists } from '../lib/data/lists';
 import { getUser } from '../lib/data/user';
 import { storefrontMetadata } from '../lib/metadata';
 import ProductActions from '../modules/products/components/product-actions';
-import { ArrowRight, Leaf, Truck } from 'lucide-react';
+import { ArrowRight, Leaf } from 'lucide-react';
 import { UrbanBreadcrumb, UrbanContainer, UrbanPageShell, UrbanPrice, UrbanProductArtwork, formatMoney, perUnitLabel } from '../modules/urban/UrbanPrimitives';
 
 type Props = { params: Promise<{ slug: string; countryCode?: string }> };
@@ -52,9 +52,9 @@ export async function ProductPage(props: Props) {
   return <UrbanPageShell><UrbanContainer className="space-y-10 py-6 sm:space-y-16 sm:py-8">
     <div className="space-y-5">
       <UrbanBreadcrumb items={[{ label: 'Home', href: '/' }, { label: 'Shop', href: '/products' }, ...(product.department ? [{ label: product.department.name, href: `/departments/${product.department.handle}` }] : []), { label: product.name }]} />
-      <section className="grid items-start gap-7 md:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] lg:gap-14">
-        <div className="relative overflow-hidden rounded-[28px] bg-[var(--sf-paper-3)] md:sticky md:top-[calc(var(--sf-header-offset)+1rem)]">
-          <div className="aspect-square"><UrbanProductArtwork product={product} eager /></div>
+      <section className="grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-10">
+        <div className="relative overflow-hidden rounded-[var(--sf-radius-lg)] bg-[var(--sf-paper-3)] md:sticky md:top-[calc(var(--sf-header-offset)+1rem)]">
+          <div className="aspect-square"><UrbanProductArtwork product={product} eager className="mix-blend-multiply" /></div>
           <div className="absolute left-4 top-4 flex flex-wrap gap-2">
             {product.organicCertified ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--sf-card)] px-3 py-1.5 text-xs font-bold text-[var(--sf-sage)] shadow-[var(--sf-shadow-1)]"><Leaf className="h-3.5 w-3.5" aria-hidden="true" />Organic</span> : null}
             {product.isPerishable ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--sf-card)] px-3 py-1.5 text-xs font-bold text-[var(--sf-info)] shadow-[var(--sf-shadow-1)]">Perishable</span> : null}
@@ -65,23 +65,22 @@ export async function ProductPage(props: Props) {
           <h1 className="sf-title mt-1">{product.name}</h1>
           {product.variantLabel ? <p className="mt-2 text-[0.9375rem] text-[var(--sf-ink-muted)]">{product.variantLabel}{product.variantOf ? <> · <Link prefetch={false} href={`/products/${product.variantOf.handle}`} className="font-semibold underline underline-offset-4">View {product.variantOf.title}</Link></> : null}</p> : null}
 
-          <div className="mt-6 flex flex-wrap items-end gap-x-4 gap-y-2">
-            <span className={hasSavings ? 'sf-price-tag px-3 py-2' : ''}><UrbanPrice value={product.price} className="text-[2.75rem]" /></span>
-            <div className="pb-1">
-              <p className="text-sm font-semibold">{perUnitLabel(product.unit)}{measured ? ' · estimated' : ''}</p>
-              {hasSavings ? <p className="text-sm text-[var(--sf-ink-muted)]"><span className="sf-was">{formatMoney(product.compareAtPrice)}</span> · you save {formatMoney(product.compareAtPrice! - product.price)}</p> : null}
-            </div>
+          <div className="mt-4 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            <UrbanPrice value={product.price} className="text-[2rem] text-[var(--sf-accent-hover)]" />
+            <span className="text-[0.9375rem] text-[var(--sf-ink-muted)]">{perUnitLabel(product.unit)}{measured ? ' · estimated' : ''}</span>
+            {hasSavings ? <span className="ml-1 rounded-full bg-[var(--sf-tag)] px-2.5 py-0.5 text-[0.8125rem] font-semibold text-[var(--sf-tag-ink)]">Save {formatMoney(product.compareAtPrice! - product.price)} <span className="sf-was font-normal">{formatMoney(product.compareAtPrice)}</span></span> : null}
           </div>
           <p className={`mt-4 inline-flex items-center gap-1.5 text-sm font-semibold ${product.inStock ? 'text-[var(--sf-sage)]' : 'text-[var(--sf-danger)]'}`}><span aria-hidden="true" className={`h-2 w-2 rounded-full ${product.inStock ? 'bg-[var(--sf-sage)]' : 'bg-[var(--sf-danger)]'}`} />{product.inStock ? 'In stock' : 'Out of stock'}</p>
           {measured ? <p className="sf-note mt-4">Priced by {product.pricingMethod}. Basket quantities request whole units; the final price uses the amount actually picked. A higher total requires your approval before another authorization.</p> : null}
 
           <ProductActions product={product} lists={shoppingLists} isSignedIn={Boolean(user)} />
 
-          <Link prefetch={false} href="/fulfillment" className="group mt-6 flex items-center gap-3 rounded-[var(--sf-radius-md)] bg-[var(--sf-paper-2)] p-4 transition-colors hover:bg-[var(--sf-paper-3)]">
-            <Truck className="h-5 w-5 shrink-0 text-[var(--sf-sage)]" aria-hidden="true" />
-            <span className="min-w-0 flex-1 text-sm"><span className="block font-semibold">Delivery or pickup</span><span className="text-[var(--sf-ink-muted)]">See the next available times — you choose at checkout.</span></span>
-            <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
-          </Link>
+          <div className="mt-6 grid gap-3 rounded-[var(--sf-radius-lg)] bg-[var(--sf-card)] p-4 shadow-[var(--sf-shadow-1)] lg:hidden">
+            <RigelModeToggle />
+            <RigelSlotHeading />
+            <RigelSlotList name="product-window" limit={2} compact />
+            <Link prefetch={false} href="/fulfillment" className="inline-flex min-h-9 items-center gap-1 text-[0.8125rem] text-[var(--sf-accent-hover)] underline underline-offset-2">All delivery &amp; pickup times <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /></Link>
+          </div>
         </div>
       </section>
     </div>
