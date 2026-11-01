@@ -1,4 +1,5 @@
 import type { Context } from '.keystone/types';
+import { requirePrismaSuccess } from '../utils/serializableTransaction';
 
 export const DEFAULT_TAX_RATE_BPS = 875;
 
@@ -11,10 +12,12 @@ export function normalizeTaxRateBps(value: unknown) {
 }
 
 export async function getStoreTaxRateBps(context: Context, storeId: string) {
-  const settings = await context.prisma.storeSettings.findUnique({
+  // A failed read (such as an expired transaction) arrives as an error value;
+  // report it as the database failure it is, not as a bad tax rate.
+  const settings = requirePrismaSuccess(await context.prisma.storeSettings.findUnique({
     where: { storeId },
     select: { taxRateBps: true },
-  });
+  }), 'StoreSettings.findUnique');
   if (!settings) throw new Error('Store tax settings are unavailable');
   return normalizeTaxRateBps(settings.taxRateBps);
 }

@@ -9,16 +9,45 @@ export function requirePrismaSuccess<T>(value: T, operation = 'database operatio
   throw error;
 }
 
-/** Normalize Keystone's Prisma-error values at the client boundary, including transaction clients. */
+/**
+ * Interactive-transaction limits. Prisma's defaults (5s run, 2s wait for a
+ * connection) are shorter than a cart or checkout transaction takes against a
+ * remote database under load. When a transaction outlives its limit, every later
+ * read inside it comes back from Keystone as an error value rather than a thrown
+ * error, which then surfaces as unrelated validation failures (for example an
+ * "invalid" store tax rate). Explicit per-call options still win.
+ */
+export const INTERACTIVE_TRANSACTION_DEFAULTS = { timeout: 20_000, maxWait: 10_000 } as const;
+
+export function withInteractiveTransactionDefaults<T extends object>(prisma: T, defaults: { timeout?: number; maxWait?: number } = INTERACTIVE_TRANSACTION_DEFAULTS): T {
+  return new Proxy(prisma, {
+    get(target, key, receiver) {
+      if (key === '$transaction') {
+        const transaction = Reflect.get(target, key, receiver) as (...args: any[]) => unknown;
+        return (arg: unknown, options?: Record<string, unknown>) => typeof arg === 'function'
+          ? transaction.call(target, arg, { ...defaults, ...options })
+          : transaction.call(target, arg, options);
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+}
+
+/**
+ * Normalize Keystone's Prisma-error values at the client boundary. Keystone's own
+ * error-to-value extension is applied before this one, so values it returns can
+ * still reach callers; reads whose result matters should also pass through
+ * requirePrismaSuccess.
+ */
 export function extendPrismaClientWithErrorNormalization(prisma: any) {
-  return prisma.$extends({
+  return withInteractiveTransactionDefaults(prisma.$extends({
     query: {
       async $allOperations({ model, operation, args, query }: any) {
         const label = [model, operation].filter((part) => typeof part === 'string' && part).join('.') || 'database operation';
         return requirePrismaSuccess(await query(args), label);
       },
     },
-  });
+  }));
 }
 
 export function isSerializableConflict(error: unknown) {
