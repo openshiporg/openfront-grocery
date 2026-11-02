@@ -98,8 +98,9 @@ export async function createPurchaseOrderDraft(
     const prefix = `PO-${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
     // The monthly sequence is numeric (…-9999 is followed by …-10000), allocated under the numbering lock.
     const [latest] = await tx.$queryRawUnsafe<Array<{ sequence: number | null }>>(
-      `SELECT MAX(CAST(substring("poNumber" from $2) AS BIGINT)) AS "sequence" FROM "PurchaseOrder"
-        WHERE "poNumber" LIKE $1 AND substring("poNumber" from $2) ~ '^[0-9]+$'`,
+      // Prisma binds JS numbers as bigint; substring() only accepts int offsets.
+      `SELECT MAX(CAST(substring("poNumber" from $2::int) AS BIGINT)) AS "sequence" FROM "PurchaseOrder"
+        WHERE "poNumber" LIKE $1 AND substring("poNumber" from $2::int) ~ '^[0-9]+$'`,
       `${prefix}-%`, prefix.length + 2,
     );
     const latestSequence = Number(latest?.sequence || 0);
