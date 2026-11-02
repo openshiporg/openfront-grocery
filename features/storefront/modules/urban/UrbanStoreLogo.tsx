@@ -10,7 +10,7 @@ export interface UrbanStoreLogoProps {
 }
 
 /** One mark renderer for header, mobile menu, footer and settings preview.
- * A saved safe SVG wins over a custom logoUrl; unsaved stores use the default library mark.
+ * A saved safe SVG wins over a custom logoUrl; unsaved stores use the default library mark. The icon always shows.
  * Only the saved logo colour controls a chosen SVG, never the storefront accent.
  */
 export function UrbanStoreLogo({ name, logoUrl, logoIcon, logoColor }: UrbanStoreLogoProps) {
@@ -36,7 +36,12 @@ export function UrbanStoreLogo({ name, logoUrl, logoIcon, logoColor }: UrbanStor
   if (logoUrl) {
     return <img data-store-logo="url" src={logoUrl} alt="" width={36} height={36} className="h-9 w-9 shrink-0 object-contain" />;
   }
-  return <span data-store-logo="initial" aria-hidden="true" className="grid h-9 w-9 shrink-0 place-items-center rounded-[10px] bg-[var(--sf-accent)] font-[family-name:var(--sf-font-display)] text-lg font-bold text-[var(--sf-accent-ink)]">
-    {name.slice(0, 1)}
-  </span>;
+  // Nothing else to draw: the store's default icon still shows beside the name, never an initial.
+  return <span
+    data-store-logo="default"
+    className="block h-9 w-9 shrink-0 [&>svg]:block [&>svg]:size-full"
+    style={{ filter: `hue-rotate(${DEFAULT_LIBRARY_LOGO_COLOR}deg)` }}
+    dangerouslySetInnerHTML={{ __html: DEFAULT_STORE_LOGO_ICON }}
+    aria-hidden="true"
+  />;
 }

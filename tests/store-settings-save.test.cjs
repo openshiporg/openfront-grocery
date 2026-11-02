@@ -51,3 +51,12 @@ test('the logo form renders the E-commerce block; the action sanitizes, normaliz
   assert.match(action, /updateGroceryStoreLogo\(logoIcon: \$logoIcon, logoColor: \$logoColor\)/);
   assert.match(action, /revalidatePath\('\/', 'layout'\)/);
 });
+
+test('storefront render rule: an icon always shows, never an initial letter; a custom logoUrl still works', () => {
+  const logo = read('features/storefront/modules/urban/UrbanStoreLogo.tsx');
+  assert.match(logo, /hue-rotate\(\$\{normalizeStoreLogoColor\(logoColor\)\}deg\)/);
+  assert.match(logo, /data-store-logo="url"/);
+  assert.doesNotMatch(logo, /data-store-logo="initial"/);
+  assert.match(logo, /__html: DEFAULT_STORE_LOGO_ICON/);
+  for (const file of ['UrbanNav', 'UrbanFooter', 'UrbanMobileMenu']) assert.match(read(`features/storefront/modules/urban/${file}.tsx`), /UrbanStoreLogo/, file);
+});
