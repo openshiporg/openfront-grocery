@@ -53,7 +53,7 @@ export async function HomePage(props: { params: Promise<{ countryCode?: string }
     <div className="px-3 pb-10 pt-4 sm:px-5 lg:px-6 lg:pt-6 xl:px-7">
       {shelves.length ? (
         <nav aria-label="Featured aisles" className="mb-6 hidden lg:block">
-          <ul className="grid grid-cols-4 gap-4">{shelves.map((department) => <li key={department.id}><UrbanDepartmentCard department={department} /></li>)}</ul>
+          <ul className="grid grid-cols-4 gap-4">{shelves.map((department) => <li key={department.id}><UrbanDepartmentCard department={department} loading="eager" /></li>)}</ul>
         </nav>
       ) : null}
 
@@ -62,10 +62,10 @@ export async function HomePage(props: { params: Promise<{ countryCode?: string }
         <Link prefetch={false} href="/products" data-active="" className="rg-chip hidden lg:inline-flex">Popular</Link>
         <Link prefetch={false} href="/deals" className="rg-chip hidden lg:inline-flex">On sale</Link>
         <Link prefetch={false} href="/products?organic=true" className="rg-chip hidden lg:inline-flex">Organic</Link>
-        {departments.map((department) => {
+        {departments.map((department, index) => {
           return <Link prefetch={false} key={department.id} href={`/departments/${department.handle}`} className="rg-chip pl-1.5 lg:pl-4">
             <span aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--sf-paper-3)] lg:hidden">
-              {department.imageUrl ? <img src={department.imageUrl} alt="" loading="lazy" className="h-full w-full object-cover" /> : <DepartmentIcon department={department} className="h-4 w-4 text-[var(--sf-ink-muted)]" />}
+              {department.imageUrl ? <img src={department.imageUrl} alt="" width={24} height={24} loading={index < 4 ? 'eager' : 'lazy'} decoding="async" className="h-full w-full object-cover" /> : <DepartmentIcon department={department} className="h-4 w-4 text-[var(--sf-ink-muted)]" />}
             </span>
             {department.name}
           </Link>;

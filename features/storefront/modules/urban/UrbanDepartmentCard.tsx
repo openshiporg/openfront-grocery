@@ -9,11 +9,11 @@ const zones: Record<string, { label: string; Icon: typeof Snowflake }> = {
 };
 
 /** Rigel aisle card: a photo tile with the aisle name on a white label. */
-export default function UrbanDepartmentCard({ department, size = 'md' }: { department: GroceryDepartment; index?: number; size?: 'md' | 'lg' }) {
+export default function UrbanDepartmentCard({ department, size = 'md', loading = 'lazy' }: { department: GroceryDepartment; index?: number; size?: 'md' | 'lg'; loading?: 'lazy' | 'eager' }) {
   const zone = department.temperatureZone ? zones[department.temperatureZone] : undefined;
   return <Link prefetch={false} href={`/departments/${department.handle}`} className={`group relative isolate flex h-full flex-col justify-end overflow-hidden rounded-[var(--sf-radius-lg)] bg-[var(--sf-paper-3)] ${size === 'lg' ? 'aspect-[4/3]' : 'aspect-[13/10]'}`}>
     {department.imageUrl ? (
-      <img src={department.imageUrl} alt="" loading="lazy" className="absolute inset-0 -z-10 h-full w-full object-cover transition-transform duration-[var(--sf-dur-slow)] ease-[var(--sf-ease-out)] group-hover:scale-[1.04]" />
+      <img src={department.imageUrl} alt="" loading={loading} decoding="async" className="absolute inset-0 -z-10 h-full w-full object-cover transition-transform duration-[var(--sf-dur-slow)] ease-[var(--sf-ease-out)] group-hover:scale-[1.04]" />
     ) : (
       <DepartmentIcon department={department} className="absolute left-1/2 top-[38%] -z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 text-[var(--sf-ink-faint)]" />
     )}
