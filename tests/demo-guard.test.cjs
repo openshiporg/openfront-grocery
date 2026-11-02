@@ -71,13 +71,13 @@ test('3. a demo user cannot create, delete or update users, including the real a
   await refused(run('User', 'update', DEMO, { item: { id: 'admin' }, inputData: { name: 'Hacked' } }));
 });
 
-test('4. a demo user cannot change the store name, logo or URL settings', async () => {
-  for (const field of ['name', 'tagline', 'logoUrl', 'logoIcon', 'logoColor', 'brandHue']) {
-    await refused(run('StoreSettings', 'update', DEMO, { item: { id: 's' }, inputData: { [field]: 'x' } }));
-  }
-  await refused(run('Store', 'update', DEMO, { item: { id: 'h' }, inputData: { name: 'x' } }));
-  await refused(run('StoreSettings', 'create', DEMO, { inputData: {} }));
-  await refused(run('StoreSettings', 'delete', DEMO, { item: { id: 's' } }));
+test('4. changed name, tagline, logo and brand colour ALLOWED; store code and roles stay protected', async () => {
+  const item = { id: 's', name: 'Juniper', tagline: null, logoUrl: null, logoIcon: 'a', logoColor: '#111111', brandHue: 40 };
+  await run('StoreSettings', 'update', DEMO, { item, inputData: { name: 'Juniper QA', tagline: 'New', logoUrl: 'https://x/y.png', logoIcon: 'b', logoColor: '#000000', brandHue: 41 } });
+  await run('StoreSettings', 'update', DEMO, { inputData: { name: 'No stored item' } });
+  await run('Store', 'update', DEMO, { item: { id: 'h', name: 'Juniper', code: 'main' }, inputData: { name: 'Juniper QA', code: 'main' } });
+  await refused(run('Store', 'update', DEMO, { item: { id: 'h', code: 'main' }, inputData: { code: 'other' } }));
+  await refused(run('Role', 'update', DEMO, { item: { id: 'r' }, inputData: { name: 'Y' } }));
 });
 
 test('a demo user can still edit a booking and its own onboarding state', async () => {
@@ -131,11 +131,11 @@ test('writes past the list hooks refuse a demo session', () => {
   assert.match(m('getPublicGroceryStorefrontSettings.ts'), /assertNotDemo\(context\)/);
   assert.match(m('runGroceryOnboarding.ts'), /assertNotDemo\(context\)/);
   assert.equal((m('manageGroceryStaff.ts').match(/assertNotDemo\(context\)/g) || []).length, 2);
-  assert.match(m('updateGroceryStoreProfile.ts'), /assertNotDemo\(transactionContext\)/);
+  assert.doesNotMatch(m('updateGroceryStoreProfile.ts'), /assertNotDemo|DEMO_GUARD/, 'store name and tagline are editable by the demo login');
 });
 
 test('day-to-day lists are outside the policy: products, photos, orders and refunds are never guarded', () => {
-  assert.deepEqual(Object.keys(DEMO_GUARD_POLICY).sort(), ['Role', 'Store', 'StoreSettings', 'User']);
+  assert.deepEqual(Object.keys(DEMO_GUARD_POLICY).sort(), ['Role', 'Store', 'User']);
   const dir = path.join(root, 'features/keystone/mutations');
   for (const f of fs.readdirSync(dir).filter((n) => /refund|product|image|photo|catalog/i.test(n))) {
     assert.doesNotMatch(fs.readFileSync(path.join(dir, f), 'utf8'), /assertNotDemo|demo-guard/, f);
