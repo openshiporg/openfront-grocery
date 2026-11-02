@@ -105,23 +105,23 @@ export function RigelSidebar({ departments }: { departments: Array<{ id: string;
       ) : null}
       <RigelModeToggle />
       <nav aria-label="Departments">
-        <p className="mb-2 px-1 text-[0.8125rem] font-medium uppercase tracking-[0.02em] text-[var(--sf-ink-muted)]">Departments</p>
+        <p className="mb-1.5 px-1 text-[0.6875rem] font-medium uppercase tracking-[0.02em] text-[var(--sf-ink-muted)]">Departments</p>
         <ul className="-mx-4 grid gap-0.5">
           {departments.map((department) => {
             const href = `/departments/${department.handle}`;
             const current = pathname === href;
             return (
               <li key={department.id}>
-                <Link prefetch={false} href={href} aria-current={current ? 'page' : undefined} className={`relative mr-3 flex min-h-10 items-center gap-3 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.9375rem] transition-colors ${current ? 'bg-[var(--sf-accent-soft)] font-semibold text-[var(--sf-accent-hover)] before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-[var(--sf-accent)]' : 'text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]'}`}>
-                  <DepartmentIcon department={department} className={`h-[1.125rem] w-[1.125rem] shrink-0 ${current ? '' : 'text-[var(--sf-ink-muted)]'}`} />
+                <Link prefetch={false} href={href} aria-current={current ? 'page' : undefined} className={`relative mr-3 flex min-h-8 items-center gap-2.5 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.8125rem] transition-colors ${current ? 'bg-[var(--sf-accent-soft)] font-semibold text-[var(--sf-accent-hover)] before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-[var(--sf-accent)]' : 'text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]'}`}>
+                  <DepartmentIcon department={department} className={`h-4 w-4 shrink-0 ${current ? '' : 'text-[var(--sf-ink-muted)]'}`} />
                   <span className="truncate">{department.name}</span>
                 </Link>
               </li>
             );
           })}
           <li>
-            <Link prefetch={false} href="/deals" aria-current={pathname === '/deals' ? 'page' : undefined} className="mr-3 flex min-h-10 items-center gap-3 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.9375rem] text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]">
-              <Leaf className="h-[1.125rem] w-[1.125rem] shrink-0 text-[var(--sf-ink-muted)]" aria-hidden="true" />Specials
+            <Link prefetch={false} href="/deals" aria-current={pathname === '/deals' ? 'page' : undefined} className="mr-3 flex min-h-8 items-center gap-2.5 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.8125rem] text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]">
+              <Leaf className="h-4 w-4 shrink-0 text-[var(--sf-ink-muted)]" aria-hidden="true" />Specials
             </Link>
           </li>
         </ul>

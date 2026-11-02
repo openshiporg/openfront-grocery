@@ -11,7 +11,7 @@ export default function UrbanProductGrid({ products, layout = 'grid' }: { produc
     </ul>;
   }
   return <div className="@container">
-    <ul className="grid grid-cols-3 gap-2 @[18rem]:gap-2.5 @max-[22rem]:grid-cols-2 @2xl:grid-cols-4 @3xl:grid-cols-5 @5xl:grid-cols-6 @5xl:gap-3">
+    <ul className="grid grid-cols-3 gap-2 @[18rem]:gap-2.5 @max-[22rem]:grid-cols-2 @2xl:grid-cols-4 @[44rem]:grid-cols-5 @[52rem]:grid-cols-6 @[52rem]:gap-3">
       {products.map((product, index) => <li key={product.id} className="min-w-0"><UrbanProductCard product={product} eager={index < 6} /></li>)}
     </ul>
   </div>;

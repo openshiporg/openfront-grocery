@@ -57,14 +57,14 @@ export async function HomePage(props: { params: Promise<{ countryCode?: string }
         </nav>
       ) : null}
 
-      <nav aria-label="Shop by" className="sf-scroll-row sf-bleed-row -mx-3 mb-4 gap-2 px-3 sm:-mx-5 sm:px-5 lg:mx-0 lg:mb-5 lg:flex-wrap lg:overflow-visible lg:px-0">
-        <Link prefetch={false} href="/" aria-current="page" className="rg-chip rg-chip-phone lg:hidden"><ShoppingCart className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" />All</Link>
+      <nav aria-label="Shop by" className="sf-scroll-row sf-bleed-row -mx-3 mb-4 gap-2 px-3 sm:-mx-5 sm:px-5 lg:mx-0 lg:mb-5 lg:px-0">
+        <Link prefetch={false} href="/" aria-current="page" className="rg-chip rg-chip-phone lg:hidden"><ShoppingCart className="h-4 w-4" aria-hidden="true" />All</Link>
         <Link prefetch={false} href="/products" data-active="" className="rg-chip hidden lg:inline-flex">Popular</Link>
         <Link prefetch={false} href="/deals" className="rg-chip hidden lg:inline-flex">On sale</Link>
         <Link prefetch={false} href="/products?organic=true" className="rg-chip hidden lg:inline-flex">Organic</Link>
         {departments.map((department) => {
           return <Link prefetch={false} key={department.id} href={`/departments/${department.handle}`} className="rg-chip pl-1.5 lg:pl-4">
-            <span aria-hidden="true" className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--sf-paper-3)] lg:hidden">
+            <span aria-hidden="true" className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--sf-paper-3)] lg:hidden">
               {department.imageUrl ? <img src={department.imageUrl} alt="" loading="lazy" className="h-full w-full object-cover" /> : <DepartmentIcon department={department} className="h-4 w-4 text-[var(--sf-ink-muted)]" />}
             </span>
             {department.name}
@@ -74,7 +74,7 @@ export async function HomePage(props: { params: Promise<{ countryCode?: string }
       </nav>
 
       <section aria-labelledby="home-shelf">
-        <h2 id="home-shelf" className="mb-3 text-[1.25rem] font-medium lg:sr-only">Shop all</h2>
+        <h2 id="home-shelf" className="mb-2.5 text-[1.0625rem] font-medium lg:sr-only">Shop all</h2>
         <UrbanProductGrid products={products} />
         <div className="mt-5 flex justify-center">
           <Link prefetch={false} href="/products" className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-[var(--sf-rule-strong)] bg-[var(--sf-card)] px-5 text-[0.9375rem] font-medium hover:border-[var(--sf-ink)]">Shop all groceries <ArrowRight className="h-4 w-4" aria-hidden="true" /></Link>
