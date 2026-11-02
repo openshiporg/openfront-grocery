@@ -1,7 +1,5 @@
 import { isPaymentProviderInstalled } from './stripeEnabled';
 
-import * as stripe from './stripe';
-import * as test from './test';
 import { stripeConfigurationProblem } from './stripeEnabled';
 import type { PaymentProviderAdapter, PaymentProviderOperation, PaymentProviderRecord } from './types';
 
@@ -10,7 +8,6 @@ export const TEST_PROVIDER_CODE = 'pp_test_default' as const;
 
 export type PaymentProviderDefinition = {
   adapterKey: 'stripe' | 'test';
-  adapter: PaymentProviderAdapter;
   publicCheckout: boolean;
   /** Stripe's server-owned contract admits stable idempotent final capture. */
   supportsIdempotentCapture: boolean;
@@ -19,23 +16,22 @@ export type PaymentProviderDefinition = {
 
 // Provider codes and the built-in adapter contracts remain server-owned. A
 // custom row may select only a registered local adapter or an admitted HTTPS
-// origin; it can never name an import path or arbitrary module.
+// origin; it can never name an import path or arbitrary module. Adapters load
+// lazily, so a provider SDK is only imported when that provider is used.
 export const paymentProviderAdapters = {
-  [STRIPE_PROVIDER_CODE]: stripe,
-  [TEST_PROVIDER_CODE]: test,
-} satisfies Record<string, PaymentProviderAdapter>;
+  stripe: () => import('./stripe'),
+  test: () => import('./test'),
+} satisfies Record<string, () => Promise<PaymentProviderAdapter>>;
 
 export const paymentProviderDefinitions = {
   [STRIPE_PROVIDER_CODE]: {
     adapterKey: 'stripe',
-    adapter: paymentProviderAdapters[STRIPE_PROVIDER_CODE],
     publicCheckout: true,
     supportsIdempotentCapture: true,
     credentialEnv: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY'],
   },
   [TEST_PROVIDER_CODE]: {
     adapterKey: 'test',
-    adapter: paymentProviderAdapters[TEST_PROVIDER_CODE],
     publicCheckout: false,
     supportsIdempotentCapture: false,
     credentialEnv: ['GROCERY_PAYMENT_TEST_SECRET'],
@@ -84,13 +80,12 @@ export function getConfiguredPaymentAdapterSelector(provider: PaymentProviderRec
   return configuredSelector(provider, operation);
 }
 
-export function getLocalPaymentProviderAdapter(selector: string): PaymentProviderAdapter {
-  if (selector === 'stripe') return paymentProviderAdapters[STRIPE_PROVIDER_CODE];
-  if (selector === 'test') return paymentProviderAdapters[TEST_PROVIDER_CODE];
+export async function getLocalPaymentProviderAdapter(selector: string): Promise<PaymentProviderAdapter> {
+  if (selector === 'stripe' || selector === 'test') return paymentProviderAdapters[selector]();
   throw new Error('Unknown registered payment adapter');
 }
 
-export function getPaymentProviderAdapter(provider: PaymentProviderRecord, operation: PaymentProviderOperation): PaymentProviderAdapter {
+export async function getPaymentProviderAdapter(provider: PaymentProviderRecord, operation: PaymentProviderOperation): Promise<PaymentProviderAdapter> {
   const selector = configuredSelector(provider, operation);
   if (!LOCAL_ADAPTER_CODES.has(selector)) throw new Error('Configured payment adapter is remote');
   return getLocalPaymentProviderAdapter(selector);

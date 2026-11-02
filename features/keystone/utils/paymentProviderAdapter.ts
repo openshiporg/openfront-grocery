@@ -145,7 +145,7 @@ export async function executeAdapterFunction({
     return invokeRemoteAdapter(provider, functionName, selector, args, timeoutMs);
   }
 
-  const adapter = getLocalPaymentProviderAdapter(selector);
+  const adapter = await getLocalPaymentProviderAdapter(selector);
   const fn = adapter[functionName] as ((input: any) => Promise<any>) | undefined;
   if (typeof fn !== 'function') throw new Error(`Payment adapter operation ${functionName} is unavailable`);
   return fn(timeoutMs ? { ...args, timeoutMs } : args);
