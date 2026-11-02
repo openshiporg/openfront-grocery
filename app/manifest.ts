@@ -2,6 +2,7 @@ import type { MetadataRoute } from 'next';
 import { getStore } from '@/features/storefront/lib/data/store';
 import { storefrontAccentColor } from '@/features/storefront/lib/branding';
 import { storefrontThemeHue } from '@/features/lib/store-logo';
+import { storeIconHref } from '@/features/storefront/lib/storeIcon';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +25,6 @@ export default async function manifest(): Promise<MetadataRoute.Manifest> {
     display: 'standalone',
     background_color: '#f5f1e8',
     theme_color: storefrontAccentColor(storefrontThemeHue(store)),
-    icons: [{ src: '/api/store-icon', sizes: 'any', type: 'image/svg+xml' }],
+    icons: [{ src: storeIconHref(store), sizes: 'any', type: 'image/svg+xml' }],
   };
 }

@@ -17,6 +17,11 @@ const nextConfig: NextConfig = {
       ...(process.env.PUBLIC_SIGNUPS_ALLOWED === 'true' ? [] : [{ source: '/dashboard/signup', missing: signedOut, destination: '/account/register', permanent: false }]),
     ];
   },
+  // Provider webhooks live at the reference path; endpoints registered at the old path keep
+  // working (a rewrite, not a redirect: providers do not follow redirects on POST).
+  async rewrites() {
+    return [{ source: '/api/payments/webhooks/:providerCode', destination: '/api/payment-webhooks/:providerCode' }];
+  },
   serverExternalPackages: ['graphql'],
   // Workaround since we diverged from Keystone reltionship and document views
   // typescript: {

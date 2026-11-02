@@ -43,6 +43,7 @@ import { resolveOrderLineFulfillment } from "./resolveOrderLineFulfillment";
 import { mergeSchemas } from "@graphql-tools/schema";
 import { GraphQLScalarType, Kind, type GraphQLSchema, type ValueNode } from 'graphql';
 import redirectToInit from "./redirectToInit";
+import groceryHealth from "./groceryHealth";
 import updateActiveUser from "./updateActiveUser";
 import updateActiveUserPassword from "./updateActiveUserPassword";
 import { recoverRevisedAuthorization } from "./recoverRevisedAuthorization";
@@ -1199,6 +1200,8 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
       type GroceryPlatformSettingsCounts { products: Int!, suppliers: Int!, deliverySlots: Int!, pickupSlots: Int!, parkingSpots: Int! }
       type GroceryPlatformSettingsProjection { store: GroceryPlatformStoreTruth!, settings: GroceryPlatformSettingsTruth!, counts: GroceryPlatformSettingsCounts! }
 
+      type GroceryHealth { status: String!, database: String! }
+
       type Query {
         groceryDeliveryRescheduleSlots(orderId: ID!): JSON!
         groceryRecurringOverview(page: Int, customerOnly: Boolean, search: String, outcome: String, schedule: String): JSON!
@@ -1223,6 +1226,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         groceryPlatformPayments(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformPaymentsProjection!
         groceryPlatformSettings: GroceryPlatformSettingsProjection!
         redirectToInit: Boolean
+        groceryHealth: GroceryHealth!
         groceryCart(sessionId: String): GroceryCart
         customerOrderSubstitutions(orderId: ID!): [CustomerOrderSubstitution!]!
         clippedCoupons: [ClippedCoupon!]!
@@ -1420,6 +1424,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         groceryPlatformPayments,
         groceryPlatformSettings,
         redirectToInit,
+        groceryHealth,
         groceryCart: getCart,
         customerOrderSubstitutions: getCustomerOrderSubstitutions,
         clippedCoupons: getClippedCoupons,

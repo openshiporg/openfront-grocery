@@ -6,6 +6,7 @@ import { MainLayout } from '@/features/storefront/screens/MainLayout';
 import { getStore } from '@/features/storefront/lib/data/store';
 import { storefrontBrandCssVariables } from '@/features/storefront/lib/branding';
 import { storefrontThemeHue } from '@/features/lib/store-logo';
+import { storeIconHref } from '@/features/storefront/lib/storeIcon';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,8 +20,8 @@ export async function generateMetadata(): Promise<Metadata> {
     },
     applicationName: store.name || undefined,
     description: store.homepageDescription || undefined,
-    // The store's chosen mark (or its custom logo URL), rendered by the store-icon route.
-    icons: { icon: '/api/store-icon', shortcut: '/api/store-icon', apple: '/api/store-icon' },
+    // The store's chosen mark (or its custom logo URL).
+    icons: (() => { const icon = storeIconHref(store); return { icon, shortcut: icon, apple: icon }; })(),
   };
 }
 
