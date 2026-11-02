@@ -1,3 +1,4 @@
+import { assertNotDemo } from '../lib/demo-guard';
 import {initialProductInformation} from '../lib/productInformation';
 import { normalizeCouponCode } from '../lib/couponLookup';
 import type { Context } from '.keystone/types';
@@ -431,5 +432,7 @@ export async function runGroceryOnboarding(
   context: Context
 ) {
   await requireFreshCapability(context, 'canManageOnboarding');
+  // Onboarding rewrites store settings, roles and users through Prisma, past the list hooks.
+  await assertNotDemo(context);
   return runGroceryOnboardingTransaction(args.seed ?? seedDefaults, context);
 }

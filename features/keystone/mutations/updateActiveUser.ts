@@ -1,3 +1,4 @@
+import { assertNotDemo } from '../lib/demo-guard';
 import { requireSessionStore } from "../lib/storeScope";
 import { requireFreshCapability } from '../access';
 import { accountEmailProblem, normalizeAccountEmail } from '../../lib/accountContract';
@@ -22,6 +23,8 @@ async function updateActiveUser(
   if (!session?.itemId) throw new Error('Not authenticated');
   await requireSessionStore(context);
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Profile data is required');
+  // Name and sign-in email are identity; onboarding status stays editable.
+  if (data.name !== undefined || data.email !== undefined) await assertNotDemo(context);
 
   const update: Record<string, string> = {};
   if (data.name !== undefined) {

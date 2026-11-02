@@ -1,3 +1,4 @@
+import { assertNotDemo } from '../lib/demo-guard';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
@@ -34,7 +35,7 @@ export async function groceryStaffDirectory(_root: unknown, args: { page?: numbe
   return { staff, invitations, events, privacyRequests, search, access, accessCounts: Object.fromEntries(accessCounts), pagination: { page, pageSize, totalPages: Math.max(1, Math.ceil(Math.max(staffCount, invitationCount, eventCount, privacyCount) / pageSize)), counts: { staffCount, invitationCount, eventCount, privacyCount } } };
 }
 export async function inviteGroceryStaff(_root: unknown, args: { name: string; email: string; capabilities: unknown; delivery?: string | null }, context: Context) {
-  await requireFreshCapability(context, 'canManageUsers'); const store = await requireSessionStore(context);
+  await requireFreshCapability(context, 'canManageUsers'); await assertNotDemo(context); const store = await requireSessionStore(context);
   const email = args.email.trim().toLowerCase(), name = args.name.trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || name.length < 2 || name.length > 120) throw new Error('A valid name and email are required');
   // The inviting manager chooses how the single-use link travels: the store's email service, or
@@ -84,7 +85,7 @@ export async function acceptGroceryStaffInvitation(_root: unknown, args: { token
   });
 }
 export async function updateGroceryStaffAccess(_root: unknown, args: { userId: string; capabilities: unknown; reason: string }, context: Context) {
-  await requireFreshCapability(context, 'canManageUsers'); const store = await requireSessionStore(context);
+  await requireFreshCapability(context, 'canManageUsers'); await assertNotDemo(context); const store = await requireSessionStore(context);
   const reason = args.reason.trim(); if (reason.length < 3 || reason.length > 500) throw new Error('A reason of 3–500 characters is required');
   return context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma as any; const actor = await lockedStaffActor(tx, context.session!.itemId, store.id);

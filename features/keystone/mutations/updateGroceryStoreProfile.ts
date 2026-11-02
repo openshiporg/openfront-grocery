@@ -1,3 +1,4 @@
+import { assertNotDemo } from '../lib/demo-guard';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { publicError } from '../lib/publicError';
@@ -85,6 +86,11 @@ export async function updateGroceryStoreProfile(_root: unknown, { input }: { inp
       data.hours = hours;
     }
     if (!Object.keys(data).length) throw publicError('There were no changes to save.');
+  // Demo logins keep day-to-day store details, but not the store name or tagline.
+  if (data.name !== undefined || data.tagline !== undefined) {
+    const current = await tx.storeSettings.findUnique({ where: { id: settings.id }, select: { name: true, tagline: true } });
+    if ((data.name !== undefined && data.name !== current?.name) || (data.tagline !== undefined && data.tagline !== current?.tagline)) await assertNotDemo(transactionContext);
+  }
     await tx.storeSettings.update({ where: { id: settings.id }, data });
     const mirror = Object.fromEntries(Object.entries({ name: data.name, timezone: data.timezone }).filter(([, value]) => value !== undefined));
     if (Object.keys(mirror).length) await tx.store.update({ where: { id: store.id }, data: mirror });
