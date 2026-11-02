@@ -23,5 +23,6 @@ export const VIEW_ORDER = [
   "json",
   "json",
   "document",
+  "virtual",
   "password"
 ];

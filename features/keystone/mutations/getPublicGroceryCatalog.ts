@@ -4,6 +4,7 @@ import { currentNotificationPreference, emailAllowedFor, enableEmailCategory } f
 import type { Context } from '.keystone/types';
 
 import { deriveSellableQuantity } from '../lib/sellableInventory';
+import { resolveProductImage } from '../lib/productImage';
 import { lockCurrentCustomer, publicStore, requireSessionStore } from '../lib/storeScope';
 
 const MAX_PAGE_SIZE = 100;
@@ -90,6 +91,8 @@ async function loadCatalog(context: Context, args: CatalogArgs, now: Date) {
       pricingMethod: true,
       imageUrl: true,
       thumbnailUrl: true,
+      image_id: true,
+      image_extension: true,
       isPerishable: true,
       shelfLife: true,
       organicCertified: true,
@@ -100,7 +103,8 @@ async function loadCatalog(context: Context, args: CatalogArgs, now: Date) {
     },
   });
   const rowsById=new Map(rows.map(row=>[row.id,row]));
-  const ordered=identities.flatMap(row=>rowsById.has(row.id)?[{...rowsById.get(row.id),sellableQuantity:quantityById.get(row.id)}]:[]);
+  const ordered=await Promise.all(identities.flatMap(row=>rowsById.has(row.id)?[{...rowsById.get(row.id),sellableQuantity:quantityById.get(row.id)}]:[])
+    .map(async row=>({...row,...await resolveProductImage(context,row)})));
 
   const requestedAlerts = new Set<string>();
   if (context.session?.itemId && rows.length) {

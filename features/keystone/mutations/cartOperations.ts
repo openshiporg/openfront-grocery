@@ -76,7 +76,7 @@ const CART_QUERY = `
     subtotal
     substitutionPreference
     product {
-      id title handle price priceCents taxRateBasisPoints imageUrl status
+      id title handle price priceCents taxRateBasisPoints imageUrl photoUrl status
       store { id }
       inventoryLots { expirationDate quantityRemaining safetyStatus conditionStatus store { id } }
       pricingMethod unitOfMeasure
@@ -234,7 +234,7 @@ async function formatCartResponse(cart: any, context: Context) {
           price: item.product?.price,
           unitPrice: item.product?.price,
           unit: item.product?.unitOfMeasure,
-          imageUrl: item.product?.imageUrl,
+          imageUrl: item.product?.photoUrl || item.product?.imageUrl,
           inStock: item.product?.status === 'published' && sellableQuantity >= item.quantity,
           stockQuantity: sellableQuantity,
         },

@@ -1,4 +1,4 @@
-import { list } from "@keystone-6/core";
+import { graphql, list } from "@keystone-6/core";
 import {
   text,
   select,
@@ -9,6 +9,8 @@ import {
   json,
   float,
   decimal,
+  image,
+  virtual,
 } from "@keystone-6/core/fields";
 import { document } from "@keystone-6/fields-document";
 import { trackingFields } from "./trackingFields";
@@ -16,6 +18,7 @@ import { requiredRelationshipPrisma } from './relationshipConfig';
 import { permissions } from "../access";
 import { currentMembershipStoreId, publicStoreScopedFilter, storeScopedFilter } from '../lib/storeAccess';
 import { deriveProductSkuIdentity, normalizeProductSku } from '../lib/productSkuIdentity';
+import { resolveProductImage, type ProductImageRow } from '../lib/productImage';
 import { initialProductInformation } from '../lib/productInformation';
 
 export async function resolveProductCatalogIdentity({ resolvedData, context, item, operation }: any) {
@@ -246,11 +249,27 @@ export const Product = list({
     }),
 
     // Media
+    image: image({
+      storage: "my_images",
+      label: "Product photo",
+      ui: {
+        description: "Shown on product cards and the product page. Takes precedence over Image URL.",
+      },
+    }),
     imageUrl: text({
       label: "Image URL",
       ui: {
-        description: "Main product image URL",
+        description: "Fallback image address, used when no product photo is uploaded",
       },
+    }),
+    photoUrl: virtual({
+      field: graphql.field({
+        type: graphql.String,
+        async resolve(item, _args, context) {
+          return (await resolveProductImage(context, item as typeof item & ProductImageRow)).imageUrl;
+        },
+      }),
+      ui: { itemView: { fieldMode: 'hidden' }, listView: { fieldMode: 'hidden' } },
     }),
     thumbnailUrl: text({
       label: "Thumbnail URL",

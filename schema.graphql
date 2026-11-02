@@ -6054,7 +6054,9 @@ type Product {
   inStock: Boolean
   stockQuantity: Decimal
   lowStockThreshold: Int
+  image: ImageFieldOutput
   imageUrl: String
+  photoUrl: String
   thumbnailUrl: String
   department: ProductDepartmentType
   isPerishable: Boolean
@@ -6315,6 +6317,7 @@ input ProductUpdateInput {
   inStock: Boolean
   stockQuantity: Decimal
   lowStockThreshold: Int
+  image: ImageFieldInput
   imageUrl: String
   thumbnailUrl: String
   department: ProductDepartmentType
@@ -6421,6 +6424,7 @@ input ProductCreateInput {
   inStock: Boolean
   stockQuantity: Decimal
   lowStockThreshold: Int
+  image: ImageFieldInput
   imageUrl: String
   thumbnailUrl: String
   department: ProductDepartmentType

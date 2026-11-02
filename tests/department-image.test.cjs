@@ -47,3 +47,20 @@ test('upload limit: 10 MB for multipart uploads, 1 MB for JSON', () => {
   assert.ok(security.requestBodyLimit('multipart/form-data; boundary=x') > 10 * 1024 * 1024);
   assert.match(fs.readFileSync(path.join(root, 'next.config.ts'), 'utf8'), /bodySizeLimit: '10mb'/);
 });
+
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const { resolveProductImage, uploadedImageKey } = load('features/keystone/lib/productImage.ts');
+const images = (url) => ({ images: (storage) => ({ getUrl: async (id, ext) => { assert.equal(storage, 'my_images'); if (url instanceof Error) throw url; return `${url}/${id}.${ext}?X-Amz-Signature=1`; } }) });
+
+test('product image: an uploaded photo resolves to a fresh signed URL and wins over Image URL', async () => {
+  const row = { image_id: 'abc_123', image_extension: 'png', imageUrl: '/images/old.jpg', thumbnailUrl: '/images/old-thumb.jpg' };
+  assert.deepEqual(plain(await resolveProductImage(images('https://bucket.example'), row)), { imageUrl: 'https://bucket.example/abc_123.png?X-Amz-Signature=1', thumbnailUrl: 'https://bucket.example/abc_123.png?X-Amz-Signature=1' });
+});
+
+test('product image: falls back to the text URLs when there is no upload or the bucket fails', async () => {
+  assert.deepEqual(plain(await resolveProductImage(images('https://b'), { imageUrl: '/images/a.jpg', thumbnailUrl: null })), { imageUrl: '/images/a.jpg', thumbnailUrl: '/images/a.jpg' });
+  assert.deepEqual(plain(await resolveProductImage(images(new Error('NoSuchBucket')), { image_id: 'x', image_extension: 'jpg', imageUrl: '/images/a.jpg', thumbnailUrl: '/images/t.jpg' })), { imageUrl: '/images/a.jpg', thumbnailUrl: '/images/t.jpg' });
+  assert.deepEqual(plain(await resolveProductImage(images('https://b'), {})), { imageUrl: null, thumbnailUrl: null });
+  assert.equal(uploadedImageKey({ image_id: '../x', image_extension: 'png' }), null);
+  assert.equal(uploadedImageKey({ image_id: 'x', image_extension: 'svg' }), null);
+});

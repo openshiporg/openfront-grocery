@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Leaf, Minus, Plus } from 'lucide-react';
+import { Minus, Plus } from 'lucide-react';
 import type { GroceryProduct } from '../../types';
 import { useMarketBasket } from '../market/MarketBasket';
 import { formatMoney, formatUnit, UrbanProductArtwork } from './UrbanPrimitives';
@@ -25,10 +25,6 @@ export default function UrbanProductCard({ product, eager = false }: { product: 
   return <article className="rg-tile group min-w-0 transition-shadow duration-[var(--sf-dur-fast)] hover:shadow-[var(--sf-shadow-2)]">
     <Link prefetch={false} href={`/products/${product.handle}`} tabIndex={-1} aria-hidden="true" className="relative block aspect-[1/0.92] overflow-hidden rounded-t-[var(--sf-radius-lg)]">
       <UrbanProductArtwork product={product} eager={eager} className="mix-blend-multiply transition-transform duration-[var(--sf-dur-slow)] ease-[var(--sf-ease-out)] group-hover:scale-[1.03]" />
-      <span className="pointer-events-none absolute left-2 top-2 flex flex-col items-start gap-1">
-        {hasSavings ? <span className="rounded-full bg-[var(--sf-tag)] px-2 py-0.5 text-[0.6875rem] font-semibold text-[var(--sf-tag-ink)]">Save {formatMoney(product.compareAtPrice! - product.price)}</span> : null}
-        {product.organicCertified ? <span className="inline-flex items-center gap-1 rounded-full bg-[var(--sf-card)] px-2 py-0.5 text-[0.6875rem] font-semibold text-[var(--sf-accent-hover)]"><Leaf className="h-3 w-3" aria-hidden="true" />Organic</span> : null}
-      </span>
     </Link>
     <div className="flex flex-1 flex-col px-2 pb-2 pt-1 sm:px-2.5 sm:pb-2.5">
       <Link prefetch={false} href={`/products/${product.handle}`} className="after:absolute after:inset-0 after:rounded-[var(--sf-radius-lg)] after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[var(--sf-focus)] focus-visible:after:[outline-style:solid]">
@@ -36,12 +32,13 @@ export default function UrbanProductCard({ product, eager = false }: { product: 
           {product.name}{note ? <span className="text-[var(--sf-ink-muted)]"> ({note})</span> : null}
         </h3>
       </Link>
+      {product.organicCertified ? <p className="mt-0.5 text-xs text-[var(--sf-ink-muted)]">Organic</p> : null}
       {!product.inStock ? <p className="mt-0.5 text-[0.75rem] font-medium text-[var(--sf-ink-muted)]">Out of stock</p> : null}
       <div className="mt-auto flex flex-wrap items-center justify-between gap-x-1 gap-y-1.5 pt-2">
         <p className="min-w-0 leading-tight">
           <span className="text-[0.8125rem] font-semibold tabular-nums text-[var(--sf-accent-hover)] lg:text-[var(--sf-ink)]">{formatMoney(product.price)}</span>
-          <span className="hidden text-[0.6875rem] text-[var(--sf-ink-muted)] sm:inline"> /{unit === 'each' ? 'ea' : unit}</span>
-          {hasSavings ? <span className="sf-was hidden text-[0.6875rem] sm:block"><span className="sr-only">Was </span>{formatMoney(product.compareAtPrice)}</span> : null}
+          <span className="hidden text-xs text-[var(--sf-ink-muted)] sm:inline"> /{unit === 'each' ? 'ea' : unit}</span>
+          {hasSavings ? <span className="block text-xs text-[var(--sf-ink-muted)]">Save {formatMoney(product.compareAtPrice! - product.price)} <span className="sf-was">{formatMoney(product.compareAtPrice)}</span></span> : null}
         </p>
         {quantity > 0 ? (
           <div className="relative z-10 ml-auto flex h-7 shrink-0 items-center rounded-full bg-[var(--sf-accent)] text-[var(--sf-accent-ink)]" role="group" aria-label={`${product.name} in cart`}>
