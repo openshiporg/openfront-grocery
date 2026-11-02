@@ -1,4 +1,4 @@
-import { LOGO_ICONS } from '../platform/settings/lib/untitled-logo-registry';
+import { LOGO_ICONS } from '../platform/settings/lib/icon-registry';
 import { effectiveStorefrontBrandHue, isDefaultStorefrontLogo, storefrontLogoAccentHue } from '../storefront/lib/branding';
 
 // Juniper's mark: Capsule (two overlapping berries) from the Untitled UI library. Onboarding writes
