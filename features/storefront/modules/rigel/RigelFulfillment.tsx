@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, CalendarDays, Store, Truck } from 'lucide-react';
+import * as Popover from '@radix-ui/react-popover';
 import type { DeliveryWindow } from '../../types';
 import { formatMoney, formatSlotDay } from '../../lib/marketFormatting';
 import { MARKET_MODE_KEY } from '../market/MarketMode';
@@ -95,9 +96,9 @@ export function RigelModeToggle({ variant = 'sidebar' }: { variant?: 'sidebar' |
         const active = mode === value;
         return (
           <button key={value} type="button" aria-pressed={active} onClick={() => setMode(value)}>
-            {variant === 'phone' ? null : <Icon className="h-4 w-4" aria-hidden="true" />}
+            {variant === 'phone' ? null : <Icon className="h-3.5 w-3.5" aria-hidden="true" />}
             {value === 'delivery' ? 'Delivery' : 'Pickup'}
-            {variant === 'phone' ? <Icon className="h-[1.125rem] w-[1.125rem]" aria-hidden="true" /> : null}
+            {variant === 'phone' ? <Icon className="h-4 w-4" aria-hidden="true" /> : null}
             {variant === 'rail' && active ? <span className="grid h-4 w-4 place-items-center rounded-full bg-[var(--sf-accent-ink)] text-[var(--sf-accent)]"><Check className="h-3 w-3" strokeWidth={3} aria-hidden="true" /></span> : null}
           </button>
         );
@@ -144,6 +145,33 @@ export function RigelSlotHeading() {
   );
 }
 
+/** One pill that opens a popover list (not a native select), rendered inline so storefront tokens apply. */
+function RigelPillPopover({ label, value, icon, options, current, onPick, accent = false }: { label: string; value: string; icon?: ReactNode; options: Array<{ id: string; label: string }>; current: string; onPick: (id: string) => void; accent?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger type="button" aria-label={`${label}: ${value}`} className={`rg-pill-select text-left ${icon ? '' : 'pl-4'}`}>
+        {icon}
+        <span className={`min-w-0 flex-1 truncate pr-5 text-[0.8125rem] ${accent ? 'font-medium text-[var(--sf-accent-hover)]' : ''}`}>{value}</span>
+        <ChevronDown className={`h-4 w-4 text-[var(--sf-ink-faint)] transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
+      </Popover.Trigger>
+      <Popover.Content align="start" sideOffset={6} collisionPadding={12} className="rg-popover z-50 max-h-[min(20rem,var(--radix-popover-content-available-height))] min-w-[var(--radix-popover-trigger-width)] overflow-y-auto">
+        <div role="listbox" aria-label={label}>
+          {options.map((option) => {
+            const chosen = option.id === current;
+            return (
+              <button key={option.id} type="button" role="option" aria-selected={chosen} onClick={() => { onPick(option.id); setOpen(false); }} className="rg-popover-option">
+                <span className="truncate">{option.label}</span>
+                {chosen ? <Check className="h-4 w-4 shrink-0 text-[var(--sf-accent-hover)]" aria-hidden="true" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      </Popover.Content>
+    </Popover.Root>
+  );
+}
+
 /** Phone: a day picker and a time picker over the same published windows. */
 export function RigelPhonePickers() {
   const { windows, selected, select, today, mode } = useRigelFulfillment();
@@ -151,24 +179,26 @@ export function RigelPhonePickers() {
   const days = [...new Set(open.map((entry) => entry.date))];
   const day = selected?.date || days[0] || '';
   const times = open.filter((entry) => entry.date === day);
+  const time = selected && selected.date === day ? selected : times[0];
   if (!windows || !open.length) return <p className="text-sm text-[var(--sf-ink-muted)]">{windows ? `No open ${mode} times this week.` : 'Times couldn’t be loaded right now.'}</p>;
   return (
     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2.5">
-      <label className="rg-pill-select">
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--sf-accent)] text-[var(--sf-accent-ink)]"><CalendarDays className="h-4 w-4" aria-hidden="true" /></span>
-        <span className="sr-only">{mode === 'pickup' ? 'Pickup day' : 'Delivery day'}</span>
-        <select value={day} onChange={(event) => { const first = open.find((entry) => entry.date === event.target.value); if (first) select(first.id); }}>
-          {days.map((date) => <option key={date} value={date}>{relativeDay(date, today, true)}</option>)}
-        </select>
-        <ChevronDown className="h-4 w-4 text-[var(--sf-ink-faint)]" aria-hidden="true" />
-      </label>
-      <label className="rg-pill-select pl-4">
-        <span className="sr-only">{mode === 'pickup' ? 'Pickup time' : 'Delivery time'}</span>
-        <select value={selected?.id || ''} onChange={(event) => select(event.target.value)} className="font-medium text-[var(--sf-accent-hover)]">
-          {times.map((entry) => <option key={entry.id} value={entry.id}>{shortSlotLabel(entry)}</option>)}
-        </select>
-        <ChevronDown className="h-4 w-4 text-[var(--sf-ink-faint)]" aria-hidden="true" />
-      </label>
+      <RigelPillPopover
+        label={mode === 'pickup' ? 'Pickup day' : 'Delivery day'}
+        value={relativeDay(day, today, true)}
+        icon={<span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[var(--sf-accent)] text-[var(--sf-accent-ink)]"><CalendarDays className="h-3.5 w-3.5" aria-hidden="true" /></span>}
+        options={days.map((date) => ({ id: date, label: relativeDay(date, today, true) }))}
+        current={day}
+        onPick={(date) => { const first = open.find((entry) => entry.date === date); if (first) select(first.id); }}
+      />
+      <RigelPillPopover
+        label={mode === 'pickup' ? 'Pickup time' : 'Delivery time'}
+        value={time ? shortSlotLabel(time) : ''}
+        options={times.map((entry) => ({ id: entry.id, label: shortSlotLabel(entry) }))}
+        current={time?.id || ''}
+        onPick={select}
+        accent
+      />
     </div>
   );
 }
