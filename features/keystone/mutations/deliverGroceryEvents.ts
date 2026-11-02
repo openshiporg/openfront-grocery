@@ -10,10 +10,11 @@ import { communicationAllowed, orderMessage, refundReceiptSnapshot } from '../li
 import { claimCustomerDelivery, updateCustomerDelivery } from '../lib/customerDeliveryLease';
 import { requirePrismaSuccess } from '../utils/serializableTransaction';
 import { publicError } from '../lib/publicError';
+import { developmentSiteOrigin } from '../lib/runtimeConfig';
 
 const ORDER_MESSAGES = ['order.substitution.proposed', 'order.rescheduled', 'order.adjustment.requested', 'order.confirmed', 'order.ready', 'order.dispatched', 'order.finalized', 'payment.refunded', 'order.access.requested', 'order.cancelled', 'inventory.recall.notice'];
 const DELIVERY_UNKNOWN_MESSAGE = 'Delivery outcome unknown; reconcile the provider receipt before retrying';
-const origin = () => process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000';
+const origin = () => process.env.NEXT_PUBLIC_SITE_URL || developmentSiteOrigin();
 function deliveryEvidence(previous: any, patch: Record<string, unknown>) {
   const current = previous && typeof previous === 'object' && !Array.isArray(previous) ? previous : {};
   return { ...current, ...patch };

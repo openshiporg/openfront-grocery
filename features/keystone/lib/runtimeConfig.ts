@@ -23,7 +23,7 @@ export function isProduction() {
 
 // Grocery runs on PostgreSQL only (advisory locks, raw SQL, Serializable
 // transactions); development defaults to a local PostgreSQL database, never SQLite.
-const DEVELOPMENT_DATABASE_URL = 'postgresql://postgres:postgres@127.0.0.1:5432/openfront_grocery';
+const DEVELOPMENT_DATABASE_URL = 'postgresql://postgres:postgres@localhost/openfront_grocery';
 
 export function getDatabaseUrl() {
   const value = isProduction() ? required('DATABASE_URL') : process.env.DATABASE_URL?.trim() || DEVELOPMENT_DATABASE_URL;
@@ -60,6 +60,12 @@ export function getPublicStoreId() {
     throw new Error(`PUBLIC_STORE_ID must match the migrated Grocery Store id ${GROCERY_STORE_ID}`);
   }
   return value;
+}
+
+/** Local-development origin when NEXT_PUBLIC_SITE_URL is unset: the port comes from PORT, never a literal. */
+export function developmentSiteOrigin() {
+  const port = process.env.PORT?.trim();
+  return port && /^\d+$/.test(port) ? `http://localhost:${port}` : 'http://localhost';
 }
 
 export function getCanonicalSiteUrl() {

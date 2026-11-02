@@ -1,6 +1,7 @@
 'use server'
 
 import { createTransport, getTestMessageUrl } from "nodemailer";
+import { developmentSiteOrigin } from "./runtimeConfig";
 
 // Utility function to get base URL for emails
 function getBaseUrlForEmails(): string {
@@ -13,7 +14,7 @@ function getBaseUrlForEmails(): string {
     return value.replace(/\/$/, '');
   }
   if (process.env.NODE_ENV === 'production') throw new Error('NEXT_PUBLIC_SITE_URL is required in production');
-  return 'http://localhost:3000';
+  return developmentSiteOrigin();
 }
 
 const transport = createTransport({
