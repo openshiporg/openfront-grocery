@@ -23,6 +23,12 @@ const nextConfig: NextConfig = {
     return [{ source: '/api/payments/webhooks/:providerCode', destination: '/api/payment-webhooks/:providerCode' }];
   },
   serverExternalPackages: ['graphql'],
+  // Dashboard saves carry photo uploads through server actions (10 MB, as in Coffee).
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '10mb',
+    },
+  },
   // Workaround since we diverged from Keystone reltionship and document views
   // typescript: {
   //   ignoreBuildErrors: true,

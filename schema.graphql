@@ -3342,6 +3342,7 @@ type Department {
   name: String
   handle: String
   description: String
+  image: ImageFieldOutput
   imageUrl: String
   sortOrder: Int
   isActive: Boolean
@@ -3353,6 +3354,22 @@ type Department {
   productsCount(where: ProductWhereInput! = {}): Int
   createdAt: DateTime
   updatedAt: DateTime
+}
+
+type ImageFieldOutput {
+  id: ID!
+  filesize: Int!
+  width: Int!
+  height: Int!
+  extension: ImageExtension!
+  url: String!
+}
+
+enum ImageExtension {
+  jpg
+  png
+  webp
+  gif
 }
 
 enum DepartmentTemperatureZoneType {
@@ -3421,6 +3438,7 @@ input DepartmentUpdateInput {
   name: String
   handle: String
   description: String
+  image: ImageFieldInput
   imageUrl: String
   sortOrder: Int
   isActive: Boolean
@@ -3432,6 +3450,13 @@ input DepartmentUpdateInput {
   createdAt: DateTime
   updatedAt: DateTime
 }
+
+input ImageFieldInput {
+  upload: Upload!
+}
+
+"""The `Upload` scalar type represents a file upload."""
+scalar Upload
 
 input ProductRelateToManyForUpdateInput {
   disconnect: [ProductWhereUniqueInput!]
@@ -3449,6 +3474,7 @@ input DepartmentCreateInput {
   name: String
   handle: String
   description: String
+  image: ImageFieldInput
   imageUrl: String
   sortOrder: Int
   isActive: Boolean

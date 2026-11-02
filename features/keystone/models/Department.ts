@@ -6,6 +6,7 @@ import {
   multiselect,
   checkbox,
   integer,
+  image,
 } from "@keystone-6/core/fields";
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
@@ -63,10 +64,17 @@ export const Department = list({
         description: "Brief description shown on storefront",
       },
     }),
+    image: image({
+      storage: "my_images",
+      label: "Aisle photo",
+      ui: {
+        description: "Shown on the aisle tile and chip. Takes precedence over Image URL.",
+      },
+    }),
     imageUrl: text({
       label: "Image URL",
       ui: {
-        description: "URL of the department image",
+        description: "Fallback image address, used when no aisle photo is uploaded",
       },
     }),
     sortOrder: integer({

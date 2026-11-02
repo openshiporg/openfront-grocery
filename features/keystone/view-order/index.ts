@@ -18,6 +18,7 @@ export const VIEW_ORDER = [
   "decimal",
   "checkbox",
   "float",
+  "image",
   "multiselect",
   "json",
   "json",

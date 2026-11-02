@@ -7,13 +7,14 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { keystoneContext } from '../../features/keystone/context';
 import {
   boundedGraphqlDepthRule,
+  MAX_BODY_BYTES,
   MAX_GRAPHQL_QUERY_LENGTH,
+  MAX_UPLOAD_BYTES,
+  requestBodyLimit,
   rejectIntrospectionInProduction,
 } from '../../features/keystone/lib/graphqlSecurity';
 import { getCanonicalSiteUrl, isProduction } from '../../features/keystone/lib/runtimeConfig';
 import { resolveApplicationOrigin } from '../../lib/applicationOrigin';
-
-const MAX_BODY_BYTES = 1024 * 1024;
 
 export const config = {
   api: {
@@ -49,16 +50,16 @@ function requestHeaders(req: NextApiRequest) {
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const contentType = req.headers['content-type'] || '';
   const contentLength = Number(req.headers['content-length'] || 0);
-  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    return res.status(413).json({ errors: [{ message: 'GraphQL request body exceeds 1 MB' }] });
+  if (Number.isFinite(contentLength) && contentLength > requestBodyLimit(contentType)) {
+    return res.status(413).json({ errors: [{ message: contentType.startsWith('multipart/form-data') ? 'Uploads are limited to 10 MB' : 'GraphQL request body exceeds 1 MB' }] });
   }
 
-  const contentType = req.headers['content-type'] || '';
   if (contentType.startsWith('multipart/form-data')) {
     req.body = await processRequest(req, res, {
       maxFieldSize: MAX_GRAPHQL_QUERY_LENGTH,
-      maxFileSize: MAX_BODY_BYTES,
+      maxFileSize: MAX_UPLOAD_BYTES,
       maxFiles: 5,
     });
   } else if (req.method === 'POST' && (contentType.startsWith('application/json') || contentType.startsWith('application/graphql'))) {

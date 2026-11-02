@@ -112,3 +112,12 @@ export function requestIp(headers?: Headers, remoteAddress?: string | null) {
   }
   return normalizeClientIp(remoteAddress) || 'local';
 }
+
+export const MAX_BODY_BYTES = 1024 * 1024;
+// Dashboard photo uploads (multipart) may be up to 10 MB, as in Coffee; JSON bodies stay at 1 MB.
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+/** Largest accepted /api/graphql request body: one upload plus its multipart envelope, or 1 MB of JSON. */
+export function requestBodyLimit(contentType: string) {
+  return contentType.startsWith('multipart/form-data') ? MAX_UPLOAD_BYTES + MAX_BODY_BYTES : MAX_BODY_BYTES;
+}

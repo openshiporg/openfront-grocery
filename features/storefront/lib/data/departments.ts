@@ -2,6 +2,7 @@ import { cache } from 'react';
 import type { GroceryDepartment, GroceryProduct } from '../../types';
 import { getProductsList, type ProductSortOption } from './products';
 import { storefrontGraphQL, throwGraphQLErrors } from './graphql';
+import { withDepartmentImage, type DepartmentWithImage } from './departmentImage';
 
 // Primitive pagination arguments allow request-scoped deduplication across
 // page, nav and footer without sharing results between visitors/requests.
@@ -10,7 +11,7 @@ export const getDepartmentsList = cache(async function getDepartmentsList(
   limit: number = 10
 ): Promise<{ departments: GroceryDepartment[]; total: number }> {
   try {
-    const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[]; departmentsCount: number }>(`
+    const { data, errors } = await storefrontGraphQL<{ departments: DepartmentWithImage[]; departmentsCount: number }>(`
       query GetDepartments($take: Int, $skip: Int) {
         departmentsCount(where: { isActive: { equals: true } })
         departments(
@@ -23,6 +24,7 @@ export const getDepartmentsList = cache(async function getDepartmentsList(
           name
           handle
           description
+          image { url }
           imageUrl
           sortOrder
           isActive
@@ -30,10 +32,10 @@ export const getDepartmentsList = cache(async function getDepartmentsList(
           productsCount
         }
       }
-    `, { take: limit, skip: offset }, { next: { revalidate: 3600 } });
+    `, { take: limit, skip: offset }, { next: { revalidate: 600 } });
     throwGraphQLErrors(errors);
     if (!data?.departments) throw new Error('Aisles could not be loaded.');
-    return { departments: data.departments, total: Number(data.departmentsCount ?? data.departments.length) };
+    return { departments: data.departments.map(withDepartmentImage), total: Number(data.departmentsCount ?? data.departments.length) };
   } catch (error) {
     console.error('Error fetching departments:', error);
     throw error;
@@ -44,22 +46,23 @@ export const getDepartmentByHandle = cache(async function getDepartmentByHandle(
   handle: string
 ): Promise<GroceryDepartment | null> {
   try {
-    const { data, errors } = await storefrontGraphQL<{ departments: GroceryDepartment[] }>(`
+    const { data, errors } = await storefrontGraphQL<{ departments: DepartmentWithImage[] }>(`
       query GetDepartment($handle: String!) {
         departments(where: { handle: { equals: $handle }, isActive: { equals: true } }) {
           id
           name
           handle
           description
+          image { url }
           imageUrl
           sortOrder
           isActive
         }
       }
-    `, { handle }, { next: { revalidate: 3600 } });
+    `, { handle }, { next: { revalidate: 600 } });
     throwGraphQLErrors(errors);
     if (!data?.departments) throw new Error('This aisle could not be loaded.');
-    return data.departments[0] || null;
+    return data.departments[0] ? withDepartmentImage(data.departments[0]) : null;
   } catch (error) {
     console.error('Error fetching department:', error);
     throw error;
