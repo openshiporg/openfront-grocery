@@ -21,6 +21,14 @@ import { deriveProductSkuIdentity, normalizeProductSku } from '../lib/productSku
 import { resolveProductImage, type ProductImageRow } from '../lib/productImage';
 import { initialProductInformation } from '../lib/productInformation';
 
+// Multi-column fields (image) resolve an untouched input to an object whose
+// columns are all undefined; that is not a change.
+export function isUnchangedResolvedValue(value: unknown): boolean {
+  if (value === undefined) return true;
+  return !!value && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date) &&
+    Object.values(value as Record<string, unknown>).every(entry => entry === undefined);
+}
+
 export async function resolveProductCatalogIdentity({ resolvedData, context, item, operation }: any) {
   const existingStoreId = item?.storeId;
   const session = context.session;
@@ -28,7 +36,7 @@ export async function resolveProductCatalogIdentity({ resolvedData, context, ite
   if (session?.itemId) {
     actorStoreId = await currentMembershipStoreId({ session, context }) ?? undefined;
     if (!actorStoreId) throw new Error('An active Store account is required for Product writes');
-  } else if (operation !== 'update' || Object.entries(resolvedData).some(([key, value]) => value !== undefined && !['stockQuantity', 'inStock'].includes(key))) {
+  } else if (operation !== 'update' || Object.entries(resolvedData).some(([key, value]) => !isUnchangedResolvedValue(value) && !['stockQuantity', 'inStock'].includes(key))) {
     throw new Error('Catalog identity changes require an active Store account');
   }
   // Guest checkout may adjust only an existing product's stock caches through
