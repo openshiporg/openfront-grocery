@@ -13,5 +13,7 @@ export async function sendGroceryEmail(message:GroceryMessage) {
   const transport=createTransport({host:process.env.SMTP_HOST,port:Number(process.env.SMTP_PORT || 587),connectionTimeout:15000,greetingTimeout:15000,socketTimeout:30000,secure:process.env.SMTP_SECURE==='true',auth:process.env.SMTP_USER?{user:process.env.SMTP_USER,pass:process.env.SMTP_PASSWORD}:undefined});
   const result=await transport.sendMail({from:process.env.SMTP_FROM,to:message.to,subject:message.subject,text:message.text,messageId:`<grocery-${message.id}@${new URL(process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost').hostname}>`});
   if (result.rejected?.length) throw new GroceryEmailDeliveryError('Message recipient was rejected');
-  return {providerId:String(result.messageId),channel:'email'};
+  // nodemailer's messageId is generated locally; the SMTP reply line is what carries the provider's own id.
+  const providerResponse=typeof result.response==='string'?result.response.replace(/[\r\n]+/g,' ').trim().slice(0,300):'';
+  return {providerId:String(result.messageId),...(providerResponse?{providerResponse}:{}),channel:'email'};
 }

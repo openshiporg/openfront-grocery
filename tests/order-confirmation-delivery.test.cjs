@@ -95,3 +95,41 @@ test('a missing event or a lookup error never throws', async () => {
   const broken = { prisma: { groceryOutboxEvent: { findUnique: async () => { throw new Error('db down'); } } } };
   assert.equal((await deliverOrderConfirmationNow(broken, 'o1', f.deps)).status, 'failed');
 });
+
+test('the real sender returns the SMTP provider response next to its locally generated id, and both land in providerEvidence', async () => {
+  const sent = [];
+  const Module2 = require('node:module');
+  const orig2 = Module2._load;
+  Module2._load = function (request, ...rest) {
+    if (request === 'nodemailer') return { createTransport: () => ({ sendMail: async (m) => { sent.push(m); return { accepted: [m.to], rejected: [], messageId: '<local-id@x>', response: '250 Accepted\r\n resend-id-123 ' }; } }) };
+    return orig2.call(this, request, ...rest);
+  };
+  Object.assign(process.env, { SMTP_HOST: 'smtp.test', SMTP_FROM: 'a@b.test', NEXT_PUBLIC_SITE_URL: 'https://grocery.test' });
+  delete require.cache[require.resolve('../features/integrations/communications/index.ts')];
+  const { sendGroceryEmail } = require('../features/integrations/communications/index.ts');
+  const proof = await sendGroceryEmail({ id: 'm1', to: 'delivered@resend.dev', subject: 's', text: 't' });
+  assert.equal(proof.providerId, '<local-id@x>');
+  assert.equal(proof.providerResponse, '250 Accepted  resend-id-123');
+  // the in-process path stores the proof next to the delivery attempt evidence
+  const f = fixture({ send: async (m) => sendGroceryEmail(m) });
+  await deliverOrderConfirmationNow(f.context, 'o1', f.deps);
+  const stored = f.calls.updates.find((u) => u.status === 'sent').providerEvidence;
+  assert.equal(stored.providerResponse, '250 Accepted  resend-id-123');
+  assert.equal(stored.providerId, '<local-id@x>');
+  Module2._load = orig2;
+});
+
+test('a response-less provider reply adds no providerResponse', async () => {
+  const Module2 = require('node:module');
+  const orig2 = Module2._load;
+  Module2._load = function (request, ...rest) {
+    if (request === 'nodemailer') return { createTransport: () => ({ sendMail: async (m) => ({ accepted: [m.to], rejected: [], messageId: '<local-id@x>' }) }) };
+    return orig2.call(this, request, ...rest);
+  };
+  Object.assign(process.env, { SMTP_HOST: 'smtp.test', SMTP_FROM: 'a@b.test', NEXT_PUBLIC_SITE_URL: 'https://grocery.test' });
+  delete require.cache[require.resolve('../features/integrations/communications/index.ts')];
+  const { sendGroceryEmail } = require('../features/integrations/communications/index.ts');
+  const proof = await sendGroceryEmail({ id: 'm1', to: 'x@resend.dev', subject: 's', text: 't' });
+  Module2._load = orig2;
+  assert.equal('providerResponse' in proof, false);
+});
