@@ -1,4 +1,3 @@
-import { assertNotDemo } from '../lib/demo-guard';
 import type { Context } from '.keystone/types';
 
 import { sanitizeStoreLogoSvg } from '../utils/storeLogo';
@@ -98,7 +97,6 @@ export async function updateGroceryStorefrontBrandHue(
   context: Context,
 ) {
   await requireFreshCapability(context, 'canManageOnboarding');
-  await assertNotDemo(context);
   if (!Object.prototype.hasOwnProperty.call(args, 'brandHue')) {
     throw new Error('Set brandHue to a hue or null to explicitly use the storefront default');
   }

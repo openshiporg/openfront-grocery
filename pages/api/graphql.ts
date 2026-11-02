@@ -1,4 +1,3 @@
-import { useDemoGuardErrors } from '../../features/keystone/lib/demo-guard';
 import { GraphQLError } from 'graphql';
 import { createYoga } from 'graphql-yoga';
 // @ts-ignore graphql-upload does not publish declarations for this subpath.
@@ -88,7 +87,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     maskedErrors: production,
     batching: { limit: 5 },
     multipart: false,
-    plugins: [useDemoGuardErrors(), {
+    plugins: [{
       onRequestParse({ setRequestParser }: any) {
         if (req.body !== undefined) setRequestParser(async () => req.body);
       },

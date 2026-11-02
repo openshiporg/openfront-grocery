@@ -1,4 +1,3 @@
-import { assertNotDemo } from '../lib/demo-guard';
 import type { Context } from '.keystone/types';
 
 import { shopperPasswordProblem } from '../../lib/accountContract';
@@ -19,7 +18,6 @@ export default async function updateActiveUserPassword(
   const userId = context.session?.itemId;
   if (!userId) throw publicError('Sign in to change your password.', 'UNAUTHENTICATED');
   await requireSessionStore(context);
-  await assertNotDemo(context);
   const currentPassword = typeof args.currentPassword === 'string' ? args.currentPassword : '';
   const newPassword = typeof args.newPassword === 'string' ? args.newPassword : '';
   const problem = shopperPasswordProblem(newPassword);
