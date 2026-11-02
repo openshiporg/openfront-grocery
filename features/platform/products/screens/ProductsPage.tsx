@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import Link from 'next/link';
 import { Package, Plus } from 'lucide-react';
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
@@ -16,7 +17,7 @@ import {
   PlatformToolbar,
   queryValue,
 } from '@/features/platform/components/PlatformPrimitives';
-import { formatDate, formatMoney } from '@/features/platform/lib/format';
+import { formatMoney } from '@/features/platform/lib/format';
 import { keystoneClient } from '@/features/platform/lib/platformClient';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
@@ -77,7 +78,7 @@ export async function ProductsPage({ searchParams }: { searchParams?: Promise<Pl
                     <span className="truncate text-sm text-muted-foreground"><PlatformCellLabel>Department</PlatformCellLabel>{product.departmentRef?.name || 'No department'}</span>
                     <span><PlatformCellLabel>Status</PlatformCellLabel><PlatformStatusBadge status={product.status === 'published' ? 'active' : product.status === 'archived' ? 'inactive' : 'pending'} label={product.status === 'published' ? 'Published' : product.status === 'archived' ? 'Archived' : 'Draft'} /></span>
                     <span className="text-sm tabular-nums md:text-right"><PlatformCellLabel>Price</PlatformCellLabel>{formatMoney(product.priceCents, currencyCode)}<span className="text-xs text-muted-foreground"> / {product.unitOfMeasure || 'each'}</span></span>
-                    <span className="text-xs text-muted-foreground md:text-right"><PlatformCellLabel>Updated</PlatformCellLabel>{formatDate(product.updatedAt)}</span>
+                    <span className="text-xs text-muted-foreground md:text-right"><PlatformCellLabel>Updated</PlatformCellLabel>{<ViewerTime value={product.updatedAt} style="date" />}</span>
                   </Link>
                 ))}
               </PlatformList>

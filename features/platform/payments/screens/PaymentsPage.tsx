@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { OrderLineRefundForm } from '../components/OrderLineRefundForm';
 import { VoidAuthorizationForm } from '../components/VoidAuthorizationForm';
 import { WebhookRecoveryPanel } from '../components/WebhookRecoveryPanel';
@@ -30,7 +31,7 @@ import {
   platformHref,
   queryValue,
 } from '@/features/platform/components/PlatformPrimitives';
-import { formatDateTime, formatMoney, formatRelative } from '@/features/platform/lib/format';
+import { formatMoney, formatRelative } from '@/features/platform/lib/format';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 import { OrderAfterSalesActions } from '@/features/platform/orders/components/OrderAfterSalesActions';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
@@ -143,14 +144,14 @@ export async function PaymentsPage({ searchParams }: { searchParams?: Promise<Pl
                         <p className="truncate font-mono text-xs text-muted-foreground"><PlatformCellLabel>Provider reference</PlatformCellLabel>{payment.providerCode} · {payment.providerPaymentId || `payment …${payment.id.slice(-8)}`}</p>
                         <p className="text-sm font-semibold tabular-nums md:text-right"><PlatformCellLabel>Amount</PlatformCellLabel>{formatMoney(payment.amountCents, currencyCode)}</p>
                         <p className={`text-xs tabular-nums md:text-right ${succeededRefunds ? 'text-foreground' : 'text-muted-foreground'}`}><PlatformCellLabel>Refunded</PlatformCellLabel>{succeededRefunds ? `−${formatMoney(succeededRefunds, currencyCode)}` : '—'}<span className="md:hidden"> refunded</span></p>
-                        <p className="hidden text-right text-xs text-muted-foreground md:block" title={formatDateTime(payment.createdAt)}><PlatformCellLabel>Created</PlatformCellLabel>{formatRelative(payment.createdAt)}</p>
+                        <p className="hidden text-right text-xs text-muted-foreground md:block"><PlatformCellLabel>Created</PlatformCellLabel>{formatRelative(payment.createdAt)}</p>
                       </div>
                     }>
                       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]">
                         <div className="min-w-0 space-y-5">
                           <PlatformFacts columns={4} items={[
-                            { label: 'Created', value: formatDateTime(payment.createdAt) },
-                            { label: 'Processed', value: formatDateTime(payment.processedAt) },
+                            { label: 'Created', value: <ViewerTime value={payment.createdAt} style="datetime" /> },
+                            { label: 'Processed', value: <ViewerTime value={payment.processedAt} style="datetime" /> },
                             { label: 'Method', value: <span className="capitalize">{humanize(payment.paymentMethod)}</span> },
                             { label: 'Order status', value: <span className="capitalize">{humanize(payment.order.status)}</span> },
                             { label: 'Provider payment ID', value: payment.providerPaymentId || 'Not recorded', mono: true, wide: true },
@@ -165,9 +166,9 @@ export async function PaymentsPage({ searchParams }: { searchParams?: Promise<Pl
                                       <span className="text-sm font-semibold tabular-nums">{formatMoney(refund.amountCents, currencyCode)}</span>
                                       <PlatformStatusBadge status={refund.reconciliationDeadLetterAt ? 'failed' : refund.status} label={refund.reconciliationDeadLetterAt ? 'Needs review' : undefined} />
                                     </div>
-                                    <p className="text-xs text-muted-foreground">{refund.reason || 'No reason recorded'} · {refund.reconciliationAttempts} status checks{refund.requestedAt ? ` · requested ${formatDateTime(refund.requestedAt)}` : ''}</p>
+                                    <p className="text-xs text-muted-foreground">{refund.reason || 'No reason recorded'} · {refund.reconciliationAttempts} status checks{refund.requestedAt ? <> · requested <ViewerTime value={refund.requestedAt} style="datetime" /></> : ''}</p>
                                     {refund.reconciliationLastError || refund.failureMessage ? <p className="text-xs text-destructive">{refund.reconciliationLastError || refund.failureMessage}</p> : null}
-                                    {refund.reconciliationNextAttemptAt && !['succeeded', 'failed', 'cancelled'].includes(refund.status) ? <p className="text-xs text-muted-foreground">Next retry {formatDateTime(refund.reconciliationNextAttemptAt)}</p> : null}
+                                    {refund.reconciliationNextAttemptAt && !['succeeded', 'failed', 'cancelled'].includes(refund.status) ? <p className="text-xs text-muted-foreground">Next retry {<ViewerTime value={refund.reconciliationNextAttemptAt} style="datetime" />}</p> : null}
                                   </div>
                                 ))}
                               </div>

@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import Link from 'next/link';
 import { FolderPlus, LayoutGrid, Package, Snowflake, Tag, TicketPercent } from 'lucide-react';
@@ -26,7 +27,7 @@ import {
 } from '@/features/platform/components/PlatformPrimitives';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
 import { TaskButton } from '@/features/platform/components/TaskButton';
-import { formatDate, formatMoney } from '@/features/platform/lib/format';
+import { formatMoney } from '@/features/platform/lib/format';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 import { updateCouponTask } from '@/features/platform/lib/taskActions';
 
@@ -147,7 +148,7 @@ export async function MerchandisingPage({ searchParams }: { searchParams?: Promi
                                 <PlatformStatusBadge status={atLimit ? 'failed' : !coupon.isActive ? 'inactive' : isExpired(coupon) ? 'expired' : isScheduled(coupon) ? 'pending' : 'active'} label={atLimit ? 'Use limit reached' : !coupon.isActive ? 'Paused' : isExpired(coupon) ? 'Expired' : isScheduled(coupon) ? 'Scheduled' : 'Active'} />
                                 {!coupon.categoryRestrictionValid ? <PlatformStatusBadge status="failed" label="Needs repair" /> : null}
                               </div>
-                              <p className="mt-1 text-xs text-muted-foreground">Minimum {formatMoney(coupon.minPurchaseCents, currencyCode)} · until {formatDate(coupon.validTo, 'no end date')}</p>
+                              <p className="mt-1 text-xs text-muted-foreground">Minimum {formatMoney(coupon.minPurchaseCents, currencyCode)} · until {<ViewerTime value={coupon.validTo} style="date" fallback='no end date' />}</p>
                             </div>
                             <div className="w-24 shrink-0 text-right">
                               <p className="text-sm font-semibold tabular-nums">{discountLabel(coupon)}</p>
@@ -158,8 +159,8 @@ export async function MerchandisingPage({ searchParams }: { searchParams?: Promi
                           <div className="space-y-4">
                             {coupon.maxUses > 0 ? <div className="max-w-xs"><p className="mb-1 text-xs text-muted-foreground tabular-nums">{coupon.currentUses} of {coupon.maxUses} uses</p><PlatformMeter value={coupon.currentUses} max={coupon.maxUses} label="Coupon usage" /></div> : null}
                             <PlatformFacts columns={2} items={[
-                              { label: 'Valid from', value: formatDate(coupon.validFrom, 'No date') },
-                              { label: 'Valid to', value: formatDate(coupon.validTo, 'No date') },
+                              { label: 'Valid from', value: <ViewerTime value={coupon.validFrom} style="date" fallback='No date' /> },
+                              { label: 'Valid to', value: <ViewerTime value={coupon.validTo} style="date" fallback='No date' /> },
                               { label: 'Applies to departments', value: !coupon.categoryRestrictionValid ? <span className="text-destructive">Unreadable department list — shoppers can’t use this coupon until it’s fixed</span> : coupon.productCategories?.length ? coupon.productCategories.join(', ') : 'All departments', wide: true },
                             ]} />
                             {!coupon.categoryRestrictionValid ? <p className="text-xs text-muted-foreground"><Link className="font-medium underline underline-offset-2" href={`/dashboard/coupons/${encodeURIComponent(coupon.id)}`}>Fix the department list</Link> as a list of department handles, for example [&quot;produce&quot;, &quot;dairy&quot;].</p> : null}

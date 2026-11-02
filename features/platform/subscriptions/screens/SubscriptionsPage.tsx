@@ -24,7 +24,7 @@ import {
   platformHref,
   queryValue,
 } from '@/features/platform/components/PlatformPrimitives';
-import { formatDateTime, formatInTimeZone, formatRelative } from '@/features/platform/lib/format';
+import { formatInTimeZone, formatRelative } from '@/features/platform/lib/format';
 
 const PATH = '/dashboard/platform/subscriptions';
 const HOUR = 3_600_000;
@@ -163,7 +163,7 @@ export async function SubscriptionsPage({searchParams}:{searchParams?:Promise<Pl
                         <p className="truncate text-sm font-medium">{run.productTitle} <span className="font-normal text-muted-foreground tabular-nums">× {run.quantity}</span></p>
                         <p className="truncate text-xs text-muted-foreground">{run.user?.email || 'Customer unavailable'}</p>
                       </div>
-                      <p className="text-xs text-muted-foreground" title={formatDateTime(run.dueAt)}>{formatRelative(run.dueAt, now)}</p>
+                      <p className="text-xs text-muted-foreground">{formatRelative(run.dueAt, now)}</p>
                       <div><PlatformStatusBadge status={run.status} label={outcomeLabels[run.status]} /></div>
                       <div className="min-w-0 text-xs">
                         {run.order?.id ? (

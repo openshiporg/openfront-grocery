@@ -1,8 +1,9 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ClipboardList } from 'lucide-react';
 import { PlatformErrorState, PlatformFacts, PlatformPage, PlatformStatusBadge, PlatformSurface, platformButton } from '@/features/platform/components/PlatformPrimitives';
-import { formatDate, formatMoney } from '@/features/platform/lib/format';
+import { formatMoney } from '@/features/platform/lib/format';
 import { keystoneClient } from '@/features/platform/lib/platformClient';
 
 type CustomerDetail = {
@@ -26,11 +27,11 @@ export async function CustomerDetailPage({ params }: { params: Promise<{ id: str
     <PlatformSurface title="Account">
       <div className="p-4 md:p-5">
         <PlatformFacts columns={4} items={[
-          { label: 'Joined', value: customer.createdAt ? formatDate(customer.createdAt) : 'Not recorded' },
+          { label: 'Joined', value: customer.createdAt ? <ViewerTime value={customer.createdAt} style="date" /> : 'Not recorded' },
           { label: 'Orders', value: customer.orderCount },
           { label: 'Shopping lists', value: customer.shoppingListCount },
           { label: 'Saved addresses', value: customer.addressCount },
-          ...(customer.privacyErasedAt ? [{ label: 'Privacy', value: `Erased ${formatDate(customer.privacyErasedAt)}`, wide: true }] : []),
+          ...(customer.privacyErasedAt ? [{ label: 'Privacy', value: <>Erased <ViewerTime value={customer.privacyErasedAt} style="date" /></>, wide: true }] : []),
         ]} />
       </div>
     </PlatformSurface>
@@ -39,7 +40,7 @@ export async function CustomerDetailPage({ params }: { params: Promise<{ id: str
         <Link href={`/dashboard/platform/orders?order=${encodeURIComponent(order.id)}&filter=all`} className="font-semibold underline-offset-4 hover:underline">#{order.displayId}</Link>
         <PlatformStatusBadge status={order.status} />
         <span className="ml-auto tabular-nums">{formatMoney(order.totalCents, order.currencyCode)}</span>
-        <span className="text-xs text-muted-foreground">{order.createdAt ? formatDate(order.createdAt) : ''}</span>
+        <span className="text-xs text-muted-foreground">{order.createdAt ? <ViewerTime value={order.createdAt} style="date" /> : ''}</span>
       </li>)}</ul> : <p className="px-4 py-6 text-sm text-muted-foreground md:px-5">No orders yet.</p>}
     </PlatformSurface>
   </PlatformPage>;

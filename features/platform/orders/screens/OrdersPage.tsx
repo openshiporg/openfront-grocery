@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { ClipboardList, ExternalLink, Flag, ScanSearch, ShoppingBasket, Truck } from 'lucide-react';
@@ -26,7 +27,7 @@ import {
 } from '@/features/platform/components/PlatformPrimitives';
 import { PlatformPager } from '@/features/platform/components/PlatformPageLinks';
 import { TaskButton } from '@/features/platform/components/TaskButton';
-import { formatDateTime, formatFulfillmentPromise, formatMoney, formatRelative } from '@/features/platform/lib/format';
+import { formatFulfillmentPromise, formatMoney, formatRelative } from '@/features/platform/lib/format';
 import { platformProjections, type GroceryPlatformOrder } from '@/features/platform/lib/platformProjections';
 import { advanceOrderTask, reconcileCheckoutTask } from '@/features/platform/lib/taskActions';
 import { OrderAfterSalesActions } from '@/features/platform/orders/components/OrderAfterSalesActions';
@@ -184,14 +185,14 @@ function OrderRow({ order, timeZone, canRefund }: { order: GroceryPlatformOrder;
             <p className="text-sm font-semibold tabular-nums">{formatMoney(financial.totalCents, order.currencyCode)}</p>
             <p className="text-xs text-muted-foreground">{financial.stage === 'finalized' ? 'Final sale' : financial.stage === 'estimate' ? 'Estimate' : 'Picked · pending'}</p>
           </div>
-          <p className="hidden text-right text-xs text-muted-foreground md:block" title={formatDateTime(order.createdAt)}>{formatRelative(order.createdAt)}</p>
+          <p className="hidden text-right text-xs text-muted-foreground md:block">{formatRelative(order.createdAt)}</p>
         </div>
       }
     >
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="min-w-0 space-y-5">
           <PlatformFacts columns={4} items={[
-            { label: 'Placed', value: formatDateTime(order.createdAt) },
+            { label: 'Placed', value: <ViewerTime value={order.createdAt} style="datetime" /> },
             { label: fulfillmentMethod === 'pickup' ? 'Pickup window' : 'Delivery window', value: formatFulfillmentPromise(order, timeZone) },
             { label: 'If items are unavailable', value: order.substitutionPreference ? SUBSTITUTION_LABELS[order.substitutionPreference] || humanize(order.substitutionPreference) : 'Not recorded' },
             { label: 'Payments', value: formatMoney(paymentTotal, order.currencyCode) },

@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import { Boxes, PackagePlus, TrendingDown } from 'lucide-react';
 import { InventorySafetyPanel } from '../components/InventorySafetyPanel';
@@ -24,7 +25,7 @@ import {
   platformHref,
   queryValue,
 } from '@/features/platform/components/PlatformPrimitives';
-import { formatDate, formatRelative } from '@/features/platform/lib/format';
+import { formatRelative } from '@/features/platform/lib/format';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
 import { InventoryAdjustmentForm } from '../components/InventoryAdjustmentForm';
@@ -116,7 +117,7 @@ export async function InventoryPage({ searchParams }: { searchParams?: Promise<P
                             <p className="text-sm font-semibold tabular-nums"><PlatformCellLabel>Remaining of received</PlatformCellLabel>{lot.quantityRemaining} <span className="font-normal text-muted-foreground">/ {lot.quantity} {unit}</span></p>
                             <div className="w-24 md:mt-1 md:w-full"><PlatformMeter value={lot.quantityRemaining} max={lot.quantity} tone="neutral" label="Remaining of received" /></div>
                           </div>
-                          <p className={`text-xs md:text-right ${lot.isExpired ? 'font-medium text-destructive' : lot.isExpiringSoon ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`} title={formatDate(lot.expirationDate)}>
+                          <p className={`text-xs md:text-right ${lot.isExpired ? 'font-medium text-destructive' : lot.isExpiringSoon ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
                             {lot.isExpired ? 'Expired ' : 'Expires '}{formatRelative(lot.expirationDate)}
                           </p>
                         </div>
@@ -127,7 +128,7 @@ export async function InventoryPage({ searchParams }: { searchParams?: Promise<P
                             { label: 'Location', value: lot.location || 'Not recorded' },
                             { label: 'Received quantity', value: <span className="tabular-nums">{lot.quantity} {unit}</span> },
                             { label: 'Remaining', value: <span className="tabular-nums">{lot.quantityRemaining} {unit}</span> },
-                            { label: 'Expiration', value: formatDate(lot.expirationDate) },
+                            { label: 'Expiration', value: <ViewerTime value={lot.expirationDate} style="date" /> },
                             { label: 'Safety · condition', value: <span className="capitalize">{(lot.safetyStatus || 'unknown').replaceAll('_', ' ')} · {(lot.conditionStatus || 'unknown').replaceAll('_', ' ')}</span> },
                           ]} />
                           <InventoryAdjustmentForm lotId={lot.id} quantity={lot.quantity} quantityRemaining={lot.quantityRemaining} unit={unit} />

@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import {keystoneClient} from '@/features/platform/lib/platformClient';
 import { Mail, RadioTower } from 'lucide-react';
 import { DeliverQueuedMessagesButton } from './DeliverQueuedMessagesButton';
@@ -14,7 +15,7 @@ import {
   PlatformTruthNotice,
 } from '@/features/platform/components/PlatformPrimitives';
 import { PlatformPager } from '@/features/platform/components/PlatformPageLinks';
-import { formatDateTime, formatRelative } from '@/features/platform/lib/format';
+import { formatRelative } from '@/features/platform/lib/format';
 
 const PATH = '/dashboard/platform/communications';
 
@@ -61,7 +62,7 @@ export async function CommunicationsPage({searchParams}:{searchParams?:Promise<R
                 <PlatformStatusBadge status={event.status} />
                 <span className="ml-auto text-xs text-muted-foreground tabular-nums">{event.attempts} {Number(event.attempts) === 1 ? 'attempt' : 'attempts'}</span>
               </div>
-              <p className="text-xs text-muted-foreground">{event.nextAttemptAt ? <>Next retry {formatRelative(event.nextAttemptAt)} · {formatDateTime(event.nextAttemptAt)}</> : event.claimedAt ? <>Claimed {formatDateTime(event.claimedAt)}</> : <>Recorded {formatDateTime(event.occurredAt)}</>}</p>
+              <p className="text-xs text-muted-foreground">{event.nextAttemptAt ? <>Next retry {formatRelative(event.nextAttemptAt)} · {<ViewerTime value={event.nextAttemptAt} style="datetime" />}</> : event.claimedAt ? <>Claimed {<ViewerTime value={event.claimedAt} style="datetime" />}</> : <>Recorded {<ViewerTime value={event.occurredAt} style="datetime" />}</>}</p>
               {event.lastError ? <p className="rounded-md border border-destructive/20 bg-destructive/5 px-2.5 py-1.5 font-mono text-xs text-destructive [overflow-wrap:anywhere]">{event.lastError}</p> : null}
               <OutboxEventActions event={event} />
             </article>)}

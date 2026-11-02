@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import { ClipboardList, Factory, FilePlus2, Send } from 'lucide-react';
 import {
@@ -24,7 +25,7 @@ import {
   queryValue,
 } from '@/features/platform/components/PlatformPrimitives';
 import { TaskButton } from '@/features/platform/components/TaskButton';
-import { formatDate, formatMoney } from '@/features/platform/lib/format';
+import { formatMoney } from '@/features/platform/lib/format';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 import { transitionPurchaseOrderTask } from '@/features/platform/lib/taskActions';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
@@ -134,10 +135,10 @@ export async function PurchasingPage({ searchParams }: { searchParams?: Promise<
                       <div className={`grid gap-1.5 ${rowGrid}`}>
                         <div className="min-w-0">
                           <p className="font-mono text-sm font-semibold">{order.poNumber}</p>
-                          <p className="truncate text-xs text-muted-foreground">{order.supplier?.name || 'Supplier unavailable'} · {order.items.length} lines · ordered {formatDate(order.orderDate)}</p>
+                          <p className="truncate text-xs text-muted-foreground">{order.supplier?.name || 'Supplier unavailable'} · {order.items.length} lines · ordered {<ViewerTime value={order.orderDate} style="date" />}</p>
                         </div>
                         <div><PlatformCellLabel>Status</PlatformCellLabel><PlatformStatusBadge status={order.status} label={order.status === 'confirmed' ? 'Receiving' : undefined} /></div>
-                        <p className={`text-xs ${dueSoon ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}><PlatformCellLabel>Expected</PlatformCellLabel>{dueSoon ? 'Due soon · ' : ''}{formatDate(order.expectedDeliveryDate, 'No ETA')}</p>
+                        <p className={`text-xs ${dueSoon ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}><PlatformCellLabel>Expected</PlatformCellLabel>{dueSoon ? 'Due soon · ' : ''}{<ViewerTime value={order.expectedDeliveryDate} style="date" fallback='No ETA' />}</p>
                         <div className="flex items-center gap-2">
                           <div className="w-20 md:flex-1"><PlatformMeter value={received} max={ordered} tone="positive" label="Units received" /></div>
                           <span className="text-xs text-muted-foreground tabular-nums"><PlatformCellLabel>Received</PlatformCellLabel>{received}/{ordered}</span>

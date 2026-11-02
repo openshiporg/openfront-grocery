@@ -1,3 +1,4 @@
+import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { PlatformPageLinks } from '@/features/platform/components/PlatformPageLinks';
 import Link from 'next/link';
 import { ClipboardList, ExternalLink, UserPlus, Users } from 'lucide-react';
@@ -20,7 +21,7 @@ import {
   platformButton,
   queryValue,
 } from '@/features/platform/components/PlatformPrimitives';
-import { formatDate, formatRelative } from '@/features/platform/lib/format';
+import { formatRelative } from '@/features/platform/lib/format';
 import { platformProjections } from '@/features/platform/lib/platformProjections';
 import { ProvisionCustomerForm } from '@/features/platform/customers/components/ProvisionCustomerForm';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
@@ -104,15 +105,15 @@ export async function CustomersPage({ searchParams }: { searchParams?: Promise<P
                       <p className="text-sm tabular-nums"><PlatformCellLabel>Shopping lists</PlatformCellLabel>{customer.shoppingListCount}<span className="text-xs text-muted-foreground"> {customer.shoppingListCount === 1 ? 'list' : 'lists'}</span></p>
                       <p className="text-sm tabular-nums md:text-right"><PlatformCellLabel>Orders</PlatformCellLabel>{customer.orderCount}<span className="text-xs text-muted-foreground md:hidden"> orders · {customer.shoppingListCount} lists</span></p>
                       <p className="hidden truncate text-xs text-muted-foreground md:block"><PlatformCellLabel>Last order</PlatformCellLabel>{customer.lastOrder ? <>#{customer.lastOrder.displayId} · <span className="capitalize">{humanize(customer.lastOrder.status)}</span></> : 'No retained orders'}</p>
-                      <p className="hidden text-right text-xs text-muted-foreground md:block" title={formatDate(customer.createdAt)}><PlatformCellLabel>Joined</PlatformCellLabel>{formatRelative(customer.createdAt)}</p>
+                      <p className="hidden text-right text-xs text-muted-foreground md:block"><PlatformCellLabel>Joined</PlatformCellLabel>{formatRelative(customer.createdAt)}</p>
                     </div>
                   }>
                     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
                       <PlatformFacts columns={4} items={[
-                        { label: 'Joined', value: formatDate(customer.createdAt) },
+                        { label: 'Joined', value: <ViewerTime value={customer.createdAt} style="date" /> },
                         { label: 'Orders', value: customer.orderCount },
                         { label: 'Shopping lists', value: customer.shoppingListCount },
-                        { label: 'Last order', value: customer.lastOrder ? <>#{customer.lastOrder.displayId} · <span className="capitalize">{humanize(customer.lastOrder.status)}</span> · {formatDate(customer.lastOrder.createdAt)}</> : 'No retained orders' },
+                        { label: 'Last order', value: customer.lastOrder ? <>#{customer.lastOrder.displayId} · <span className="capitalize">{humanize(customer.lastOrder.status)}</span> · {<ViewerTime value={customer.lastOrder.createdAt} style="date" />}</> : 'No retained orders' },
                         { label: 'Account ID', value: customer.id, mono: true, wide: true },
                       ]} />
                       <div className="flex flex-wrap gap-2">

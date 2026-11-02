@@ -3,7 +3,7 @@ import { Inbox, Mail, Phone } from 'lucide-react';
 import { keystoneClient } from '@/features/platform/lib/platformClient';
 import { PlatformEmptyState, PlatformErrorState, PlatformMetricGrid, PlatformPage, PlatformStatusBadge, PlatformSurface } from '@/features/platform/components/PlatformPrimitives';
 import { PlatformPager } from '@/features/platform/components/PlatformPageLinks';
-import { formatDateTime, formatRelative } from '@/features/platform/lib/format';
+import { formatRelative } from '@/features/platform/lib/format';
 import { ContactMessageFollowUp } from './ContactMessageFollowUp';
 import { parsePageParam } from '@/features/platform/lib/pageParams';
 
@@ -39,7 +39,7 @@ export async function MessagesPage({ searchParams }: { searchParams?: Promise<Re
             <div className="flex flex-wrap items-center gap-2">
               <p className="min-w-0 font-medium">{message.subject || message.topic}</p>
               <PlatformStatusBadge status={message.status === 'new' ? 'pending' : message.status === 'closed' ? 'completed' : message.status} label={message.status.replace('_', ' ')} />
-              <span className="ml-auto text-xs text-muted-foreground" title={formatDateTime(message.createdAt)}>{formatRelative(message.createdAt)}</span>
+              <span className="ml-auto text-xs text-muted-foreground">{formatRelative(message.createdAt)}</span>
             </div>
             <p className="text-sm">{message.name} · <a className="inline-flex items-center gap-1 underline underline-offset-4" href={`mailto:${message.email}?subject=${encodeURIComponent(`Re: ${message.subject || 'your message'} (${message.reference})`)}`}><Mail className="size-3.5" aria-hidden="true" />{message.email}</a>{message.phone ? <> · <a className="inline-flex items-center gap-1 underline underline-offset-4" href={`tel:${message.phone}`}><Phone className="size-3.5" aria-hidden="true" />{message.phone}</a></> : null}{message.orderNumber ? <> · <Link className="underline underline-offset-4" href={`/dashboard/platform/orders?q=${encodeURIComponent(message.orderNumber)}&filter=all`}>Order #{message.orderNumber}</Link></> : null}</p>
             <p className="whitespace-pre-line rounded-md border bg-muted/30 px-3 py-2 text-sm [overflow-wrap:anywhere]">{message.message}</p>
