@@ -1,3 +1,4 @@
+import { deliverOrderConfirmationNow } from '../lib/orderConfirmationDelivery';
 import { checkoutRequestFingerprint, checkoutCartFingerprint, assertCheckoutAttemptIdentity, noChargeCheckoutState } from '../lib/checkoutIdentity';
 import {requireSessionStore} from "../lib/storeScope";
 import { validateLoyaltyCoupon, markLoyaltyRedemptionUsed } from "../lib/loyaltyAccounting";
@@ -877,6 +878,8 @@ export default async function submitGroceryOrder(
     await compensateFailedCheckout({ context, attemptId: attempt.id, provider: paymentProvider as any, cause: error, finalizationLease });
     throw new Error('Checkout could not be finalized; payment compensation was recorded');
   }
+  // The order is committed. Send its confirmation in process (never throws, never touches other events).
+  await deliverOrderConfirmationNow(context.sudo(), committed.orderId);
   return {
     success: true,
     ...committed,
