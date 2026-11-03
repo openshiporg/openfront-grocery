@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { GraphQLError, print } from 'graphql';
 import { isDangerousAuthOperation, isGraphqlMutation, MAX_GRAPHQL_QUERY_LENGTH, requestIp } from './graphqlSecurity';
-import { normalizeClientIp } from './clientIp';
+import { edgeClientIp, normalizeClientIp } from './clientIp';
 import { verifiedInternalIdentity } from '../security/internalIdentity';
 
 type BucketRow = { requestCount: number };
@@ -55,10 +55,11 @@ export function abuseActor(context: { session?: any; req?: any }): string | null
     'x-openfront-client-signature': header('x-openfront-client-signature'),
   }, req.socket?.remoteAddress, String(process.env.SESSION_SECRET || ''), Date.now());
   if (internal) return `ip:${internal}`;
-  const ip = process.env.TRUSTED_PROXY === 'true'
-    ? normalizeClientIp(header('x-real-ip'))
-    : normalizeClientIp(req.socket?.remoteAddress);
-  if (!ip || (process.env.TRUSTED_PROXY !== 'true' && isPrivateOrLoopback(ip))) return null;
+  // X-Real-IP only from the Railway edge (see edgeClientIp); never from a loopback caller.
+  const edge = edgeClientIp(header, req.socket?.remoteAddress);
+  if (edge) return `ip:${edge}`;
+  const ip = normalizeClientIp(req.socket?.remoteAddress);
+  if (!ip || isPrivateOrLoopback(ip)) return null;
   return `ip:${ip}`;
 }
 

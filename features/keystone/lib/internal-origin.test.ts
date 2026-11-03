@@ -169,6 +169,7 @@ test('LIMITER grocery: signed loopback request counts the end user; unsigned loo
     assert.equal(abuseActor({ req: req('127.0.0.1', { ...headers, 'x-openfront-client-signature': 'b'.repeat(64) }) }), null)
     // Old behaviour for browser traffic on Railway is unchanged: x-real-ip when TRUSTED_PROXY=true.
     process.env.TRUSTED_PROXY = 'true'
+    process.env.RAILWAY_ENVIRONMENT = 'production'
     assert.equal(abuseActor({ req: req('10.0.0.5', { 'x-real-ip': '198.51.100.9' }) }), 'ip:198.51.100.9')
     // requestIp (GraphQL limiter): signed loopback wins, otherwise the old logic.
     const h = (o: Record<string, string>) => new Headers(o)
@@ -178,6 +179,7 @@ test('LIMITER grocery: signed loopback request counts the end user; unsigned loo
   } finally {
     if (prev.s === undefined) delete process.env.SESSION_SECRET; else process.env.SESSION_SECRET = prev.s
     if (prev.t === undefined) delete process.env.TRUSTED_PROXY; else process.env.TRUSTED_PROXY = prev.t
+    delete process.env.RAILWAY_ENVIRONMENT
   }
 })
 
@@ -269,5 +271,40 @@ test('a long-lived client signs the CURRENT visitor on every call (two visitors,
     assert.equal(ids[1], internalIdentityHeaders('198.51.100.9')['x-openfront-client-identity'])
   } finally {
     if (prev === undefined) delete process.env.SESSION_SECRET; else process.env.SESSION_SECRET = prev
+  }
+})
+
+test('X-Real-IP is trusted only on Railway and from a non-loopback peer', () => {
+  const prev = { t: process.env.TRUSTED_PROXY, r: process.env.RAILWAY_ENVIRONMENT }
+  const spoof = { 'x-real-ip': '198.51.100.77' }
+  const req = (socket: string, h: Record<string, string>) => ({ socket: { remoteAddress: socket }, headers: h })
+  try {
+    process.env.TRUSTED_PROXY = 'true'
+    // Off Railway: the header is ignored; the socket counts (public) or is no actor (private/loopback).
+    delete process.env.RAILWAY_ENVIRONMENT
+    assert.equal(requestIp(new Headers(spoof), '203.0.113.5'), '203.0.113.5')
+    assert.equal(requestIp(new Headers(spoof), '127.0.0.1'), '127.0.0.1')
+    assert.equal(abuseActor({ req: req('203.0.113.5', spoof) }), 'ip:203.0.113.5')
+    assert.equal(abuseActor({ req: req('127.0.0.1', spoof) }), null)
+    // On Railway, a loopback caller's X-Real-IP is never trusted.
+    process.env.RAILWAY_ENVIRONMENT = 'production'
+    assert.equal(requestIp(new Headers(spoof), '127.0.0.1'), '127.0.0.1')
+    assert.equal(requestIp(new Headers(spoof), '::ffff:127.0.0.1'), '127.0.0.1')
+    assert.equal(abuseActor({ req: req('127.0.0.1', spoof) }), null)
+    assert.equal(abuseActor({ req: req('::1', spoof) }), null)
+    // On Railway from the edge peer: the edge-set X-Real-IP; missing or malformed -> one conservative bucket.
+    assert.equal(requestIp(new Headers(spoof), '10.0.0.5'), '198.51.100.77')
+    assert.equal(abuseActor({ req: req('10.0.0.5', spoof) }), 'ip:198.51.100.77')
+    assert.equal(requestIp(new Headers({}), '10.0.0.5'), 'unverified-proxy')
+    assert.equal(requestIp(new Headers({ 'x-real-ip': '1.2.3.4, 5.6.7.8' }), '10.0.0.5'), 'unverified-proxy')
+    // XFF is never used.
+    assert.equal(requestIp(new Headers({ 'x-forwarded-for': '198.51.100.88' }), '10.0.0.5'), 'unverified-proxy')
+    // TRUSTED_PROXY off: never the header.
+    delete process.env.TRUSTED_PROXY
+    assert.equal(requestIp(new Headers(spoof), '10.0.0.5'), '10.0.0.5')
+    assert.equal(abuseActor({ req: req('10.0.0.5', spoof) }), null)
+  } finally {
+    if (prev.t === undefined) delete process.env.TRUSTED_PROXY; else process.env.TRUSTED_PROXY = prev.t
+    if (prev.r === undefined) delete process.env.RAILWAY_ENVIRONMENT; else process.env.RAILWAY_ENVIRONMENT = prev.r
   }
 })

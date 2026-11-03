@@ -1,5 +1,5 @@
 import { GraphQLError, Kind, parse, type ASTNode, type DocumentNode, type FragmentDefinitionNode, type SelectionSetNode, type ValidationContext, type ValidationRule } from 'graphql';
-import { normalizeClientIp } from './clientIp';
+import { edgeClientIp, normalizeClientIp, viaRailwayEdge } from './clientIp';
 import { verifiedInternalIdentity } from '../security/internalIdentity';
 
 export const MAX_GRAPHQL_QUERY_LENGTH = 100_000;
@@ -111,12 +111,12 @@ export function requestIp(headers?: Headers, remoteAddress?: string | null) {
     'x-openfront-client-signature': headers?.get('x-openfront-client-signature') ?? undefined,
   }, remoteAddress, String(process.env.SESSION_SECRET || ''), Date.now());
   if (internal) return internal;
-  if (process.env.TRUSTED_PROXY === 'true') {
-    // Railway's HTTP edge overwrites X-Real-IP. Missing or malformed metadata
-    // stays in one conservative fallback bucket; XFF and custom identity
-    // headers are never accepted as client identity.
-    return normalizeClientIp(headers?.get('x-real-ip')) || 'unverified-proxy';
-  }
+  // Railway's HTTP edge overwrites X-Real-IP; it is trusted only on Railway and from a
+  // non-loopback peer. Edge traffic with missing or malformed metadata stays in one
+  // conservative bucket. XFF and custom identity headers are never client identity.
+  const edge = edgeClientIp((name) => headers?.get(name), remoteAddress);
+  if (edge) return edge;
+  if (viaRailwayEdge(remoteAddress)) return 'unverified-proxy';
   return normalizeClientIp(remoteAddress) || 'local';
 }
 
