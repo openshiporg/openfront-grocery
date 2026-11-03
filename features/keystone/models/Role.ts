@@ -5,23 +5,69 @@ import {
   relationship,
 } from "@keystone-6/core/fields";
 import { storeScopedFilter } from '../lib/storeAccess';
+import { requireFreshCapability } from '../access';
+import { STAFF_CAPABILITIES } from '../lib/staffInvitations';
 import { isFreshInstallBootstrapWindow } from '../lib/freshInstallAccess';
 import { getPublicStoreId } from '../lib/runtimeConfig';
 import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 
+// Generic role administration must not trust capability claims cached in a
+// stateless session after revocation, so every gate re-reads the caller's
+// current role (canManageUsers is grocery's staff-administration capability).
+async function isCurrentStaffAdministrator({ context }: { context: any }) {
+  try {
+    await requireFreshCapability(context, 'canManageUsers');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A role may only grant capabilities its creator currently holds (no self-escalation). */
+async function validateGrantedCapabilities({ resolvedData, context, addValidationError }: any) {
+  if (!context.session?.itemId) return; // anonymous first-account bootstrap only
+  const actor = await context.prisma.user.findUnique({ where: { id: context.session.itemId }, select: { role: true } });
+  for (const capability of STAFF_CAPABILITIES) {
+    if (resolvedData[capability] === true && (actor?.role as any)?.[capability] !== true) {
+      addValidationError(`A role cannot grant ${capability}, which you do not currently hold`);
+    }
+  }
+}
+
+const ownRoleFilter = (session: any) =>
+  session?.itemId ? { assignedTo: { some: { id: { equals: session.itemId } } } } : false;
+
 export const Role = list({
   access: {
-    // Role administration is domain-owned. Generic CRUD must not trust
-    // capability claims cached in a stateless session after revocation.
-    operation: { query: ({ session }) => Boolean(session?.itemId), create: () => false, update: () => false, delete: () => false },
+    // E-commerce parity: staff administrators can create, edit and delete the
+    // Store's roles. Roles that people hold change only through the audited,
+    // last-manager-safe updateGroceryStaffAccess workflow, so generic update
+    // and delete are limited to unassigned roles.
+    operation: {
+      query: ({ session }) => Boolean(session?.itemId),
+      create: isCurrentStaffAdministrator,
+      update: isCurrentStaffAdministrator,
+      delete: isCurrentStaffAdministrator,
+    },
     filter: {
-      query: ({ session }) => session?.itemId ? { assignedTo: { some: { id: { equals: session.itemId } } } } : false,
-      update: storeScopedFilter,
+      query: async (args: any) => (await isCurrentStaffAdministrator(args)) ? storeScopedFilter(args) : ownRoleFilter(args.session),
+      update: async (args: any) => {
+        const store = await storeScopedFilter(args);
+        return store === false ? false : { AND: [store as any, { assignedTo: { none: {} } }] };
+      },
       delete: storeScopedFilter,
     },
   },
   hooks: {
+    validate: {
+      create: validateGrantedCapabilities,
+      update: validateGrantedCapabilities,
+      delete: async ({ item, context, addValidationError }: any) => {
+        const assigned = await context.prisma.user.count({ where: { roleId: String(item.id) } });
+        if (assigned > 0) addValidationError('Change these staff members\' access before deleting their role');
+      },
+    },
     resolveInput: {
       create: async ({ resolvedData, context }) => {
         if (!context.session?.itemId) {
@@ -92,13 +138,15 @@ export const Role = list({
     store: relationship({
       ref: 'Store.roles',
       db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
+      // The Store is always derived from the caller (resolveInput), never sent.
+      graphql: { isNonNull: { read: true } },
       access: { create: () => false, update: () => false },
     }),
     assignedTo: relationship({
       ref: "User.role",
       many: true,
-      access: { update: () => false },
+      // People get access only through the staff workflow.
+      access: { create: () => false, update: () => false },
       label: "Assigned To",
     }),
     ...trackingFields,

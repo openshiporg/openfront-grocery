@@ -7048,7 +7048,7 @@ input RoleCreateInput {
   canManageUsers: Boolean
   canManageOnboarding: Boolean
   canAccessDashboard: Boolean
-  store: StoreRelateToOneForCreateInput!
+  store: StoreRelateToOneForCreateInput
   assignedTo: UserRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
