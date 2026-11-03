@@ -1,5 +1,6 @@
 import { getGraphQLEndpoint } from '@/features/storefront/lib/getBaseUrl';
 import { getInternalGraphQLEndpoint } from '@/features/keystone/lib/internalTransport';
+import { applyInternalIdentity } from '@/features/keystone/lib/internal-origin';
 
 export type StorefrontGraphQLRequestOptions = Omit<RequestInit, 'method' | 'headers' | 'body'> & {
   headers?: HeadersInit;
@@ -45,16 +46,15 @@ export async function storefrontGraphQL<T = any>(
   const endpoint = internalEndpoint || await getGraphQLEndpoint();
   const requestHeaders = new Headers(headers);
 
-  // Server destinations and client identity come from deployment/runtime
-  // context, never from caller-supplied Host, forwarding, or legacy signer headers.
-  for (const name of ['host', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip', 'x-grocery-proxy-identity']) {
+  // Server destinations and client identity come from deployment/runtime context, never from
+  // caller-supplied Host, forwarding, or unsigned identity headers. The end user's address travels
+  // only as a signed identity that the API accepts from a loopback socket.
+  for (const name of ['host', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'forwarded', 'x-real-ip', 'x-grocery-proxy-identity', 'x-openfront-client-identity', 'x-openfront-client-timestamp', 'x-openfront-client-signature']) {
     requestHeaders.delete(name);
   }
   if (typeof window === 'undefined' && internalEndpoint) {
     const { headers: requestContextHeaders } = await import('next/headers');
-    const { trustedClientIp } = await import('@/features/keystone/lib/clientIp');
-    const clientIp = trustedClientIp(await requestContextHeaders());
-    if (clientIp) requestHeaders.set('x-real-ip', clientIp);
+    applyInternalIdentity(requestHeaders, await requestContextHeaders());
   }
 
   if (!requestHeaders.has('Content-Type')) {

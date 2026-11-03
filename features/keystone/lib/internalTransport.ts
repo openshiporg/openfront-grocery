@@ -1,16 +1,13 @@
 import { resolveApplicationOrigin } from '@/lib/applicationOrigin';
+import { internalGraphqlEndpoint } from './internal-origin';
 
 // Plain Next owns both public requests and server-side GraphQL hops. PORT is
 // deployment configuration, not request input; a server hop uses that same
 // listener over loopback and never follows Host/forwarding headers.
 export function getInternalGraphQLEndpoint(): string | null {
   if (typeof window !== 'undefined') return null;
-  const configuredPort = process.env.PORT?.trim();
-  if (!configuredPort) return null;
-  if (!/^\d+$/.test(configuredPort)) throw new Error('PORT must be numeric');
-  const port = Number(configuredPort);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535');
-  return `http://127.0.0.1:${port}/api/graphql`;
+  // One loopback resolver for the whole app: invalid PORT means "not available", never a throw.
+  return internalGraphqlEndpoint();
 }
 
 // Fixed deployment configuration is the only server-side fallback. In

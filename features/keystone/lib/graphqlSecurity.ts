@@ -1,5 +1,6 @@
 import { GraphQLError, Kind, parse, type ASTNode, type DocumentNode, type FragmentDefinitionNode, type SelectionSetNode, type ValidationContext, type ValidationRule } from 'graphql';
 import { normalizeClientIp } from './clientIp';
+import { verifiedInternalIdentity } from '../security/internalIdentity';
 
 export const MAX_GRAPHQL_QUERY_LENGTH = 100_000;
 export const MAX_GRAPHQL_DEPTH = 12;
@@ -104,6 +105,12 @@ export function isDangerousAuthOperation(query?: string | null) {
 }
 
 export function requestIp(headers?: Headers, remoteAddress?: string | null) {
+  const internal = verifiedInternalIdentity({
+    'x-openfront-client-identity': headers?.get('x-openfront-client-identity') ?? undefined,
+    'x-openfront-client-timestamp': headers?.get('x-openfront-client-timestamp') ?? undefined,
+    'x-openfront-client-signature': headers?.get('x-openfront-client-signature') ?? undefined,
+  }, remoteAddress, String(process.env.SESSION_SECRET || ''), Date.now());
+  if (internal) return internal;
   if (process.env.TRUSTED_PROXY === 'true') {
     // Railway's HTTP edge overwrites X-Real-IP. Missing or malformed metadata
     // stays in one conservative fallback bucket; XFF and custom identity

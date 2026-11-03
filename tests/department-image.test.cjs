@@ -41,7 +41,7 @@ test('department model: optional image field on the shared my_images S3 storage'
 });
 
 test('upload limit: 10 MB for multipart uploads, 1 MB for JSON', () => {
-  const security = load('features/keystone/lib/graphqlSecurity.ts', { './clientIp': { normalizeClientIp: (v) => v } });
+  const security = load('features/keystone/lib/graphqlSecurity.ts', { './clientIp': { normalizeClientIp: (v) => v }, '../security/internalIdentity': { verifiedInternalIdentity: () => null } });
   assert.equal(security.MAX_UPLOAD_BYTES, 10 * 1024 * 1024);
   assert.equal(security.requestBodyLimit('application/json'), 1024 * 1024);
   assert.ok(security.requestBodyLimit('multipart/form-data; boundary=x') > 10 * 1024 * 1024);

@@ -10,8 +10,11 @@ import {
   isInputObjectType,
 } from 'graphql';
 import { getTrustedApplicationOrigin } from '@/features/keystone/lib/internalTransport';
+import { internalGraphqlEndpoint, withRequestIdentity } from '@/features/keystone/lib/internal-origin';
+
+// Self-calls to /api/graphql carry the caller's signed identity, read from the current request per call.
+const selfFetch = withRequestIdentity();
 import { keystoneContext } from '@/features/keystone/context';
-import { trustedClientIp } from '@/features/keystone/lib/clientIp';
 import { getMcpDisabledResponse } from '@/features/keystone/lib/mcpFeatureGate';
 
 // Get simple type name for display
@@ -29,10 +32,8 @@ function getSimpleTypeName(type: any): string {
 async function executeGraphQL(query: string, graphqlEndpoint: string, cookie: string): Promise<any> {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   if (cookie) headers.set('Cookie', cookie);
-  const { headers: requestContextHeaders } = await import('next/headers');
-  const clientIp = trustedClientIp(await requestContextHeaders());
-  if (clientIp) headers.set('X-Real-IP', clientIp);
-  const response = await fetch(graphqlEndpoint, {
+  // The caller's address is signed per call by selfFetch; it is never forwarded as a plain header.
+  const response = await selfFetch(graphqlEndpoint, {
     method: 'POST',
     redirect: 'error',
     cache: 'no-store',
@@ -58,8 +59,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tra
     
     // Construct GraphQL endpoint
     // Server-side destinations come from deployment configuration, never the request's Host header.
-    const baseUrl = getTrustedApplicationOrigin();
-    const graphqlEndpoint = `${baseUrl}/api/graphql`;
+    const graphqlEndpoint = internalGraphqlEndpoint() ?? `${getTrustedApplicationOrigin()}/api/graphql`;
     
     // Extract cookie from request
     const cookie = request.headers.get('cookie') || ''

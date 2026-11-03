@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { GraphQLError } from 'graphql';
 import { isDangerousAuthOperation, isGraphqlMutation, MAX_GRAPHQL_QUERY_LENGTH, requestIp } from './graphqlSecurity';
 import { normalizeClientIp } from './clientIp';
+import { verifiedInternalIdentity } from '../security/internalIdentity';
 
 type BucketRow = { requestCount: number };
 const WINDOW_MS = 60_000;
@@ -46,6 +47,14 @@ export function abuseActor(context: { session?: any; req?: any }): string | null
     const value = typeof req.headers?.get === 'function' ? req.headers.get(name) : req.headers?.[name];
     return Array.isArray(value) ? value[0] : value;
   };
+  // A server render on this host calls over loopback with the end user's signed identity: count that
+  // user. Accepted only from a loopback socket with a fresh HMAC; otherwise the logic below applies.
+  const internal = verifiedInternalIdentity({
+    'x-openfront-client-identity': header('x-openfront-client-identity'),
+    'x-openfront-client-timestamp': header('x-openfront-client-timestamp'),
+    'x-openfront-client-signature': header('x-openfront-client-signature'),
+  }, req.socket?.remoteAddress, String(process.env.SESSION_SECRET || ''), Date.now());
+  if (internal) return `ip:${internal}`;
   const ip = process.env.TRUSTED_PROXY === 'true'
     ? normalizeClientIp(header('x-real-ip'))
     : normalizeClientIp(req.socket?.remoteAddress);

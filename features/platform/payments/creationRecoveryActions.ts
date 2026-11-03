@@ -2,13 +2,14 @@
 import { revalidatePath } from 'next/cache';
 import { GraphQLClient } from 'graphql-request';
 import { getAuthHeaders } from '@/features/dashboard/lib/cookies';
-import { getGraphQLEndpoint } from '@/features/dashboard/lib/getBaseUrl';
+import { getServerGraphQLTarget } from '@/features/dashboard/lib/getBaseUrl';
 export async function recoverPaymentCreationAction(input: { paymentSessionId: string; providerPaymentId: string; reason: string }) {
   let response: any;
   try {
     // The generic dashboard client logs ClientError request variables. Provider
     // references belong only in this authenticated request and server evidence.
-    const client = new GraphQLClient(await getGraphQLEndpoint(), { headers: await getAuthHeaders(), credentials: 'include' });
+    const { endpoint, fetch: internalFetch } = await getServerGraphQLTarget();
+    const client = new GraphQLClient(endpoint, { headers: await getAuthHeaders(), credentials: 'include', ...(internalFetch ? { fetch: internalFetch } : {}) });
     response = await client.request(`mutation RecoverCreation($paymentSessionId: ID!, $providerPaymentId: String!, $reason: String!) {
       recoverGroceryPaymentCreation(paymentSessionId: $paymentSessionId, providerPaymentId: $providerPaymentId, reason: $reason)
     }`, input);

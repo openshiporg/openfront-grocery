@@ -16,6 +16,7 @@ export function createScopedMcpFetch(
   mcpEndpoint: URL,
   cookie: string,
   baseFetch: FetchLike = fetch,
+  clientSource?: string | null,
 ): FetchLike {
   const allowedEndpoint = canonicalEndpoint(mcpEndpoint);
   const requestCookie = cookie.trim();
@@ -29,6 +30,9 @@ export function createScopedMcpFetch(
     const headers = new Headers(init.headers);
     if (requestCookie) headers.set("cookie", requestCookie);
     else headers.delete("cookie");
+    // Only the loopback MCP endpoint hears the caller's address, so its own GraphQL calls can sign it.
+    if (clientSource) headers.set("x-real-ip", clientSource);
+    else headers.delete("x-real-ip");
 
     return baseFetch(target, {
       ...init,
