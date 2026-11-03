@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { GraphQLError } from 'graphql';
+import { GraphQLError, print } from 'graphql';
 import { isDangerousAuthOperation, isGraphqlMutation, MAX_GRAPHQL_QUERY_LENGTH, requestIp } from './graphqlSecurity';
 import { normalizeClientIp } from './clientIp';
 import { verifiedInternalIdentity } from '../security/internalIdentity';
@@ -114,17 +114,36 @@ export async function enforceGraphqlRateLimit({
   await consumeSharedBucket(prisma, key, limit);
 }
 
+function nodeHeaders(raw: Record<string, string | string[] | undefined> | undefined) {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(raw || {})) {
+    if (Array.isArray(value)) for (const item of value) headers.append(name, item);
+    else if (value !== undefined) headers.set(name, value);
+  }
+  return headers;
+}
+
+/**
+ * GraphQL Yoga (Envelop) plugin for pages/api/graphql.ts: every executed
+ * operation, including each one in a batch, spends the caller's bucket before
+ * it runs. Sign-in, initial-user and password-reset operations get
+ * AUTH_LIMIT (8) per minute; other mutations and queries get their own limits.
+ * The caller is the signed per-end-user identity on loopback hops, the
+ * Railway edge address when TRUSTED_PROXY=true, otherwise the socket address.
+ */
 export function graphqlRateLimitPlugin() {
   return {
-    async requestDidStart(requestContext: any) {
-      const context = requestContext.contextValue;
+    async onExecute({ args }: { args: { contextValue?: any; document: any } }) {
+      const context = args.contextValue;
+      const req = context?.req;
+      const headers = typeof req?.headers?.get === 'function' ? req.headers as Headers : nodeHeaders(req?.headers);
       await enforceGraphqlRateLimit({
         prisma: context?.prisma,
-        headers: requestContext.request.http?.headers as Headers | undefined,
+        headers,
+        remoteAddress: req?.socket?.remoteAddress,
         identity: context?.session?.itemId,
-        query: requestContext.request.query || '',
+        query: print(args.document),
       });
-      return {};
     },
   };
 }

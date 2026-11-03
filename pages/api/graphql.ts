@@ -13,6 +13,7 @@ import {
   requestBodyLimit,
   rejectIntrospectionInProduction,
 } from '../../features/keystone/lib/graphqlSecurity';
+import { graphqlRateLimitPlugin } from '../../features/keystone/lib/graphqlRateLimit';
 import { getCanonicalSiteUrl, isProduction } from '../../features/keystone/lib/runtimeConfig';
 import { resolveApplicationOrigin } from '../../lib/applicationOrigin';
 
@@ -101,7 +102,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           throw new GraphQLError('GraphQL request is too large', { extensions: { code: 'QUERY_TOO_LARGE' } });
         }
       },
-    }],
+    }, graphqlRateLimitPlugin()],
   });
 
   return yoga(req, res);
