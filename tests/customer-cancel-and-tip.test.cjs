@@ -56,3 +56,13 @@ test('nothing picked means no tip is charged', () => {
   const sale = priceActualSale({ deliveryFeeCents: 499, metadata: { tipCents: 500 } }, [line({ quantityMilli: 0, subtotalCents: 0 })]);
   assert.equal(sale.totalCents, 0);
 });
+
+test('a tipped order keeps its row total to goods + tax + fee - discount; the dashboard adds the tip back', () => {
+  const { orderFinancialDisplay } = require('../features/platform/orders/lib/orderFinancials.ts');
+  const shown = orderFinancialDisplay({ totalCents: 2688, subtotalCents: 2472, taxCents: 216, deliveryFeeCents: 0, discountCents: 0, metadata: { tipCents: 500, totalCents: 3188 } });
+  assert.equal(shown.tipCents, 500);
+  assert.equal(shown.totalCents, 3188);
+  assert.equal(shown.checkoutEstimateCents, 3188);
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../features/keystone/mutations/submitGroceryOrder.ts'), 'utf8');
+  assert.match(src, /totalCents: totals\.totalCents - \(totals\.tipCents \|\| 0\)/);
+});

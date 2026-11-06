@@ -618,7 +618,9 @@ export async function commitGroceryOrder(
         taxCents: totals.taxCents,
         deliveryFeeCents: totals.deliveryFeeCents,
         discountCents: totals.discountCents,
-        totalCents: totals.totalCents,
+        // The driver tip rides on the payment, not the order: the order total stays
+        // goods + tax + fee - discount (DB check Order_totalCents_matches_components).
+        totalCents: totals.totalCents - (totals.tipCents || 0),
         taxRate: taxRateBps / 10_000,
         deliveryDate: new Date(selectedSlot.date).toISOString(),
         deliveryTimeWindow: fulfillmentWindow(selectedSlot.startTime) as any,

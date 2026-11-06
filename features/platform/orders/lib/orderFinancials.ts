@@ -19,16 +19,19 @@ export function orderFinancialDisplay(order: GroceryPlatformOrder) {
     && [sale.subtotalCents, sale.discountCents, sale.taxCents, sale.feeCents, sale.totalCents]
       .every(value => Number.isSafeInteger(value) && value >= 0);
 
+  // The order row holds goods + tax + fee - discount; a driver tip is authorized on top of it.
+  const checkoutTipCents = Number((order.metadata as Record<string, unknown> | null)?.tipCents || 0);
+  const checkoutEstimateCents = order.totalCents + checkoutTipCents;
   if (!validSale) return {
     stage: 'estimate' as const,
     title: 'Checkout estimate',
-    checkoutEstimateCents: order.totalCents,
+    checkoutEstimateCents,
     subtotalCents: order.subtotalCents,
     discountCents: order.discountCents,
     taxCents: order.taxCents,
     deliveryFeeCents: order.deliveryFeeCents,
-    tipCents: Number((order.metadata as Record<string, unknown> | null)?.tipCents || 0),
-    totalCents: order.totalCents,
+    tipCents: checkoutTipCents,
+    totalCents: checkoutEstimateCents,
   };
 
   const stage = sale.status === 'finalized' ? 'finalized' as const
@@ -39,7 +42,7 @@ export function orderFinancialDisplay(order: GroceryPlatformOrder) {
     title: stage === 'finalized' ? 'Final picked sale'
       : stage === 'authorization' ? 'Picked sale · customer authorization required'
         : 'Picked sale · settlement pending',
-    checkoutEstimateCents: order.totalCents,
+    checkoutEstimateCents,
     subtotalCents: sale.subtotalCents,
     discountCents: sale.discountCents,
     taxCents: sale.taxCents,
