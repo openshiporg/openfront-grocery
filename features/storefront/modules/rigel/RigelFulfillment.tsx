@@ -125,7 +125,7 @@ export function RigelSlotList({ name, limit = 3, compact = false }: { name: stri
             <input type="radio" name={name} checked={selected?.id === entry.id} onChange={() => select(entry.id)} />
             <span className="min-w-0">
               <span className="block text-[0.875rem] font-medium leading-5 tabular-nums">{slotLabel(entry)}</span>
-              <span className="block text-[0.6875rem] leading-4 text-[var(--sf-ink-muted)]">{day} · {fee}{remaining}</span>
+              <span className="block text-xs leading-4 text-[var(--sf-ink-muted)]">{day} · {fee}{remaining}</span>
             </span>
           </label>
         );

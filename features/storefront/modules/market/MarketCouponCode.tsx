@@ -38,7 +38,7 @@ export function DealTicket({ deal }: { deal: GroceryDeal }) {
   const headline = dealHeadline(deal);
   return <article className="sf-ticket">
     <div className="sf-ticket-stub">
-      <p className="text-[0.6875rem] font-bold">{deal.type === 'coupon' ? 'Coupon' : 'Special'}</p>
+      <p className="text-xs font-bold">{deal.type === 'coupon' ? 'Coupon' : 'Special'}</p>
       <p className="font-[family-name:var(--sf-font-display)] text-[2.4rem] font-extrabold leading-[0.9] tracking-[-0.05em]">{headline.big}</p>
       <p className="text-sm font-semibold">{headline.small}</p>
     </div>

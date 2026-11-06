@@ -205,7 +205,7 @@ export async function SubscriptionsPage({searchParams}:{searchParams?:Promise<Pl
                 if (!rows.length) return null;
                 return (
                   <section key={group.key} aria-label={group.label}>
-                    <h3 className={`flex flex-wrap items-baseline gap-x-2 border-b bg-muted/30 px-4 py-2 text-[11px] font-medium tracking-wide uppercase md:px-5 ${group.key === 'overdue' ? 'text-amber-800 dark:text-amber-300' : 'text-muted-foreground'}`}>
+                    <h3 className={`flex flex-wrap items-baseline gap-x-2 border-b bg-muted/30 px-4 py-2 text-xs font-medium tracking-wide uppercase md:px-5 ${group.key === 'overdue' ? 'text-amber-800 dark:text-amber-300' : 'text-muted-foreground'}`}>
                       {group.label} <span className="tabular-nums">· {rows.length}</span>
                       {group.hint ? <span className="font-normal tracking-normal normal-case">{group.hint}</span> : null}
                     </h3>

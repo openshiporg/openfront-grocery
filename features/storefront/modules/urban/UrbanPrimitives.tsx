@@ -351,7 +351,7 @@ export function UrbanProductArtwork({
       <span aria-hidden="true" className="font-[family-name:var(--sf-font-display)] text-4xl font-bold leading-none tracking-[-0.04em] text-[var(--sf-ink-faint)]">
         {name.slice(0, 1).toUpperCase()}
       </span>
-      <span aria-hidden="true" className="text-[0.6875rem] font-semibold">{department}</span>
+      <span aria-hidden="true" className="text-xs font-semibold">{department}</span>
     </div>
   );
 }

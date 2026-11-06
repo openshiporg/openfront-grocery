@@ -104,8 +104,8 @@ export function StaffManager({ data, now }: { data: any; now: number }) {
                     <p className="truncate text-xs text-muted-foreground">{user.email}</p>
                   </div>
                   <div className="hidden max-w-[45%] flex-wrap justify-end gap-1 lg:flex">
-                    {user.role ? granted.filter((cap) => cap !== 'canAccessDashboard').slice(0, 4).map((cap) => <span key={cap} className="rounded-md border bg-background px-1.5 py-0.5 text-[11px] text-muted-foreground">{labels[cap]}</span>) : null}
-                    {user.role && granted.length > 5 ? <span className="px-1 text-[11px] text-muted-foreground">+{granted.length - 5}</span> : null}
+                    {user.role ? granted.filter((cap) => cap !== 'canAccessDashboard').slice(0, 4).map((cap) => <span key={cap} className="rounded-md border bg-background px-1.5 py-0.5 text-xs text-muted-foreground">{labels[cap]}</span>) : null}
+                    {user.role && granted.length > 5 ? <span className="px-1 text-xs text-muted-foreground">+{granted.length - 5}</span> : null}
                   </div>
                   {user.role ? <PlatformStatusBadge status="active" label={`${granted.length} permissions`} /> : <PlatformStatusBadge status="cancelled" label="Revoked" />}
                 </div>
@@ -146,7 +146,7 @@ export function StaffManager({ data, now }: { data: any; now: number }) {
         <PlatformSurface icon={ShieldCheck} title="Privacy requests" count={data.privacyRequests.length} description="Erasure requests are reviewed subject to retention. Customers download exports themselves from Account → Privacy.">
           {data.privacyRequests.length===0 ? <PlatformEmptyState compact icon={ShieldCheck} title="No privacy requests" description={emptyCopy(counts.privacyCount > 0, 'No privacy requests on this page.', 'Customer export and erasure requests will appear here.')} /> : <div className="divide-y">
             {data.privacyRequests.map((request:any) => <div className="space-y-3 px-4 py-3.5 md:px-5" key={request.id}>
-              <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{request.user?.name || 'Customer'}</p><span className="rounded-md border px-1.5 py-0.5 text-[11px] font-medium capitalize text-muted-foreground">{request.kind}</span><PlatformStatusBadge status={request.status} /></div>
+              <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-medium">{request.user?.name || 'Customer'}</p><span className="rounded-md border px-1.5 py-0.5 text-xs font-medium capitalize text-muted-foreground">{request.kind}</span><PlatformStatusBadge status={request.status} /></div>
               {request.kind === 'erasure' ? <form className="flex flex-col gap-2 sm:flex-row sm:items-end" action={(form) => submit('privacy',form,{requestId:request.id,approve:form.get('decision')==='approve'})}>
                 <PlatformField label="Review reason" className="flex-1"><input name="reason" aria-label="Review reason" required minLength={3} className={platformInput} /></PlatformField>
                 <PlatformField label="Decision" className="sm:w-56"><select name="decision" aria-label="Review decision" className={platformSelect}><option value="approve">Approve subject to retention</option><option value="reject">Reject with reason</option></select></PlatformField>
@@ -179,7 +179,7 @@ export function StaffManager({ data, now }: { data: any; now: number }) {
                 <span aria-hidden="true" className="absolute top-1.5 -left-[4.5px] size-2 rounded-full bg-muted-foreground/50 ring-2 ring-card" />
                 <p className="font-medium capitalize">{String(event.action).replaceAll('_', ' ')} <span className="font-normal text-muted-foreground normal-case">· {event.subject?.name || 'Invitation'}</span></p>
                 {event.reason ? <p className="text-xs text-muted-foreground">{event.reason}</p> : null}
-                <PlatformTime value={event.createdAt} className="mt-0.5 block text-[11px] text-muted-foreground tabular-nums" />
+                <PlatformTime value={event.createdAt} className="mt-0.5 block text-xs text-muted-foreground tabular-nums" />
               </li>)}
             </ol>
           )}

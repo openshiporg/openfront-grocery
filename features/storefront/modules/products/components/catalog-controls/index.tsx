@@ -72,7 +72,7 @@ export default function CatalogControls({ departments, activeDepartment, search 
         </form>
         <button type="button" onClick={() => sheet.current?.showModal()} aria-haspopup="dialog" className="relative inline-flex h-12 shrink-0 items-center gap-2 rounded-full px-4 text-sm font-semibold ring-1 ring-inset ring-[var(--sf-rule-strong)] lg:hidden">
           <SlidersHorizontal className="h-4 w-4" aria-hidden="true" /><span className="hidden sm:inline">Filters</span>
-          {refinements ? <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[var(--sf-accent)] px-1 text-[0.6875rem] font-bold text-[var(--sf-accent-ink)]" aria-label={`${refinements} filters applied`}>{refinements}</span> : null}
+          {refinements ? <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[var(--sf-accent)] px-1 text-xs font-bold text-[var(--sf-accent-ink)]" aria-label={`${refinements} filters applied`}>{refinements}</span> : null}
         </button>
       </div>
 

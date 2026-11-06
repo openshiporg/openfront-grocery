@@ -61,7 +61,7 @@ export function FinancialReportsClient({ data, statementTemplate }: { data: any;
     {summary && <section aria-label="Saved close totals" className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-semibold">Saved close totals</h2>
-        <span className="rounded-md border px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">{summary.currencyCode}</span>
+        <span className="rounded-md border px-1.5 py-0.5 font-mono text-xs text-muted-foreground">{summary.currencyCode}</span>
         <span className="text-xs text-muted-foreground">{summary.exceptions.length} unresolved exceptions · {summary.totals.unknownStockLots} lots with unknown historical opening quantity</span>
       </div>
       <PlatformMetricGrid metrics={[
@@ -89,7 +89,7 @@ export function FinancialReportsClient({ data, statementTemplate }: { data: any;
                   <td className={platformTable.td}><PlatformStatusBadge status={record.status} label={record.status === 'reconciled' ? 'Reconciled' : record.status === 'closed_with_exceptions' ? 'With exceptions' : record.status.replaceAll('_', ' ')} /></td>
                   <td className={`${platformTable.tdMuted} text-xs`}>
                     <p className="whitespace-nowrap tabular-nums">{formatInTimeZone(record.cutoff, record.timezone)}</p>
-                    {record.contentHash ? <p className="font-mono text-[11px]" title={record.contentHash}>sha {String(record.contentHash).slice(0, 12)}</p> : null}
+                    {record.contentHash ? <p className="font-mono text-xs" title={record.contentHash}>sha {String(record.contentHash).slice(0, 12)}</p> : null}
                   </td>
                   <td className={`${platformTable.td} text-right md:pr-5`}>
                     <button className={platformButton('secondary', 'sm')} disabled={busy} onClick={() => void run(async () => {
@@ -115,7 +115,7 @@ export function FinancialReportsClient({ data, statementTemplate }: { data: any;
               <div className="min-w-0">
                 <p className="flex flex-wrap items-baseline gap-x-2 text-sm"><span className="font-semibold tabular-nums">{formatMoney(entry.amountCents, entry.currencyCode)}</span><span className="truncate font-mono text-xs text-muted-foreground">{entry.statementReference} / {entry.entryReference}</span></p>
                 <p className="mt-0.5 text-xs text-destructive">{entry.reason}</p>
-                {entry.paymentReference || entry.payoutReference ? <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{entry.paymentReference ? `payment ${entry.paymentReference}` : ''}{entry.paymentReference && entry.payoutReference ? ' · ' : ''}{entry.payoutReference ? `payout ${entry.payoutReference}` : ''}</p> : null}
+                {entry.paymentReference || entry.payoutReference ? <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{entry.paymentReference ? `payment ${entry.paymentReference}` : ''}{entry.paymentReference && entry.payoutReference ? ' · ' : ''}{entry.payoutReference ? `payout ${entry.payoutReference}` : ''}</p> : null}
               </div>
               <PlatformField label="Review evidence"><input className={platformInput} name="reason" required minLength={8} placeholder="Local repair or review performed" /></PlatformField>
               <button className={platformButton('secondary', 'md')} disabled={busy}>Recheck matching</button>
@@ -151,7 +151,7 @@ export function FinancialReportsClient({ data, statementTemplate }: { data: any;
               <PlatformField label="Statement reference"><input className={platformInput} name="statementReference" required /></PlatformField>
             </div>
             <PlatformField label="Statement CSV"><textarea className={`${platformTextarea} min-h-28 font-mono text-xs`} name="csv" rows={5} required /></PlatformField>
-            <details className="group rounded-md border bg-muted/30 text-xs"><summary className="cursor-pointer px-3 py-2 font-medium">CSV format and example</summary><pre className="overflow-auto border-t px-3 py-2 font-mono text-[11px] leading-relaxed">{statementTemplate}</pre></details>
+            <details className="group rounded-md border bg-muted/30 text-xs"><summary className="cursor-pointer px-3 py-2 font-medium">CSV format and example</summary><pre className="overflow-auto border-t px-3 py-2 font-mono text-xs leading-relaxed">{statementTemplate}</pre></details>
             <button className={platformButton('primary', 'md', 'w-full')} disabled={busy}>Import and match statement</button>
           </form>
         </PlatformSurface>

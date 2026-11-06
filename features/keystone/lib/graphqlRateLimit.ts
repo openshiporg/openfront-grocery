@@ -6,8 +6,11 @@ import { verifiedInternalIdentity } from '../security/internalIdentity';
 
 type BucketRow = { requestCount: number };
 const WINDOW_MS = 60_000;
-const ANONYMOUS_QUERY_LIMIT = 120;
-const AUTHENTICATED_QUERY_LIMIT = 600;
+// One storefront page render runs ~8-10 reads (departments, coupons, slots, cart, products), so
+// 120/min let a shopper browsing quickly hit RATE_LIMITED, and every page 500'd, after ~15 pages.
+// Reads are bounded by depth/size rules; auth (8/min) and mutations keep their tight limits.
+const ANONYMOUS_QUERY_LIMIT = 900;
+const AUTHENTICATED_QUERY_LIMIT = 1800;
 const ANONYMOUS_MUTATION_LIMIT = 40;
 const AUTHENTICATED_MUTATION_LIMIT = 120;
 const AUTH_LIMIT = 8;

@@ -106,7 +106,7 @@ export function PlatformLinkButton({ href, children, variant = 'secondary', size
 
 export function PlatformChip({ children, icon: Icon, className = '' }: { children: ReactNode; icon?: LucideIcon; className?: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground ${className}`}>
+    <span className={`inline-flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium text-muted-foreground ${className}`}>
       {Icon ? <Icon className="size-3" aria-hidden="true" /> : null}
       {children}
     </span>
@@ -195,7 +195,7 @@ export function PlatformTabs({ tabs, active, path, params, param = 'filter', lab
           >
             {tab.label}
             {typeof tab.count === 'number' ? (
-              <span className={`min-w-5 rounded-full px-1.5 py-px text-center text-[11px] font-semibold tabular-nums ${tab.tone === 'attention' && tab.count > 0 ? 'bg-destructive/10 text-destructive' : selected ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground'}`}>{tab.count}</span>
+              <span className={`min-w-5 rounded-full px-1.5 py-px text-center text-xs font-semibold tabular-nums ${tab.tone === 'attention' && tab.count > 0 ? 'bg-destructive/10 text-destructive' : selected ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground'}`}>{tab.count}</span>
             ) : null}
           </Link>
         );
@@ -344,7 +344,7 @@ export function PlatformCellLabel({ children }: { children: ReactNode }) {
  * `static` drops the chevron gutter for plain (non-expandable) rows.
  */
 export function PlatformListHeader({ className, children, static: plain = false }: { className: string; children: ReactNode; static?: boolean }) {
-  return <div aria-hidden="true" className={`hidden items-center gap-3 border-b bg-muted/30 py-2 pl-4 text-[11px] font-medium tracking-wide text-muted-foreground uppercase md:pl-5 ${plain ? 'pr-4 md:pr-5' : 'pr-11 md:pr-12'} ${className}`}>{children}</div>;
+  return <div aria-hidden="true" className={`hidden items-center gap-3 border-b bg-muted/30 py-2 pl-4 text-xs font-medium tracking-wide text-muted-foreground uppercase md:pl-5 ${plain ? 'pr-4 md:pr-5' : 'pr-11 md:pr-12'} ${className}`}>{children}</div>;
 }
 
 export function PlatformFacts({ items, columns = 3, className = '' }: { items: Array<{ label: ReactNode; value: ReactNode; mono?: boolean; wide?: boolean }>; columns?: 2 | 3 | 4; className?: string }) {

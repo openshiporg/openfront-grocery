@@ -203,7 +203,7 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
                     >
                       <CalendarClock className="size-3.5" aria-hidden="true" />
                       {day === 'Unscheduled' ? day : formatCalendarDate(day)} · <span className="capitalize">{window.replaceAll('_', ' ')}</span>
-                      <span className={`rounded-full px-1.5 text-[11px] tabular-nums ${active ? 'bg-background/20' : 'bg-muted'}`}>{group.orders.length}</span>
+                      <span className={`rounded-full px-1.5 text-xs tabular-nums ${active ? 'bg-background/20' : 'bg-muted'}`}>{group.orders.length}</span>
                     </button>
                   );
                 })}

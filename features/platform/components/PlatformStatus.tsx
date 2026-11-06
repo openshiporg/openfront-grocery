@@ -10,7 +10,7 @@ const badgeTones: Record<BadgeTone, string> = {
   neutral: 'bg-muted text-muted-foreground ring-border',
   info: 'bg-blue-500/10 text-blue-700 ring-blue-600/20 dark:text-blue-300 dark:ring-blue-400/25',
   progress: 'bg-amber-500/10 text-amber-800 ring-amber-600/25 dark:text-amber-300 dark:ring-amber-400/25',
-  accent: 'bg-violet-500/10 text-violet-700 ring-violet-600/20 dark:text-violet-300 dark:ring-violet-400/25',
+  accent: 'bg-teal-500/10 text-teal-700 ring-teal-600/20 dark:text-teal-300 dark:ring-teal-400/25',
   teal: 'bg-cyan-500/10 text-cyan-800 ring-cyan-600/20 dark:text-cyan-300 dark:ring-cyan-400/25',
   success: 'bg-emerald-500/10 text-emerald-700 ring-emerald-600/20 dark:text-emerald-300 dark:ring-emerald-400/25',
   warning: 'bg-orange-500/10 text-orange-800 ring-orange-600/25 dark:text-orange-300 dark:ring-orange-400/25',

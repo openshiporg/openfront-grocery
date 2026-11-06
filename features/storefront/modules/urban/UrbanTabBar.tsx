@@ -33,7 +33,7 @@ export default function UrbanTabBar() {
         <Link prefetch={false} href="/cart" aria-current={cartActive ? 'page' : undefined} aria-label={loaded ? `Cart, ${count} ${count === 1 ? 'item' : 'items'}` : 'Cart'}>
           <span className="relative">
             <ShoppingCart className="h-6 w-6" aria-hidden="true" />
-            {loaded && count ? <span key={count} aria-hidden="true" className="sf-bump absolute -right-2.5 -top-1.5 grid h-[1.125rem] min-w-[1.125rem] place-items-center rounded-full bg-[var(--sf-accent)] px-1 text-[0.625rem] font-bold tabular-nums text-[var(--sf-accent-ink)]">{count > 99 ? '99+' : count}</span> : null}
+            {loaded && count ? <span key={count} aria-hidden="true" className="sf-bump absolute -right-2.5 -top-1.5 grid h-[1.125rem] min-w-[1.125rem] place-items-center rounded-full bg-[var(--sf-accent)] px-1 text-xs font-bold tabular-nums text-[var(--sf-accent-ink)]">{count > 99 ? '99+' : count}</span> : null}
           </span>
           <span aria-hidden="true">Cart</span>
         </Link>

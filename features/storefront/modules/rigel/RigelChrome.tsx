@@ -105,7 +105,7 @@ export function RigelSidebar({ departments }: { departments: Array<{ id: string;
       ) : null}
       <RigelModeToggle />
       <nav aria-label="Departments">
-        <p className="mb-1.5 px-1 text-[0.6875rem] font-medium uppercase tracking-[0.02em] text-[var(--sf-ink-muted)]">Departments</p>
+        <p className="mb-1.5 px-1 text-xs font-medium uppercase tracking-[0.02em] text-[var(--sf-ink-muted)]">Departments</p>
         <ul className="-mx-4 grid gap-0.5">
           {departments.map((department) => {
             const href = `/departments/${department.handle}`;
@@ -163,7 +163,7 @@ function RailLine({ item }: { item: GroceryCartItem }) {
       <div className="min-w-0 pt-0.5">
         <Link prefetch={false} href={`/products/${item.product.handle}`} className="line-clamp-2 text-[0.8125rem] font-medium leading-[1.15rem] hover:underline">{item.product.name}</Link>
         {unit ? <p className="text-[0.75rem] text-[var(--sf-ink-muted)]">{unit}</p> : null}
-        {!item.product.inStock ? <p className="text-[0.6875rem] font-semibold text-[var(--sf-danger)]">Unavailable — review in cart</p> : null}
+        {!item.product.inStock ? <p className="text-xs font-semibold text-[var(--sf-danger)]">Unavailable — review in cart</p> : null}
       </div>
       <span className="mt-2 grid h-6 min-w-7 place-items-center rounded-[6px] border border-[var(--sf-rule)] px-1 text-[0.75rem] tabular-nums" aria-label={`Quantity ${item.quantity}`}>x{item.quantity}</span>
       <div className="flex flex-col items-end pt-0.5">
@@ -250,7 +250,7 @@ export function RigelCartRail() {
           ) : (
             <Link prefetch={false} href={checkoutHref} className="flex min-h-14 items-center gap-3 rounded-full bg-[var(--sf-header)] pl-6 pr-5 text-[var(--sf-header-ink)] shadow-[var(--sf-shadow-2)] transition-colors hover:bg-[var(--sf-header-2)]">
               <span className="flex-1 text-[1.0625rem] font-medium">Checkout</span>
-              <span className="text-right leading-tight"><span className="block text-[1.0625rem] font-medium tabular-nums">{formatMoney(cart?.subtotal)}</span><span className="block text-[0.6875rem] text-[var(--sf-header-ink-muted)]">Est. taxes &amp; fees</span></span>
+              <span className="text-right leading-tight"><span className="block text-[1.0625rem] font-medium tabular-nums">{formatMoney(cart?.subtotal)}</span><span className="block text-xs text-[var(--sf-header-ink-muted)]">Est. taxes &amp; fees</span></span>
               <ArrowRight className="h-5 w-5" aria-hidden="true" />
             </Link>
           )}

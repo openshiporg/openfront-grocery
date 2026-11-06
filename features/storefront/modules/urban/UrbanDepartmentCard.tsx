@@ -17,7 +17,7 @@ export default function UrbanDepartmentCard({ department, size = 'md', loading =
     ) : (
       <DepartmentIcon department={department} className="absolute left-1/2 top-[38%] -z-10 h-14 w-14 -translate-x-1/2 -translate-y-1/2 text-[var(--sf-ink-faint)]" />
     )}
-    {zone ? <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-[var(--sf-card)] px-2 py-0.5 text-[0.6875rem] font-semibold text-[var(--sf-info)]"><zone.Icon className="h-3 w-3" aria-hidden="true" />{zone.label}</span> : null}
+    {zone ? <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-[var(--sf-card)] px-2 py-0.5 text-xs font-semibold text-[var(--sf-info)]"><zone.Icon className="h-3 w-3" aria-hidden="true" />{zone.label}</span> : null}
     <span className="m-2 flex min-h-11 items-center justify-between gap-2 rounded-[14px] bg-[var(--sf-card)]/95 px-4 py-2 shadow-[var(--sf-shadow-1)] backdrop-blur-sm transition-colors group-hover:bg-[var(--sf-card)] sm:m-2.5">
       <span className="min-w-0">
         <span className={`block truncate font-normal text-[var(--sf-ink)] ${size === 'lg' ? 'text-[1.25rem]' : 'text-[1.0625rem] sm:text-[1.25rem]'}`}>{department.name}</span>

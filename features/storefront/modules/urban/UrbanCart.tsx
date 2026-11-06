@@ -184,7 +184,7 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
       </aside>
       <div className="sf-action-bar lg:hidden">
         <div className="flex items-center gap-3 rounded-full bg-[var(--sf-ink)] p-1.5 pl-5 text-[var(--sf-paper)] shadow-[var(--sf-shadow-3)]">
-          <div className="min-w-0 flex-1"><p className="text-[0.6875rem] text-[var(--sf-header-ink-muted)]">Estimated total</p><p className="font-[family-name:var(--sf-font-display)] text-lg font-bold leading-tight tabular-nums">{formatMoney(currentCart.total)}</p></div>
+          <div className="min-w-0 flex-1"><p className="text-xs text-[var(--sf-header-ink-muted)]">Estimated total</p><p className="font-[family-name:var(--sf-font-display)] text-lg font-bold leading-tight tabular-nums">{formatMoney(currentCart.total)}</p></div>
           {isMutating || requiresRemediation ? <span className="inline-flex min-h-11 items-center rounded-full bg-[var(--sf-header-2)] px-4 text-sm font-semibold text-[var(--sf-header-ink-muted)]">{isMutating ? 'Updating…' : 'Resolve items'}</span> : <Link href="/checkout" className="inline-flex min-h-11 items-center gap-1.5 rounded-full bg-[var(--sf-accent)] px-5 text-sm font-semibold text-[var(--sf-accent-ink)]">Checkout <ArrowRight className="h-4 w-4" aria-hidden="true" /></Link>}
         </div>
       </div>

@@ -46,10 +46,10 @@ export function UrbanSlotPicker({
               onClick={() => setActiveDate(day.date)}
               className={`relative flex w-[4.75rem] flex-col items-center rounded-[var(--sf-radius-md)] border px-2 pb-2.5 pt-2 text-center transition-[background-color,border-color,color] duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] ${current ? 'border-[var(--sf-ink)] bg-[var(--sf-ink)] text-[var(--sf-paper)]' : 'border-[var(--sf-rule)] bg-[var(--sf-card)] hover:border-[var(--sf-ink-faint)]'}`}
             >
-              <span className={`text-[0.6875rem] font-semibold ${current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{date.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+              <span className={`text-xs font-semibold ${current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{date.toLocaleDateString('en-US', { weekday: 'short' })}</span>
               <span className="font-[family-name:var(--sf-font-display)] text-[1.6rem] font-bold leading-none tabular-nums tracking-[-0.03em]">{date.getDate()}</span>
-              <span className={`mt-0.5 text-[0.6875rem] ${current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{date.toLocaleDateString('en-US', { month: 'short' })}</span>
-              <span className={`mt-1.5 rounded-full px-1.5 text-[0.625rem] font-bold ${day.open ? (current ? 'bg-[var(--sf-tag)] text-[var(--sf-tag-ink)]' : 'bg-[var(--sf-sage-light)] text-[var(--sf-sage)]') : current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{day.open ? `${day.open} open` : 'Full'}</span>
+              <span className={`mt-0.5 text-xs ${current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{date.toLocaleDateString('en-US', { month: 'short' })}</span>
+              <span className={`mt-1.5 rounded-full px-1.5 text-xs font-bold ${day.open ? (current ? 'bg-[var(--sf-tag)] text-[var(--sf-tag-ink)]' : 'bg-[var(--sf-sage-light)] text-[var(--sf-sage)]') : current ? 'text-[var(--sf-header-ink-muted)]' : 'text-[var(--sf-ink-faint)]'}`}>{day.open ? `${day.open} open` : 'Full'}</span>
               {holdsSelection && !current ? <span aria-label="Your selected time is on this day" className="absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-[var(--sf-card)] bg-[var(--sf-accent)]" /> : null}
             </button>
           );

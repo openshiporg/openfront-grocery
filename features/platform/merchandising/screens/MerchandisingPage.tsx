@@ -108,7 +108,7 @@ export async function MerchandisingPage({ searchParams }: { searchParams?: Promi
           <div className={`grid ${showDepartments && showCoupons ? 'xl:grid-cols-2 xl:divide-x' : ''}`}>
             {showDepartments ? (
               <section aria-label="Departments" className="min-w-0">
-                <h3 className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase md:px-5"><LayoutGrid className="size-3.5" aria-hidden="true" />Departments <span className="tabular-nums">· {data?.pagination.collections.departments?.total ?? departments.length}</span></h3>
+                <h3 className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase md:px-5"><LayoutGrid className="size-3.5" aria-hidden="true" />Departments <span className="tabular-nums">· {data?.pagination.collections.departments?.total ?? departments.length}</span></h3>
                 {departments.length === 0 ? <PlatformEmptyState compact icon={LayoutGrid} title="No matching departments" description="Reset the current filters." /> : (
                   <div className="divide-y">
                     {departments.map((department) => (
@@ -134,7 +134,7 @@ export async function MerchandisingPage({ searchParams }: { searchParams?: Promi
             ) : null}
             {showCoupons ? (
               <section aria-label="Coupons" className="min-w-0 border-t xl:border-t-0">
-                <h3 className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase md:px-5"><TicketPercent className="size-3.5" aria-hidden="true" />Coupons <span className="tabular-nums">· {data?.pagination.collections.coupons?.total ?? coupons.length}</span></h3>
+                <h3 className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2 text-xs font-medium tracking-wide text-muted-foreground uppercase md:px-5"><TicketPercent className="size-3.5" aria-hidden="true" />Coupons <span className="tabular-nums">· {data?.pagination.collections.coupons?.total ?? coupons.length}</span></h3>
                 {coupons.length === 0 ? <PlatformEmptyState compact icon={TicketPercent} title="No matching coupons" description="Reset the current filters." /> : (
                   <div className="divide-y">
                     {coupons.map((coupon) => {

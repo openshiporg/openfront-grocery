@@ -83,9 +83,9 @@ export function PickupCheckInPanel({
           {parkingSpots.map((spot) => (
             <label key={spot.id} className={tile} title={spot.description || undefined}>
               <input type="radio" name={`${fieldId}-spot`} value={spot.id} checked={parkingSpotId === spot.id} onChange={() => setParkingSpotId(spot.id)} className="sr-only" />
-              <span className="text-[0.625rem] font-semibold text-[var(--sf-ink-faint)]">Bay</span>
+              <span className="text-xs font-semibold text-[var(--sf-ink-faint)]">Bay</span>
               <span className="font-[family-name:var(--sf-font-display)] text-[1.6rem] font-bold leading-none tabular-nums tracking-[-0.03em] text-[var(--sf-ink)]">{spot.spotNumber}</span>
-              {spot.isAccessible ? <span className="inline-flex items-center gap-0.5 text-[0.625rem] font-semibold text-[var(--sf-info)]"><Accessibility className="h-3 w-3" aria-hidden="true" />Accessible</span> : null}
+              {spot.isAccessible ? <span className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--sf-info)]"><Accessibility className="h-3 w-3" aria-hidden="true" />Accessible</span> : null}
               <span className="sr-only">{spot.isAccessible ? ', accessible bay' : ''}{spot.description ? `, ${spot.description}` : ''}</span>
             </label>
           ))}

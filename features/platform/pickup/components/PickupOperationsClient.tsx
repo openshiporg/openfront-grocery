@@ -128,7 +128,7 @@ export default function PickupOperationsClient({ slots, parkingSpots, occupiedSp
                       <p className="truncate text-sm text-muted-foreground">{order.email}</p>
                     </div>
                     <div className="grid min-w-16 place-items-center rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-center ring-1 ring-amber-500/25 ring-inset">
-                      <span className="text-[10px] font-medium tracking-wide text-amber-800 uppercase dark:text-amber-300">Spot</span>
+                      <span className="text-xs font-medium tracking-wide text-amber-800 uppercase dark:text-amber-300">Spot</span>
                       <span className="text-lg leading-none font-bold tabular-nums">{metadata.parkingSpotNumber || '—'}</span>
                     </div>
                   </div>
