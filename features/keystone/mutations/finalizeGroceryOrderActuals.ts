@@ -14,7 +14,7 @@ import { adjustmentFingerprint } from './authorizeOrderAdjustment';
 import { noChargeOrderPaymentState } from '../lib/checkoutIdentity';
 
 function cents(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error('Settlement requires nonnegative integer minor units');
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error('Settlement amounts must be zero or more, in whole cents');
   return value;
 }
 function decimalHundredths(value: unknown) {

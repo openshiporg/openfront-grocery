@@ -3,7 +3,7 @@ import { quantityMilli } from './inventoryMovements';
 export function supplierAmountCents(value: unknown, label = 'Amount') {
   if (value == null || value === '') throw new Error(`${label} is required`);
   const cents = Number(value);
-  if (!Number.isSafeInteger(cents) || cents < 0 || cents > 2147483647) throw new Error(`${label} must be a non-negative integer amount in minor units`);
+  if (!Number.isSafeInteger(cents) || cents < 0 || cents > 2147483647) throw new Error(`${label} must be zero or more, in whole cents`);
   return cents;
 }
 

@@ -1,7 +1,7 @@
 import { publicError } from './publicError';
 import { quantityMilli } from './inventoryMovements';
 
-const integer = (value: unknown, label: string) => { const amount = Number(value); if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw publicError(`${label} must be non-negative integer minor units`); return amount; };
+const integer = (value: unknown, label: string) => { const amount = Number(value); if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw publicError(`${label} must be zero or more, in whole cents`); return amount; };
 export type RefundLineInput = { lineItemId: string; quantityMilli: number; disposition: string; conditionNote?: string; returnedLots?: Array<{ lotId: string; quantityMilli: number }> };
 function cumulativeShare(total: number, quantity: number, basis: number) { return Number((BigInt(total) * BigInt(quantity) + BigInt(Math.floor(basis / 2))) / BigInt(basis)); }
 

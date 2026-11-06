@@ -2,7 +2,7 @@ import { normalizeTaxRateBps } from './storeMoney';
 
 export type CommercialLine = { id: string; subtotalCents: number; taxRateBasisPoints: number; discountEligible?: boolean };
 function cents(value: number) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error('Money must be nonnegative integer minor units');
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error('Amounts must be zero or more, in whole cents');
   return value;
 }
 /** Largest-remainder allocation, with stable identity ties; no lost discount pennies. */

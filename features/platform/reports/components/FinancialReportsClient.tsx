@@ -137,7 +137,7 @@ export function FinancialReportsClient({ data, statementTemplate }: { data: any;
           </form>
         </PlatformSurface>
 
-        <PlatformSurface icon={Upload} title="Import statement" description="CSV with amounts in minor units (cents). Importing only matches entries to payments; it never charges or refunds.">
+        <PlatformSurface icon={Upload} title="Import statement" description="Paste the statement exactly as the provider exports it; its amounts are in cents. Importing only matches entries to payments; it never charges or refunds.">
           <form className="space-y-3 p-4 md:p-5" onSubmit={event => {
             event.preventDefault(); const form = new FormData(event.currentTarget);
             void run(async () => {
