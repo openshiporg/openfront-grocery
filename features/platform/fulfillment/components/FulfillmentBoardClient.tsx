@@ -418,7 +418,7 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, laneTotal
         data-pending={isPending}
         data-settling={ghost ? drag?.settling : undefined}
         aria-grabbed={!ghost && drag?.order.id === order.id}
-        aria-label={ghost ? undefined : `Order #${order.displayId}, ${laneLabels[lane]}, ${order.lineItems.length} lines, ${fulfillmentMethod(order)}`}
+        aria-label={ghost ? undefined : `Order #${order.displayId}, ${laneLabels[lane]}, ${order.lineItems.length} ${order.lineItems.length === 1 ? 'line' : 'lines'}, ${fulfillmentMethod(order)}`}
         aria-busy={isPending || undefined}
         tabIndex={ghost ? -1 : 0}
         onPointerDown={ghost ? undefined : (event) => beginDrag(order, lane, event)}
@@ -442,7 +442,7 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, laneTotal
         <footer className={styles.cardFooter}>
           <span className={styles.meta} data-tone={hasReview ? 'review' : undefined} title={formatSubstitutionPreference(order.substitutionPreference)}>
             {hasReview ? <Clock3 aria-hidden="true" /> : <Check aria-hidden="true" />}
-            {order.lineItems.length} lines{hasReview ? ' · review' : ''}
+            {order.lineItems.length} {order.lineItems.length === 1 ? 'line' : 'lines'}{hasReview ? ' · review' : ''}
           </span>
           <span className={styles.meta}>{formatFulfillmentPromise(order, timeZone, 'No window')}</span>
           {!ghost ? (
@@ -565,7 +565,7 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, laneTotal
               </div>
             </header>
             <div className={styles.lineList}>
-              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><ListChecks className="size-3.5" aria-hidden="true" />{selectedOrder.lineItems.length} lines to resolve</p>
+              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><ListChecks className="size-3.5" aria-hidden="true" />{selectedOrder.lineItems.length} {selectedOrder.lineItems.length === 1 ? 'line' : 'lines'} to resolve</p>
               {selectedOrder.lineItems.map((item) => {
                 const existing = substitutionMap.get(item.id);
                 const proposal = ((selectedOrder.metadata?.substitutionProposals as Record<string, SubstitutionProposalView> | undefined) || {})[item.id] || null;

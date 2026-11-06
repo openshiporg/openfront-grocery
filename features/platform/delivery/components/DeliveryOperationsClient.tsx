@@ -225,7 +225,7 @@ export default function DeliveryOperationsClient({ slots, routes, readyOrders, d
                       <input type="checkbox" className={platformCheckbox} checked={selectedOrderIds.includes(order.id)} onChange={() => toggleOrder(order.id)} />
                       <span className="font-semibold tabular-nums">#{order.displayId}</span>
                       <span className="min-w-0 flex-1 truncate text-muted-foreground">{order.email}</span>
-                      <span className="text-xs text-muted-foreground tabular-nums">{order.lineItems?.length || 0} lines</span>
+                      <span className="text-xs text-muted-foreground tabular-nums">{order.lineItems?.length || 0} {order.lineItems?.length === 1 ? 'line' : 'lines'}</span>
                     </label>
                   ))}
                 </div>

@@ -178,7 +178,7 @@ function OrderRow({ order, timeZone, canRefund }: { order: GroceryPlatformOrder;
             <p className="truncate text-xs text-muted-foreground">{formatFulfillmentPromise(order, timeZone)}</p>
           </div>
           <div className="flex items-center gap-3 text-xs text-muted-foreground md:block md:text-right">
-            <span className="text-sm font-medium text-foreground tabular-nums">{order.lineItems.length}<span className="font-normal text-muted-foreground md:hidden"> lines</span></span>
+            <span className="text-sm font-medium text-foreground tabular-nums">{order.lineItems.length}<span className="font-normal text-muted-foreground md:hidden"> {order.lineItems.length === 1 ? 'line' : 'lines'}</span></span>
             {flaggedLines ? <span className="block text-amber-700 dark:text-amber-400">{flaggedLines} flagged</span> : null}
           </div>
           <div className="hidden text-right md:block">

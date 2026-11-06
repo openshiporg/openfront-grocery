@@ -135,7 +135,7 @@ export async function PurchasingPage({ searchParams }: { searchParams?: Promise<
                       <div className={`grid gap-1.5 ${rowGrid}`}>
                         <div className="min-w-0">
                           <p className="font-mono text-sm font-semibold">{order.poNumber}</p>
-                          <p className="truncate text-xs text-muted-foreground">{order.supplier?.name || 'Supplier unavailable'} · {order.items.length} lines · ordered {<ViewerTime value={order.orderDate} style="date" />}</p>
+                          <p className="truncate text-xs text-muted-foreground">{order.supplier?.name || 'Supplier unavailable'} · {order.items.length} {order.items.length === 1 ? 'line' : 'lines'} · ordered {<ViewerTime value={order.orderDate} style="date" />}</p>
                         </div>
                         <div><PlatformCellLabel>Status</PlatformCellLabel><PlatformStatusBadge status={order.status} label={order.status === 'confirmed' ? 'Receiving' : undefined} /></div>
                         <p className={`text-xs ${dueSoon ? 'font-medium text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}><PlatformCellLabel>Expected</PlatformCellLabel>{dueSoon ? 'Due soon · ' : ''}{<ViewerTime value={order.expectedDeliveryDate} style="date" fallback='No ETA' />}</p>
