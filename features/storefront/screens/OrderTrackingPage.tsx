@@ -85,7 +85,7 @@ export async function OrderTrackingPage(props: Props) {
 
     <section aria-labelledby="order-progress" className={`rounded-[28px] p-6 sm:p-8 ${exception ? 'bg-[var(--sf-danger-bg)]' : 'sf-dark'}`}>
       <h2 id="order-progress" className="sf-subtitle">{exception ? 'An update on your order' : pickup && order.status === 'ready_for_pickup' ? 'See you at the shop.' : 'From our shelves to you.'}</h2>
-      <p className={`mt-2 max-w-2xl text-[0.9375rem] leading-7 ${exception ? 'text-[var(--sf-ink-muted)]' : 'text-[var(--sf-header-ink-muted)]'}`}>{statusCopy[order.status]}</p>
+      <p className={`mt-2 max-w-2xl text-[0.9375rem] leading-7 ${exception ? 'text-[var(--sf-ink-muted)]' : 'text-[var(--sf-header-ink-muted)]'}`}>{order.status === 'cancelled' && order.cancelled_by_customer ? 'You cancelled this order before shopping started. The card hold was released, so you were not charged.' : statusCopy[order.status]}</p>
       {!exception ? (
         <ol aria-label="Order progress" className="mt-7 grid gap-4 sm:grid-cols-4 sm:gap-0">
           {stages.map((stage, index) => {

@@ -122,6 +122,8 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
     shipping_total: shippingTotal,
     discount_total: discountTotal,
     tip_total: tipTotal,
+    // Self-cancel releases the card hold in the same step (cancelMyGroceryOrder), so the guest can be told.
+    cancelled_by_customer: typeof order.metadata?.cancellation?.idempotencyKey === 'string' && order.metadata.cancellation.idempotencyKey.startsWith('customer-cancel:'),
     total,
     shippingAddress: metadata.shippingAddressSnapshot || order.shippingAddress,
     fulfillmentMethod,

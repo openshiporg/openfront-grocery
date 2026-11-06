@@ -97,6 +97,7 @@ export interface GroceryOrder {
   discount_total: number;
   /** Delivery driver tip chosen at checkout, in cents. */
   tip_total?: number;
+  cancelled_by_customer?: boolean;
   total: number;
   shippingAddress?: ShippingAddress;
   fulfillmentMethod?: 'delivery' | 'pickup';
