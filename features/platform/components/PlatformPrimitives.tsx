@@ -195,7 +195,7 @@ export function PlatformTabs({ tabs, active, path, params, param = 'filter', lab
           >
             {tab.label}
             {typeof tab.count === 'number' ? (
-              <span className={`min-w-5 rounded-full px-1.5 py-px text-center text-xs font-semibold tabular-nums ${tab.tone === 'attention' && tab.count > 0 ? 'bg-destructive/10 text-destructive' : selected ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground'}`}>{tab.count}</span>
+              <span className={`min-w-5 text-center text-xs font-semibold tabular-nums ${tab.tone === 'attention' && tab.count > 0 ? 'rounded-full bg-destructive/10 px-1.5 py-px text-destructive' : selected ? 'text-foreground' : 'text-muted-foreground'}`}>{tab.count}</span>
             ) : null}
           </Link>
         );
