@@ -1,4 +1,5 @@
 import { deliverOrderConfirmationNow } from '../lib/orderConfirmationDelivery';
+import { normalizeDeliveryTipCents } from '../lib/deliveryTip';
 import { checkoutRequestFingerprint, checkoutCartFingerprint, assertCheckoutAttemptIdentity, noChargeCheckoutState } from '../lib/checkoutIdentity';
 import {requireSessionStore} from "../lib/storeScope";
 import { validateLoyaltyCoupon, markLoyaltyRedemptionUsed } from "../lib/loyaltyAccounting";
@@ -55,6 +56,8 @@ export type SubmitOrderData = {
   deliverySlotId?: string | null;
   pickupSlotId?: string | null;
   deliveryFee: number;
+  /** Optional delivery driver tip in cents, chosen at checkout; part of the authorized total. */
+  tipCents?: number;
   expectedTotal: number;
   substitutionPreference: string;
   deliveryInstructions?: string | null;
@@ -410,7 +413,7 @@ function fulfillmentWindow(startTime: string) {
   return 'time_18_20';
 }
 
-function calculateTotals(cart: any, deliverySlot: any, fulfillmentMethod: 'delivery' | 'pickup', taxRateBps: number, discount = 0, coupon: any = null, feeTaxRateBasisPoints = 0) {
+function calculateTotals(cart: any, deliverySlot: any, fulfillmentMethod: 'delivery' | 'pickup', taxRateBps: number, discount = 0, coupon: any = null, feeTaxRateBasisPoints = 0, tipCents = 0) {
   const subtotalCents = cart.items.reduce(
     (sum: number, item: any) => sum + Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity,
     0,
@@ -426,8 +429,9 @@ function calculateTotals(cart: any, deliverySlot: any, fulfillmentMethod: 'deliv
   })), discountCents, feeCents, feeTaxRateBasisPoints);
   const taxCents = commercial.taxCents;
   const deliveryFeeCents = fulfillmentMethod === 'delivery' ? Number(deliverySlot?.deliveryFee || 0) : 0;
-  const totalCents = Math.max(0, subtotalCents + taxCents + deliveryFeeCents - discountCents);
+  const totalCents = Math.max(0, subtotalCents + taxCents + deliveryFeeCents - discountCents) + tipCents;
   return {
+    ...(tipCents ? { tipCents } : {}),
     commercialLines: commercial.lines,
     subtotal: subtotalCents / 100,
     subtotalCents,
@@ -529,7 +533,8 @@ export async function commitGroceryOrder(
     const goodsCents = cart.items.reduce((sum: number, item: any) => sum + Number(item.product.priceCents) * item.quantity, 0);
     const service = evaluateDeliveryPolicy(storeSettings.deliveryPolicy, fulfillmentMethod, data.deliveryAddress.postalCode, goodsCents - Math.round(discount * 100));
     const pricedSlot = deliverySlot ? { ...deliverySlot, deliveryFee: Number(deliverySlot.deliveryFee || 0) + service.feeCents } : null;
-    const totals = calculateTotals(cart, pricedSlot, fulfillmentMethod, taxRateBps, discount, coupon, service.feeTaxRateBasisPoints);
+    const tipCents = normalizeDeliveryTipCents(data.tipCents, fulfillmentMethod);
+    const totals = calculateTotals(cart, pricedSlot, fulfillmentMethod, taxRateBps, discount, coupon, service.feeTaxRateBasisPoints, tipCents);
     if (Math.round(Number(data.expectedTotal) * 100) !== totals.totalCents) {
       throw new Error('Order total changed before checkout. Please review your cart and fulfillment slot.');
     }
@@ -743,7 +748,8 @@ export async function commitGroceryOrder(
         store: { connect: { id: storeId } },
         amount: totals.orderTotal.toFixed(2),
         amountCents: totals.totalCents,
-        deliveryTipCents: 0,
+        deliveryTipCents: totals.tipCents || 0,
+        deliveryTipAmount: ((totals.tipCents || 0) / 100).toFixed(2),
         status: ['requires_capture', 'authorized'].includes(settledPayment.status) ? 'authorized' : 'succeeded',
         paymentMethod: 'credit_card',
         providerPaymentId,

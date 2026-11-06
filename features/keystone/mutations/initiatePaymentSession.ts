@@ -20,6 +20,7 @@ import { assertSellableQuantity } from '../lib/sellableInventory';
 import { checkoutContactProblem } from '../../lib/checkoutContact';
 import { findStoreCouponByCode } from '../lib/couponLookup';
 import { publicError } from '../lib/publicError';
+import { normalizeDeliveryTipCents } from '../lib/deliveryTip';
 import { getStoreTaxRateBps } from '../lib/storeMoney';
 import { isLiveFulfillmentSlot } from '../lib/storeTime';
 import { ensureCheckoutAttempt, type SubmitOrderData } from './submitGroceryOrder';
@@ -29,6 +30,7 @@ type CheckoutRecoveryInput = {
   deliveryAddress: SubmitOrderData['deliveryAddress'];
   substitutionPreference: string;
   deliveryInstructions?: string | null;
+  tipCents?: number | null;
 };
 
 function fulfillmentWindow(startTime: string) {
@@ -113,6 +115,7 @@ export async function initiatePaymentSessionWithDependencies(
   if (!['call_me', 'best_match', 'refund'].includes(recovery.substitutionPreference)) {
     throw publicError('Choose what to do if an item is unavailable.', 'CHECKOUT_DETAILS');
   }
+  const tipCents = normalizeDeliveryTipCents(recovery.tipCents, requestedFulfillmentMethod);
 
   const cart = await sudoContext.query.Cart.findOne({
     where: { id: cartId },
@@ -259,11 +262,12 @@ export async function initiatePaymentSessionWithDependencies(
   })), discountCents, Math.round(deliveryFeeDollars * 100), service.feeTaxRateBasisPoints);
   const taxCents = commercial.taxCents;
   const taxDollars = taxCents / 100;
-  const amountInCents = Math.max(0, subtotalCents + taxCents + Math.round(deliveryFeeDollars * 100) - discountCents);
+  // The tip is untaxed, never discounted, and goes to the driver in full.
+  const amountInCents = Math.max(0, subtotalCents + taxCents + Math.round(deliveryFeeDollars * 100) - discountCents) + tipCents;
   const totalDollars = amountInCents / 100;
   const slotKey = pickupSlotId ? `pickup:${pickupSlotId}` : `delivery:${deliverySlotId || 'no-slot'}`;
   const couponIdentity = couponSnapshot ? `${couponSnapshot.id}:${couponSnapshot.code}` : 'none';
-  let idempotencyKey = `${cart.id}:${provider.code}:${slotKey}:coupon:${couponIdentity}:amount:${amountInCents}`;
+  let idempotencyKey = `${cart.id}:${provider.code}:${slotKey}:coupon:${couponIdentity}:amount:${amountInCents}${tipCents ? `:tip:${tipCents}` : ''}`;
 
   const sessionSelection = `
     id
@@ -298,6 +302,7 @@ export async function initiatePaymentSessionWithDependencies(
     couponCode: couponCode?.trim().toUpperCase() || null,
     coupon: couponSnapshot,
     discount: discountDollars,
+    ...(tipCents ? { tipCents } : {}),
     currency: 'usd',
     ...(restartSource ? {
       checkoutRestartOfPaymentSessionId: restartSource.paymentSessionId,
@@ -318,6 +323,7 @@ export async function initiatePaymentSessionWithDependencies(
     deliverySlotId: deliverySlotId || undefined,
     pickupSlotId: pickupSlotId || undefined,
     deliveryFee: deliveryFeeDollars,
+    ...(tipCents ? { tipCents } : {}),
     expectedTotal: totalDollars,
     substitutionPreference: recovery.substitutionPreference,
     deliveryInstructions: recovery.deliveryInstructions?.trim() || undefined,

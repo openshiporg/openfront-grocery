@@ -42,9 +42,14 @@ export function priceActualSale(order: any, actuals: any[]) {
     else throw new Error('Unsupported coupon type');
     discountCents = Math.min(eligibleCents, discountCents);
   }
-  const feeCents = actuals.some(line => line.quantityMilli > 0) ? cents(order.deliveryFeeCents || 0) : 0;
-  return priceCommercialLines(actuals.map(line => ({ id: line.lineItemId, subtotalCents: line.subtotalCents, taxRateBasisPoints: line.taxRateBasisPoints,
+  const anyPicked = actuals.some(line => line.quantityMilli > 0);
+  const feeCents = anyPicked ? cents(order.deliveryFeeCents || 0) : 0;
+  const priced = priceCommercialLines(actuals.map(line => ({ id: line.lineItemId, subtotalCents: line.subtotalCents, taxRateBasisPoints: line.taxRateBasisPoints,
     discountEligible: isCouponLineEligible({ id: line.productId, department: line.evidence?.department, departmentHandle: line.evidence?.departmentHandle }, coupon) })), discountCents, feeCents, Number(order.metadata?.deliveryPolicySnapshot?.feeTaxRateBasisPoints || 0));
+  // The checkout tip rides on the final sale unchanged (untaxed, undiscounted); nothing picked means no tip.
+  // Only present when tipped, so untipped snapshots and their hashes are unchanged.
+  const tipCents = anyPicked ? cents(order.metadata?.tipCents || 0) : 0;
+  return tipCents ? { ...priced, tipCents, totalCents: cents(priced.totalCents + tipCents) } : priced;
 }
 function canonical(value: any): any {
   if (value instanceof Date) return value.toISOString();

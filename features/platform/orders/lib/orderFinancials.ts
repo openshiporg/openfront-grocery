@@ -6,6 +6,7 @@ type PickedSale = {
   discountCents: number;
   taxCents: number;
   feeCents: number;
+  tipCents?: number;
   totalCents: number;
   actuals: unknown[];
 };
@@ -26,6 +27,7 @@ export function orderFinancialDisplay(order: GroceryPlatformOrder) {
     discountCents: order.discountCents,
     taxCents: order.taxCents,
     deliveryFeeCents: order.deliveryFeeCents,
+    tipCents: Number((order.metadata as Record<string, unknown> | null)?.tipCents || 0),
     totalCents: order.totalCents,
   };
 
@@ -42,6 +44,7 @@ export function orderFinancialDisplay(order: GroceryPlatformOrder) {
     discountCents: sale.discountCents,
     taxCents: sale.taxCents,
     deliveryFeeCents: sale.feeCents,
+    tipCents: Number(sale.tipCents || 0),
     totalCents: sale.totalCents,
   };
 }

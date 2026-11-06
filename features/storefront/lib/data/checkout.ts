@@ -24,6 +24,7 @@ export async function initiatePaymentSession(
     };
     substitutionPreference: 'call_me' | 'best_match' | 'refund';
     deliveryInstructions?: string;
+    tipCents?: number;
   },
 ): Promise<{
   id: string;

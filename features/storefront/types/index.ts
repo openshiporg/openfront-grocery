@@ -95,6 +95,8 @@ export interface GroceryOrder {
   tax_total: number;
   shipping_total: number;
   discount_total: number;
+  /** Delivery driver tip chosen at checkout, in cents. */
+  tip_total?: number;
   total: number;
   shippingAddress?: ShippingAddress;
   fulfillmentMethod?: 'delivery' | 'pickup';

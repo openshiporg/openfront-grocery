@@ -10,6 +10,8 @@ export function checkoutRequestFingerprint(data: any) {
     fulfillmentMethod: data.fulfillmentMethod, deliverySlotId: data.deliverySlotId || null, pickupSlotId: data.pickupSlotId || null,
     couponCode: String(data.couponCode || '').trim().toUpperCase(), substitutionPreference: data.substitutionPreference,
     deliveryInstructions: String(data.deliveryInstructions || '').trim(),
+    // Added only when chosen so fingerprints of untipped checkouts stay identical.
+    ...(Number(data.tipCents) > 0 ? { tipCents: Number(data.tipCents) } : {}),
   });
 }
 export function checkoutCartFingerprint(cart: any) {
@@ -50,6 +52,7 @@ export function checkoutTermsFingerprint(data: any) {
     deliverySlotId: data?.deliverySlotId ?? null,
     pickupSlotId: data?.pickupSlotId ?? null,
     couponCode: data?.couponCode ?? null,
+    ...(Number(data?.tipCents) > 0 ? { tipCents: Number(data.tipCents) } : {}),
   });
 }
 export function assertProviderCreationRetry(data: any, now = Date.now()) {

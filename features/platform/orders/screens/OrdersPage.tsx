@@ -255,6 +255,7 @@ function OrderRow({ order, timeZone, canRefund }: { order: GroceryPlatformOrder;
                 ['Discount', `−${formatMoney(financial.discountCents, order.currencyCode)}`],
                 ['Tax', formatMoney(financial.taxCents, order.currencyCode)],
                 ['Delivery fee', formatMoney(financial.deliveryFeeCents, order.currencyCode)],
+                ...(financial.tipCents ? [['Driver tip', formatMoney(financial.tipCents, order.currencyCode)]] : []),
               ].map(([label, value]) => (
                 <div key={label}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="font-medium tabular-nums">{value}</dd></div>
               ))}

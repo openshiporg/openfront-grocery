@@ -94,6 +94,7 @@ export async function restartGroceryCheckout(_root: unknown, args: RestartArgs, 
       deliveryAddress: source.request.deliveryAddress,
       substitutionPreference: source.request.substitutionPreference as 'call_me' | 'best_match' | 'refund',
       deliveryInstructions: source.request.deliveryInstructions || undefined,
+      tipCents: source.request.tipCents || undefined,
     },
   }, context, undefined, source.restartSource);
 }

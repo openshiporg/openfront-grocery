@@ -97,6 +97,7 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
   const taxTotal = Number(metadata.taxCents ?? Math.round(authoritativeSubtotal * (order.taxRate || 0)));
   const shippingTotal = Number(metadata.deliveryFeeCents ?? Math.round((metadata.deliveryFee || 0) * 100));
   const discountTotal = Number(metadata.discountCents || 0);
+  const tipTotal = Number(metadata.tipCents || 0);
   const total = Number(metadata.totalCents ?? Math.max(0, authoritativeSubtotal + taxTotal + shippingTotal - discountTotal));
   const fulfillmentSlot = metadata.selectedFulfillmentSlot;
   const fulfillmentMethod = metadata.fulfillmentMethod === 'pickup' ? 'pickup' : 'delivery';
@@ -120,6 +121,7 @@ export function mapStorefrontOrder(order: any): GroceryOrder {
     tax_total: taxTotal,
     shipping_total: shippingTotal,
     discount_total: discountTotal,
+    tip_total: tipTotal,
     total,
     shippingAddress: metadata.shippingAddressSnapshot || order.shippingAddress,
     fulfillmentMethod,

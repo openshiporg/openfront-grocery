@@ -14,6 +14,8 @@ export type CheckoutPaymentSnapshot = {
   tax: number;
   deliveryFee: number;
   discount: number;
+  /** Driver tip in dollars; 0 when none. */
+  tip: number;
   total: number;
 };
 
@@ -70,6 +72,7 @@ export function createCheckoutPaymentSnapshot(input: {
     tax: requiredMoney(data.tax, 'tax'),
     deliveryFee: requiredMoney(data.deliveryFee, 'delivery fee'),
     discount: requiredMoney(data.discount, 'discount'),
+    tip: Number.isSafeInteger(Number(data.tipCents)) && Number(data.tipCents) > 0 ? Number(data.tipCents) / 100 : 0,
     total: requiredMoney(data.total ?? input.payment.amount, 'total'),
   };
 }
