@@ -114,6 +114,7 @@ import { removePurchaseOrderDraftItem } from './removePurchaseOrderDraftItem';
 import { adjustInventoryLot } from './adjustInventoryLot';
 import { advanceOrderFulfillment } from './manageOrderFulfillment';
 import { cancelGroceryOrder } from './cancelOrder';
+import { cancelMyGroceryOrder } from './cancelMyGroceryOrder';
 import { reconcileCheckoutAttempts } from './reconcileCheckoutAttempts';
 import { reconcilePaymentRefunds } from './reconcilePaymentRefunds';
 import { updateSupplierMinimumOrder } from './updateSupplierMinimumOrder';
@@ -1328,6 +1329,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
         submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
         cancelGroceryOrder(orderId: ID!, reason: String!, idempotencyKey: String!, disposition: String, conditionNote: String): OrderCancellationResult!
+        cancelMyGroceryOrder(orderId: ID!, sessionId: String, token: String): OrderCancellationResult!
         reconcileCheckoutAttempts(limit: Int): CheckoutReconciliationResult!
         reconcilePaymentRefunds(limit: Int): RefundReconciliationResult!
         updateSupplierMinimumOrder(supplierId: ID!, minimumOrderCents: Int!): SupplierMinimumOrderResult!
@@ -1369,6 +1371,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         deliveryAddress: SubmitGroceryOrderAddressInput!
         substitutionPreference: String!
         deliveryInstructions: String
+        tipCents: Int
       }
 
       input SubmitGroceryOrderInput {
@@ -1524,6 +1527,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         updateDeliveryRouteWorkflow,
         submitGroceryOrder,
         cancelGroceryOrder,
+        cancelMyGroceryOrder,
         reconcileCheckoutAttempts,
         reconcilePaymentRefunds,
         updateSupplierMinimumOrder,

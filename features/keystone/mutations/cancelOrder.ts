@@ -75,6 +75,16 @@ export async function cancelGroceryOrder(
 ) {
   await requireFreshCapability(context, 'canManageOrders');
   const store = await requireSessionStore(context);
+  return cancelGroceryOrderForStore({ orderId, reason, idempotencyKey, disposition, conditionNote }, context, store, context.session?.itemId || null);
+}
+
+/** Store-scoped cancellation. Callers authorize: staff via canManageOrders, customers via order ownership. */
+export async function cancelGroceryOrderForStore(
+  { orderId, reason, idempotencyKey, disposition, conditionNote, allowedStatuses }: { orderId: string; reason: string; idempotencyKey: string; disposition?: string; conditionNote?: string; allowedStatuses?: string[] },
+  context: Context,
+  store: { id: string },
+  actorId: string | null,
+) {
   const normalizedReason = reason.trim();
   const normalizedKey = idempotencyKey.trim();
   if (normalizedReason.length < 3 || normalizedReason.length > 500) throw new Error('Cancellation reason must be between 3 and 500 characters');
@@ -108,7 +118,7 @@ export async function cancelGroceryOrder(
     if (order.deliveryRouteId || order.status === 'out_for_delivery' || order.status === 'delivered') {
       throw new Error('Dispatched or delivered orders cannot be cancelled');
     }
-    if (!['pending', 'picking', 'packed', 'returned'].includes(order.status)) throw new Error(`Order status ${order.status} cannot be cancelled`);
+    if (!(allowedStatuses || ['pending', 'picking', 'packed', 'returned']).includes(order.status)) throw new Error(`Order status ${order.status} cannot be cancelled`);
     const settlement = await tx.orderSettlement.findFirst({ where: { orderId, status: { in: ['processing', 'requires_customer_authorization'] } } });
     if (settlement) throw new Error('Resolve the reserved final sale before cancelling this order');
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "order" = $1 ORDER BY "id" FOR UPDATE', orderId);
@@ -161,7 +171,7 @@ export async function cancelGroceryOrder(
       if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, store.id, lot)) throw new Error('Cancellation would exceed received lot quantity remaining after conversions');
       await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot, ...(returnDisposition === 'quarantine' && lot.safetyStatus !== 'recalled' ? { safetyStatus: 'quarantined', safetyReason: conditionNote?.trim() || normalizedReason } : {}) } });
       await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextStock, inStock: nextStock > 0 } });
-      await appendInventoryMovement(tx, { storeId: store.id, productId: product.id, inventoryLotId: lot.id, orderId, sourceType: `cancellation_${returnDisposition}`, sourceId: orderId, idempotencyKey: `cancel:${normalizedKey}:${allocation.lineItemId}:${lot.id}`, actorId: context.session?.itemId, reason: normalizedReason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextStock, metadata: { disposition: returnDisposition, conditionNote: conditionNote?.trim() || null, quantity: allocation.quantity, lineItemId: allocation.lineItemId } });
+      await appendInventoryMovement(tx, { storeId: store.id, productId: product.id, inventoryLotId: lot.id, orderId, sourceType: `cancellation_${returnDisposition}`, sourceId: orderId, idempotencyKey: `cancel:${normalizedKey}:${allocation.lineItemId}:${lot.id}`, actorId: actorId || undefined, reason: normalizedReason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextStock, metadata: { disposition: returnDisposition, conditionNote: conditionNote?.trim() || null, quantity: allocation.quantity, lineItemId: allocation.lineItemId } });
     }
     // Original allocation rows and snapshots remain immutable historical provenance.
 
@@ -186,14 +196,14 @@ export async function cancelGroceryOrder(
     const couponRelease = await releaseOrderCoupon(tx, { storeId: store.id, orderId, sourceId: `cancel:${normalizedKey}`, reason: normalizedReason });
 
     await restoreLoyaltyRedemptionForOrder(tx, {storeId:store.id,orderId,sourceId:`cancel:${normalizedKey}`,reason:normalizedReason});
-    await reconcileOrderLoyalty(tx, {storeId:store.id,orderId,sourceId:`cancel:${normalizedKey}`,reason:normalizedReason,netGoodsCents:0,settled:true,actorId:context.session?.itemId});
+    await reconcileOrderLoyalty(tx, {storeId:store.id,orderId,sourceId:`cancel:${normalizedKey}`,reason:normalizedReason,netGoodsCents:0,settled:true,actorId:actorId || undefined});
     const cancelledAt = new Date();
     const metadata = {
       ...couponRelease.metadata,
       cancellation: {
         idempotencyKey: normalizedKey,
         reason: normalizedReason,
-        cancelledBy: context.session?.itemId,
+        cancelledBy: actorId,
         cancelledAt: cancelledAt.toISOString(),
         inventoryRestored: returnDisposition !== 'waste',
         disposition: returnDisposition,

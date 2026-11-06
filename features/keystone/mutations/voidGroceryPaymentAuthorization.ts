@@ -16,6 +16,11 @@ import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEna
 export async function voidGroceryPaymentAuthorization(_root: unknown, args: VoidArgs, context: Context) {
   await requireFreshCapability(context, 'canManagePayments');
   const store = await requireSessionStore(context);
+  return voidGroceryPaymentAuthorizationForStore(args, context, store, context.session!.itemId);
+}
+
+/** Store-scoped void. Callers authorize: staff via canManagePayments, customers via order ownership. */
+export async function voidGroceryPaymentAuthorizationForStore(args: VoidArgs, context: Context, store: { id: string; currencyCode: string }, actorId: string | null) {
   const reason = args.reason.trim();
   const key = args.idempotencyKey.trim();
   if (reason.length < 3 || reason.length > 470 || key.length < 12 || key.length > 180) throw new Error('A reason and stable authorization void key are required');
@@ -42,7 +47,7 @@ export async function voidGroceryPaymentAuthorization(_root: unknown, args: Void
     if (settlement?.providerEvidence?.authorizationCreationLease?.expiresAt && new Date(settlement.providerEvidence.authorizationCreationLease.expiresAt).getTime() > Date.now()) throw new Error('Revised authorization creation is in flight');
     if (old?.leaseExpiresAt && new Date(old.leaseExpiresAt).getTime() > Date.now()) return { payment, noCharge, reused: true, execute: false };
     if (!payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw new Error('Authorization provider is unavailable');
-    await tx.payment.update({ where: { id: payment.id }, data: { providerData: { ...(payment.providerData || {}), authorizationVoid: { ...(old || {}), key, reason, status: 'processing', actorId: context.session!.itemId, requestedAt: old?.requestedAt || new Date().toISOString(), token, leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString() } } } });
+    await tx.payment.update({ where: { id: payment.id }, data: { providerData: { ...(payment.providerData || {}), authorizationVoid: { ...(old || {}), key, reason, status: 'processing', actorId, requestedAt: old?.requestedAt || new Date().toISOString(), token, leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString() } } } });
     if (settlement) await tx.orderSettlement.update({ where: { id: settlement.id }, data: { providerEvidence: { ...(settlement.providerEvidence || {}), abandonment: { token, key, reason, status: 'processing', leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString() } } } });
     return { payment, noCharge, settlement, reused: Boolean(old), execute: true };
   }, { isolationLevel: 'ReadCommitted' as any }));

@@ -8783,6 +8783,7 @@ type Mutation {
   updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
   submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
   cancelGroceryOrder(orderId: ID!, reason: String!, idempotencyKey: String!, disposition: String, conditionNote: String): OrderCancellationResult!
+  cancelMyGroceryOrder(orderId: ID!, sessionId: String, token: String): OrderCancellationResult!
   reconcileCheckoutAttempts(limit: Int): CheckoutReconciliationResult!
   reconcilePaymentRefunds(limit: Int): RefundReconciliationResult!
   updateSupplierMinimumOrder(supplierId: ID!, minimumOrderCents: Int!): SupplierMinimumOrderResult!
@@ -10431,6 +10432,7 @@ input CheckoutRecoveryInput {
   deliveryAddress: SubmitGroceryOrderAddressInput!
   substitutionPreference: String!
   deliveryInstructions: String
+  tipCents: Int
 }
 
 input SubmitGroceryOrderInput {

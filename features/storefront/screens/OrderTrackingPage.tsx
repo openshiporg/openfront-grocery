@@ -9,6 +9,7 @@ import type { GroceryOrder, GroceryOrderItem } from '../types';
 import { OrderAdjustment, OrderAdjustmentReturnNotice } from '../modules/order-adjustment/OrderAdjustment';
 import { PickupCheckInPanel } from '../modules/urban/PickupCheckInPanel';
 import { SubstitutionDecisions } from '../modules/order-substitution/SubstitutionDecisions';
+import { CancelOrderPanel } from '../modules/order-cancel/CancelOrderPanel';
 import { ArrowLeft, Check, Store, Truck } from 'lucide-react';
 import { UrbanBadge, UrbanButtonLink, UrbanContainer, UrbanPageShell, formatCents, formatSlotDay, formatSlotRange, formatUnit, orderStatusLabel, statusLabel, timezoneLabel } from '../modules/urban/UrbanPrimitives';
 
@@ -121,6 +122,7 @@ export async function OrderTrackingPage(props: Props) {
             <div className="sf-receipt-row"><dt>Tax</dt><dd>{formatCents(order.tax_total, order.currencyCode)}</dd></div>
             <div className="sf-receipt-row"><dt>Fulfillment fee</dt><dd>{formatCents(order.shipping_total, order.currencyCode)}</dd></div>
             {order.discount_total > 0 ? <div className="sf-receipt-row"><dt>Discount</dt><dd>−{formatCents(order.discount_total, order.currencyCode)}</dd></div> : null}
+            {order.tip_total ? <div className="sf-receipt-row"><dt>Driver tip</dt><dd>{formatCents(order.tip_total, order.currencyCode)}</dd></div> : null}
           </dl>
           <hr className="sf-receipt-rule" />
           <div className="sf-receipt-row text-base font-bold"><span>{totalTitle}</span><span>{formatCents(order.total, order.currencyCode)}</span></div>
@@ -144,6 +146,7 @@ export async function OrderTrackingPage(props: Props) {
           {pickup && order.status === 'ready_for_pickup' ? <PickupCheckInPanel orderId={order.id} parkingSpots={parkingSpots} checkIn={order.pickupCheckIn} /> : null}
           {pickup && order.status === 'delivered' && order.pickupCheckIn?.customerArrived ? <p className="mt-5 flex items-center gap-2 rounded-[var(--sf-radius-md)] bg-[var(--sf-paper-2)] p-4 text-sm leading-6 text-[var(--sf-ink-muted)]"><Check className="h-4 w-4 shrink-0 text-[var(--sf-sage)]" aria-hidden="true" />You checked in{order.pickupCheckIn.parkingSpotNumber ? ` at bay ${order.pickupCheckIn.parkingSpotNumber}` : ''}. Pickup is complete.</p> : null}
         </section>
+        {order.status === 'pending' ? <CancelOrderPanel orderId={order.id} /> : null}
         <UrbanButtonLink href={`/support?order=${encodeURIComponent(order.orderNumber)}#contact-form`} variant="ghost" className="w-full">Help with this order</UrbanButtonLink>
       </aside>
     </div>
