@@ -7,7 +7,7 @@ import { platformButton, platformInput } from '@/features/platform/components/pl
 
 type Feedback = { tone: 'success' | 'warning' | 'error'; text: string } | null;
 
-export function VoidAuthorizationForm({ paymentId }: { paymentId: string }) {
+export function VoidAuthorizationForm({ paymentId, onVoided }: { paymentId: string; onVoided?: () => void }) {
   const [key] = useState(() => `authorization-void:${paymentId}`);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [pending, start] = useTransition();
@@ -19,7 +19,7 @@ export function VoidAuthorizationForm({ paymentId }: { paymentId: string }) {
       try { result = await voidAuthorizationAction({ paymentId, reason: String(form.get('reason') || ''), idempotencyKey: key }); }
       catch { result = { ok: false, error: '', uncertain: true }; }
       if (!result.ok) setFeedback(result.uncertain ? { tone: 'warning', text: 'We couldn’t confirm the void. Press Void again to check; it won’t be applied twice.' } : { tone: 'error', text: result.error });
-      else setFeedback(result.data.success ? { tone: 'success', text: 'Authorization voided. The order can now be cancelled.' } : { tone: 'warning', text: 'The void is still processing with the payment provider. Press Void again later to check.' });
+      else { setFeedback(result.data.success ? { tone: 'success', text: 'Authorization voided. The order can now be cancelled.' } : { tone: 'warning', text: 'The void is still processing with the payment provider. Press Void again later to check.' }); if (result.data.success) onVoided?.(); }
     });
   }}>
     <div className="flex items-start gap-2.5"><Ban className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><div><h3 className="font-medium">Void authorization</h3><p className="mt-0.5 text-xs text-muted-foreground">Release the uncaptured payment before cancelling this order. For a revised sale still waiting on the customer, this also cancels the new authorization and refunds any remaining original charge.</p></div></div>

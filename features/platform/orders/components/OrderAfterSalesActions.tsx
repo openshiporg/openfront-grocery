@@ -11,6 +11,7 @@ import { platformButton, platformInput, platformSelect } from '@/features/platfo
 import { formatMoney } from '@/features/platform/lib/format';
 import type { GroceryPlatformPayment } from '@/features/platform/lib/platformProjections';
 import { cancelOrderTask, refundOrderPaymentTask } from '@/features/platform/lib/taskActions';
+import { VoidAuthorizationForm } from '@/features/platform/payments/components/VoidAuthorizationForm';
 import { parseMoneyToCents } from '@/features/lib/moneyInput';
 
 function operationKey(prefix: string) {
@@ -153,6 +154,10 @@ export function OrderAfterSalesActions({
                   <PlatformStatusBadge status={payment.status} />
                 </div>
                 <p className="mt-1.5 text-xs text-muted-foreground">{captured ? <><span className="font-medium text-foreground tabular-nums">{formatMoney(remainingCents, currencyCode)}</span> refundable</> : payment.status === 'authorized' ? 'Authorized, not captured · nothing to refund' : 'Not captured · nothing to refund'}</p>
+                {/* An uncaptured authorization blocks cancellation; release it here instead of sending staff to Payments. */}
+                {canCancel && !terminalOrder && ['authorized', 'pending'].includes(payment.status) ? (
+                  <div className="mt-3"><VoidAuthorizationForm paymentId={payment.id} onVoided={() => router.refresh()} /></div>
+                ) : null}
                 {paymentRefundable ? (
                   <div className="mt-3 space-y-1.5">
                     <div className="flex items-end gap-2">
@@ -240,7 +245,7 @@ export function OrderAfterSalesActions({
           </div>
         ) : null}
 
-        {canCancel && !cancellable && !terminalOrder ? <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">{hasLiveAuthorization ? 'Void active payment authorizations before cancelling this order.' : hasUnrefundedSettlement ? 'Fully refund every settled payment before cancelling this order.' : 'Return dispatched goods to the store before cancelling.'}</p> : null}
+        {canCancel && !cancellable && !terminalOrder ? <p className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">{hasLiveAuthorization ? 'Void the payment authorization above, then cancel the order here.' : hasUnrefundedSettlement ? 'Fully refund every settled payment before cancelling this order.' : 'Return dispatched goods to the store before cancelling.'}</p> : null}
       </div>
     </details>
   );
