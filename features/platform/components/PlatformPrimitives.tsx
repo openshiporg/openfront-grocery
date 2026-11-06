@@ -106,7 +106,7 @@ export function PlatformLinkButton({ href, children, variant = 'secondary', size
 
 export function PlatformChip({ children, icon: Icon, className = '' }: { children: ReactNode; icon?: LucideIcon; className?: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded-md border bg-background px-1.5 py-0.5 text-xs font-medium text-muted-foreground ${className}`}>
+    <span className={`inline-flex items-center gap-1 text-xs font-medium text-muted-foreground ${className}`}>
       {Icon ? <Icon className="size-3" aria-hidden="true" /> : null}
       {children}
     </span>

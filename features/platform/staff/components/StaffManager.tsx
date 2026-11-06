@@ -104,7 +104,7 @@ export function StaffManager({ data, now }: { data: any; now: number }) {
                     <p className="truncate text-xs text-muted-foreground">{user.email}</p>
                   </div>
                   <div className="hidden max-w-[45%] flex-wrap justify-end gap-1 lg:flex">
-                    {user.role ? granted.filter((cap) => cap !== 'canAccessDashboard').slice(0, 4).map((cap) => <span key={cap} className="rounded-md border bg-background px-1.5 py-0.5 text-xs text-muted-foreground">{labels[cap]}</span>) : null}
+                    {user.role ? <span className="text-xs text-muted-foreground">{granted.filter((cap) => cap !== 'canAccessDashboard').slice(0, 4).map((cap) => labels[cap]).join(', ')}</span> : null}
                     {user.role && granted.length > 5 ? <span className="px-1 text-xs text-muted-foreground">+{granted.length - 5}</span> : null}
                   </div>
                   {user.role ? <PlatformStatusBadge status="active" label={`${granted.length} permissions`} /> : <PlatformStatusBadge status="cancelled" label="Revoked" />}
