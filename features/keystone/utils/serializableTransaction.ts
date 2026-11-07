@@ -1,3 +1,5 @@
+import { throwKeystonePrismaErrors } from '../lib/keystonePrismaErrors';
+
 export function requirePrismaSuccess<T>(value: T, operation = 'database operation'): T {
   const extensions = (value as any)?.extensions;
   if (extensions?.code !== 'KS_PRISMA_ERROR') return value;
@@ -35,19 +37,20 @@ export function withInteractiveTransactionDefaults<T extends object>(prisma: T, 
 
 /**
  * Normalize Keystone's Prisma-error values at the client boundary. Keystone's own
- * error-to-value extension is applied before this one, so values it returns can
- * still reach callers; reads whose result matters should also pass through
- * requirePrismaSuccess.
+ * error-to-value extension runs outside any app-level `$extends`, so the query
+ * extension below never sees those values; throwKeystonePrismaErrors wraps the
+ * client (and every transaction client) so they are thrown and the transaction
+ * rolls back.
  */
 export function extendPrismaClientWithErrorNormalization(prisma: any) {
-  return withInteractiveTransactionDefaults(prisma.$extends({
+  return withInteractiveTransactionDefaults(throwKeystonePrismaErrors(prisma.$extends({
     query: {
       async $allOperations({ model, operation, args, query }: any) {
         const label = [model, operation].filter((part) => typeof part === 'string' && part).join('.') || 'database operation';
         return requirePrismaSuccess(await query(args), label);
       },
     },
-  }));
+  })));
 }
 
 export function isSerializableConflict(error: unknown) {
