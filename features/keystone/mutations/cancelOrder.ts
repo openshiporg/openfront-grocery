@@ -1,3 +1,4 @@
+import { ORDER_TRANSITIONS, assertTransition } from '../lib/stateMachines';
 import { unconvertedLotCapacityMilli } from '../lib/inventoryConversion';
 import { releaseOrderCoupon } from '../lib/couponRedemptions';
 import { restoreLoyaltyRedemptionForOrder, reconcileOrderLoyalty } from "../lib/loyaltyAccounting";
@@ -214,7 +215,9 @@ export async function cancelGroceryOrderForStore(
         couponRedemptionReleased: couponRelease.released,
       },
     };
-    await tx.order.update({ where: { id: orderId }, data: { status: 'cancelled', canceledAt: cancelledAt, metadata } });
+    assertTransition(ORDER_TRANSITIONS, 'Order', order.status, 'cancelled');
+    const cancelMoved = await tx.order.updateMany({ where: { id: orderId, status: order.status }, data: { status: 'cancelled', canceledAt: cancelledAt, metadata } });
+    if (cancelMoved.count !== 1) throw new Error('Order changed while cancelling; refresh and retry');
     await enqueueGroceryOutboxEvent(tx, {
       storeId: store.id,
       eventKey: `order.cancelled:${orderId}:${normalizedKey}`,

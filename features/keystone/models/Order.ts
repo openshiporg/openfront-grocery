@@ -8,8 +8,11 @@ import {
   timestamp,
   relationship,
   json,
+  virtual,
 } from "@keystone-6/core/fields";
+import { graphql } from "@keystone-6/core";
 import { trackingFields } from "./trackingFields";
+import { ORDER_TRANSITIONS, assertTransition, canTransition, fulfillmentStage } from "../lib/stateMachines";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
 import { storeScopedFilter } from '../lib/storeAccess';
@@ -49,6 +52,17 @@ export const Order = list({
   hooks: {
     validate: {
       update: async ({ item, resolvedData, context, addValidationError }) => {
+        const wanted = (resolvedData as any)?.status;
+        if (wanted && !canTransition(ORDER_TRANSITIONS, String((item as any).status), String(wanted))) {
+          addValidationError(`Order cannot move from ${(item as any).status} to ${wanted}`);
+          return;
+        }
+        const nextMeta = ((resolvedData as any)?.metadata ?? (item as any).metadata ?? {}) as Record<string, unknown>;
+        const nextStatus0 = wanted ?? (item as any).status;
+        if (nextMeta?.readyForPickup === true && nextStatus0 !== 'packed' && nextStatus0 !== 'delivered') {
+          addValidationError('An order marked ready for pickup must be packed (or already handed over)');
+          return;
+        }
         const current = item as typeof item & {
           deliveryRouteId?: string | null;
           status?: string | null;
@@ -145,6 +159,13 @@ export const Order = list({
       defaultValue: "pending",
       validation: { isRequired: true },
       label: "Status",
+    }),
+    fulfillmentStage: virtual({
+      field: graphql.field({
+        type: graphql.String,
+        resolve: (item: any) => fulfillmentStage(item),
+      }),
+      ui: { itemView: { fieldMode: 'hidden' }, createView: { fieldMode: 'hidden' } },
     }),
     taxRate: float({
       label: "Tax Rate",

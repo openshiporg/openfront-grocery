@@ -1,3 +1,4 @@
+import { ORDER_TRANSITIONS, assertTransition } from '../lib/stateMachines';
 import { enqueueGroceryOutboxEvent } from "../lib/groceryOutbox";
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
@@ -330,6 +331,7 @@ export async function updateDeliveryRouteWorkflow(
     if (status === 'in_progress') {
       for (const order of orders) {
         await enqueueGroceryOutboxEvent(transactionContext.prisma,{storeId:store.id,eventKey:`order.dispatched:${order.id}:${routeId}`,eventType:'order.dispatched',aggregateType:'Order',aggregateId:order.id,occurredAt:now,payload:{orderId:order.id,routeId}});
+        assertTransition(ORDER_TRANSITIONS, 'Order', order.status, 'out_for_delivery');
         await sudoContext.query.Order.updateOne({
           where: { id: order.id },
           data: {

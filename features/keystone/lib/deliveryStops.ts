@@ -1,3 +1,4 @@
+import { ORDER_TRANSITIONS, assertTransition } from './stateMachines';
 import { assertOrderHandoffPayment } from './fulfillmentPayment';
 import { assertOrderInventoryEligible } from './inventorySafety';
 
@@ -92,6 +93,7 @@ export async function resolveDeliveryStopInTransaction(tx: any, actor: { storeId
   await sudo.db.DeliveryRoute.updateOne({ where: { id: route.id }, data: { stops } });
   const nextStatus = input.status === 'failed' ? 'delivery_failed' : input.status === 'refused' ? 'delivery_refused' : input.status === 'rescheduled' ? 'out_for_delivery' : input.status;
   const previousMetadata = order.metadata || {};
+  assertTransition(ORDER_TRANSITIONS, 'Order', order.status, nextStatus);
   await sudo.db.Order.updateOne({ where: { id: order.id }, data: {
     status: nextStatus,
     ...(input.status === 'returned' ? { deliveryRoute: { disconnect: true } } : {}),

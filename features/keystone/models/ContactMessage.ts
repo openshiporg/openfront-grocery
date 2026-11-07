@@ -5,6 +5,7 @@ import { permissions } from '../access';
 import { storeScopedFilter } from '../lib/storeAccess';
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { trackingFields } from './trackingFields';
+import { CONTACT_MESSAGE_TRANSITIONS, canTransition } from '../lib/stateMachines';
 
 const readOnly = { create: () => false, update: () => false };
 
@@ -14,6 +15,16 @@ export const ContactMessage = list({
   access: {
     operation: { query: permissions.canManageOrders, create: () => false, update: permissions.canManageOrders, delete: () => false },
     filter: { query: storeScopedFilter, update: storeScopedFilter },
+  },
+  hooks: {
+    validate: {
+      update: ({ item, resolvedData, addValidationError }) => {
+        const next = (resolvedData as any)?.status;
+        if (next && !canTransition(CONTACT_MESSAGE_TRANSITIONS, String((item as any).status), String(next))) {
+          addValidationError(`Message cannot move from ${(item as any).status} to ${next}`);
+        }
+      },
+    },
   },
   ui: {
     labelField: 'subject',

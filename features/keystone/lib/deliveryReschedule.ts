@@ -1,3 +1,4 @@
+import { ORDER_TRANSITIONS, assertTransition } from './stateMachines';
 import { evaluateFulfillmentWindow } from './rollingFulfillment';
 import { evaluateDeliveryPolicy } from './deliveryPolicy';
 import { zonedDateKey, zonedDateTimeForDateKey } from './storeTime';
@@ -71,6 +72,7 @@ export async function rescheduleReturnedDeliveryInTransaction(tx: any, actor: { 
   const event = { ...input, actorId: actor.userId, customerId: order.userId || null, occurredAt: now.toISOString(), fingerprint, before, after };
   await tx.deliverySlot.update({ where: { id: oldSlotId }, data: { currentBookings: oldSlot.currentBookings - 1 } });
   await tx.deliverySlot.update({ where: { id: newSlot.id }, data: { currentBookings: newSlot.currentBookings + 1 } });
+  assertTransition(ORDER_TRANSITIONS, 'Order', order.status, 'packed');
   await tx.order.update({ where: { id: order.id }, data: { status: 'packed', deliverySlotId: newSlot.id, deliveryDate: new Date(newSlot.date), deliveryTimeWindow,
     metadata: { ...order.metadata, ...after, deliveryPolicySnapshot: decision.policy, deliveryReschedules: [...history, event],
       deliveryOutcome: { status: 'rescheduled', custody: 'store', occurredAt: event.occurredAt, reason: 'Customer-approved later delivery window', retryAt: decision.startsAt.toISOString() } } } });

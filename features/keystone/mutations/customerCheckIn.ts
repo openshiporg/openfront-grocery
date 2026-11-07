@@ -1,3 +1,4 @@
+import { ORDER_TRANSITIONS, assertTransition } from '../lib/stateMachines';
 import { assertOrderInventoryEligible } from '../lib/inventorySafety';
 import { assertOrderHandoffPayment } from '../lib/fulfillmentPayment';
 import type { Context } from '.keystone/types';
@@ -234,8 +235,9 @@ async function completePickupHandoff(context: Context, orderId: string, expected
     }
 
     if (order.status !== 'delivered') {
-      await tx.order.update({
-        where: { id: orderId },
+      assertTransition(ORDER_TRANSITIONS, 'Order', order.status, 'delivered');
+      const handedOver = await tx.order.updateMany({
+        where: { id: orderId, status: order.status },
         data: {
           status: 'delivered',
           metadata: {
@@ -246,6 +248,7 @@ async function completePickupHandoff(context: Context, orderId: string, expected
           },
         },
       });
+      if (handedOver.count !== 1) throw new Error('Order changed during handoff; refresh and retry');
     }
     return { order, parkingSpotId, spotNumber };
   }, { isolationLevel: 'Serializable' as any }));

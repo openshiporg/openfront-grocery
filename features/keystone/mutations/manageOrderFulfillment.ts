@@ -1,3 +1,4 @@
+import { ORDER_TRANSITIONS, assertTransition } from '../lib/stateMachines';
 import { publicError } from '../lib/publicError';
 import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { assertOrderInventoryEligible } from '../lib/inventorySafety';
@@ -116,6 +117,7 @@ export async function advanceOrderFulfillment(
     };
     if(target === 'ready_for_pickup') await enqueueGroceryOutboxEvent(transactionContext.prisma,{storeId:storeId!,eventKey:`order.ready:${orderId}`,eventType:'order.ready',aggregateType:'Order',aggregateId:orderId,occurredAt:now,payload:{orderId}});
     const nextStatus = target === 'ready_for_pickup' ? 'packed' : target;
+    assertTransition(ORDER_TRANSITIONS, 'Order', order.status, nextStatus);
     await sudoContext.db.Order.updateOne({
       where: { id: orderId },
       data: { status: nextStatus as any, metadata: nextMetadata },
