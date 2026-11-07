@@ -12,6 +12,7 @@ import { getCanonicalSiteUrl, getDatabaseUrl, getPublicStoreId, getSessionMaxAge
 import { boundedGraphqlDepthRule, rejectIntrospectionInProduction } from './lib/graphqlSecurity';
 import { extendPrismaClientWithErrorNormalization } from './utils/serializableTransaction';
 import { resolveApplicationOrigin } from '../../lib/applicationOrigin';
+import { pooledDatabaseUrl } from './database-url';
 
 const databaseURL = getDatabaseUrl();
 // Optional payment providers are checked when used (discovery, new payments), not at startup.
@@ -103,7 +104,7 @@ export default withAuth(
   config({
     db: {
       provider: "postgresql",
-      url: databaseURL,
+      url: pooledDatabaseUrl(databaseURL),
       extendPrismaClient: extendPrismaClientWithErrorNormalization,
     },
     lists: models,
