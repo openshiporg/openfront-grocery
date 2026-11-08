@@ -97,6 +97,7 @@ export function Fields({ fields, value, onChange, forceValidation, invalidFields
         field={field.controller}
         value={fieldValue}
         forceValidation={forceValidation && invalidFields?.has(fieldPath)}
+        itemValue={value}
         isRequired={testFilter(isRequireds?.[fieldPath] ?? false, serialized)}
         onChange={
           isReadOnly || !onChange

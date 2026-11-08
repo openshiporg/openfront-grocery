@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge'
 import { FieldContainer } from '@/components/ui/field-container'
 import { FieldLabel } from '@/components/ui/field-label'
 import { FieldDescription } from '@/components/ui/field-description'
+import { JSON_LIST_PICKERS, ListPicker, parseKeyList, siblingSelectValue } from './ListPicker'
+import { useList } from '@/features/dashboard/hooks/useAdminMeta'
 import type {
   FieldController,
   FieldControllerConfig,
@@ -20,11 +22,13 @@ interface JSONFieldProps {
     path: string
     label: string
     description?: string
+    listKey?: string
   }
   value: string
   onChange?: (value: string) => void
   autoFocus?: boolean
   forceValidation?: boolean
+  itemValue?: unknown
 }
 
 interface CellProps {
@@ -39,9 +43,36 @@ export function Field({
   onChange,
   autoFocus,
   forceValidation,
+  itemValue,
 }: JSONFieldProps) {
   const isReadOnly = onChange === undefined
   const errorMessage = forceValidation ? 'Invalid JSON' : undefined
+  const picker = field.listKey ? JSON_LIST_PICKERS[`${field.listKey}.${field.path}`] : undefined
+  const keys = picker ? parseKeyList(value) : null
+  const switched = Boolean(picker?.switchedBy && siblingSelectValue(itemValue, picker.switchedBy.field) === picker.switchedBy.value)
+  const { list: optionsList } = useList(picker?.switchedBy?.optionsFrom.listKey ?? '')
+  const staticOptions = switched && picker?.switchedBy
+    ? ((optionsList?.fields as any)?.[picker.switchedBy.optionsFrom.field]?.fieldMeta?.options ?? []).map((option: { label: string; value: string | number }) => ({ label: option.label, value: String(option.value) }))
+    : undefined
+
+  // Lists of record keys are picked by name; anything that isn't a plain list stays editable as JSON so it can be repaired.
+  if (picker && keys) {
+    return (
+      <FieldContainer>
+        <FieldLabel htmlFor={`field-${field.path}`}>{field.label}</FieldLabel>
+        {field.description && (
+          <FieldDescription>{field.description}</FieldDescription>
+        )}
+        <ListPicker
+          id={`field-${field.path}`}
+          picker={picker}
+          keys={keys}
+          staticOptions={staticOptions}
+          onChange={isReadOnly ? undefined : (next) => onChange?.(JSON.stringify(next))}
+        />
+      </FieldContainer>
+    )
+  }
 
   return (
     <FieldContainer>
@@ -108,11 +139,12 @@ export function CardValue({ item, field }: CellProps) {
 
 type Config = FieldControllerConfig<{ defaultValue: any }>
 
-export function controller(config: Config): FieldController<string> {
+export function controller(config: Config): FieldController<string> & { listKey: string } {
   return {
     path: config.path,
     label: config.label,
     description: config.description,
+    listKey: config.listKey,
     graphqlSelection: config.path,
     defaultValue:
       config.fieldMeta?.defaultValue === null

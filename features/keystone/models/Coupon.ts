@@ -161,7 +161,7 @@ export const Coupon = list({
     productCategories: json({
       label: "Departments",
       ui: {
-        description: "List of department handles this coupon applies to, for example [\"produce\", \"dairy\"]. Leave empty for every department.",
+        description: "Departments this coupon applies to. Leave empty for every department.",
       },
     }),
     // Which department identity productCategories names. Offers created before
@@ -170,8 +170,8 @@ export const Coupon = list({
     categoryTaxonomy: select({
       type: 'string',
       options: [
-        { label: 'Store department handles', value: 'department_handle' },
-        { label: 'Legacy product department', value: 'legacy_department' },
+        { label: 'Store departments', value: 'department_handle' },
+        { label: "Product's own department (older coupons)", value: 'legacy_department' },
       ],
       defaultValue: 'department_handle',
       validation: { isRequired: true },
@@ -179,9 +179,9 @@ export const Coupon = list({
       access: { update: () => false },
     }),
     excludedProducts: json({
-      label: "Excluded Products",
+      label: "Excluded products",
       ui: {
-        description: "List of product IDs this coupon never discounts.",
+        description: "Products this coupon never discounts.",
       },
     }),
     isActive: checkbox({
