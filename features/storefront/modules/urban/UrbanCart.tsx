@@ -6,6 +6,8 @@ import { ArrowRight, Minus, Package, Plus, RefreshCw, Trash2 } from 'lucide-reac
 
 import { removeFromCart, updateCartItem, updateSubstitutionPreference } from '@/features/storefront/lib/data/cart';
 import type { GroceryCart, GroceryCartItem, GroceryUser } from '@/features/storefront/types';
+import { useMarketBasket } from '../market/MarketBasket';
+import { reconcileWithBasket } from './cartReconcile';
 import {
   UrbanButton,
   UrbanButtonLink,
@@ -100,10 +102,21 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
   const [isMutating, setIsMutating] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const mutationInFlight = useRef(false);
+  const basket = useMarketBasket();
+  const { loaded: basketLoaded, cart: basketCart } = basket;
 
   useEffect(() => {
     if (!mutationInFlight.current) setCurrentCart(cart);
   }, [cart]);
+
+  // The basket (header badge, tab bar, drawer) reads the cart in the browser
+  // with this browser's guest identity. The server render only sees the cart
+  // cookie, which a framed or cookie-blocking browser never sends, so once the
+  // basket has read the cart this page shows exactly what the badge shows.
+  useEffect(() => {
+    if (!basketLoaded || mutationInFlight.current) return;
+    setCurrentCart((previous) => reconcileWithBasket(previous, { loaded: basketLoaded, cart: basketCart }));
+  }, [basketLoaded, basketCart]);
 
   // Cart changes confirmed elsewhere (the drawer, a product page in another
   // component, or moving a guest cart into the account) replace this view.
@@ -139,6 +152,14 @@ export default function UrbanCart({ cart, user }: { cart: GroceryCart | null; us
       setIsMutating(false);
     }
   };
+
+  if ((!currentCart || currentCart.items.length === 0) && !basket.loaded && !basket.loadError) {
+    return <div role="status" aria-live="polite" className="space-y-4" data-cart-reconciling><span className="sr-only">Loading cart…</span><div aria-hidden="true" className="sf-skeleton h-24" /><div aria-hidden="true" className="sf-skeleton h-24" /></div>;
+  }
+
+  if ((!currentCart || currentCart.items.length === 0) && basket.loadError) {
+    return <div role="alert" className="sf-panel space-y-3 p-6 text-center"><p className="sf-subtitle">Your cart couldn’t be loaded</p><p className="sf-copy">Check your connection, then try again.</p><UrbanButton type="button" onClick={basket.reload}>Try again</UrbanButton></div>;
+  }
 
   if (!currentCart || currentCart.items.length === 0) {
     return <UrbanEmptyState title="Your cart is empty" actionHref="/products" actionLabel="Start shopping">Add items from produce, pantry, dairy, and household aisles.</UrbanEmptyState>;

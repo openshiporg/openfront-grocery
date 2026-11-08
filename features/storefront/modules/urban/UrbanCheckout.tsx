@@ -16,6 +16,8 @@ import { MARKET_MODE_KEY } from '../market/MarketMode';
 import type { DeliveryWindow, GroceryCart, GroceryUser } from '../../types';
 import { UrbanButton, UrbanButtonLink, UrbanEmptyState, UrbanPrice, UrbanProductArtwork, UrbanSelect, UrbanTextInput, UrbanTextarea, formatMoney, timezoneLabel } from './UrbanPrimitives';
 import { UrbanSlotPicker } from './UrbanSlotPicker';
+import { useMarketBasket } from '../market/MarketBasket';
+import { reconcileWithBasket } from './cartReconcile';
 
 const RECOVERY_KEY = 'grocery-stripe-session';
 // Tab-scoped draft so a refresh keeps the chosen time and typed details. Card
@@ -93,6 +95,13 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
     window.addEventListener('cartUpdated', receive);
     return () => window.removeEventListener('cartUpdated', receive);
   }, []);
+  // Checkout reviews the same cart the badge shows: the browser's basket read
+  // replaces a server render that had no cart cookie (framed pages, Safari).
+  const basket = useMarketBasket();
+  useEffect(() => {
+    if (basket.loaded && !placedOrder && !confirmationStarted) setCart((previous) => reconcileWithBasket(previous, basket));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basket.loaded, basket.cart]);
 
   function clearRecovery() {
     try { sessionStorage.removeItem(RECOVERY_KEY); } catch { /* Optional browser storage. */ }
@@ -254,6 +263,8 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
     </div> : null}
     <div className="flex flex-wrap gap-5 text-sm font-semibold"><Link href="/order-access" className="underline underline-offset-4">Find an order by email</Link><Link href="/support" className="underline underline-offset-4">Contact the store</Link></div>
   </section>;
+  if (!cart?.items.length && !basket.loaded && !basket.loadError) return <div role="status" aria-live="polite" className="space-y-4"><span className="sr-only">Loading cart…</span><div aria-hidden="true" className="sf-skeleton h-40" /></div>;
+  if (!cart?.items.length && basket.loadError) return <div role="alert" className="sf-panel space-y-3 p-6 text-center"><p className="sf-subtitle">Your cart couldn’t be loaded</p><p className="sf-copy">Check your connection, then try again.</p><UrbanButton type="button" onClick={basket.reload}>Try again</UrbanButton></div>;
   if (!cart?.items.length) return <UrbanEmptyState title="Your cart is empty" actionHref="/products" actionLabel="Start shopping">Add your groceries, then come back to choose a time.</UrbanEmptyState>;
   const inventoryIssue = cart.items.find((item) => !item.product.inStock);
   const total = active?.total ?? cart.subtotal + cart.tax + (selectedWindow?.fee || 0);

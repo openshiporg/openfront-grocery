@@ -15,13 +15,17 @@ function getClientCookie(name: string) {
 
 function setClientCookie(name: string, value: string) {
   if (typeof document === 'undefined') return;
-  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${GUEST_CART_COOKIE_MAX_AGE}; SameSite=Lax${secure}`;
+  // Over HTTPS the cookie is also sent when the shop is framed (the Oathkeeper
+  // Browser, an embed). Browsers that block it anyway still work: the cart and
+  // checkout pages reconcile with the browser-side basket read.
+  const sameSite = window.location.protocol === 'https:' ? 'SameSite=None; Secure' : 'SameSite=Lax';
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${GUEST_CART_COOKIE_MAX_AGE}; ${sameSite}`;
 }
 
 function clearClientCookie(name: string) {
   if (typeof document === 'undefined') return;
-  document.cookie = `${name}=; path=/; max-age=0; SameSite=Lax`;
+  const sameSite = window.location.protocol === 'https:' ? 'SameSite=None; Secure' : 'SameSite=Lax';
+  document.cookie = `${name}=; path=/; max-age=0; ${sameSite}`;
 }
 
 async function getServerSessionId() {

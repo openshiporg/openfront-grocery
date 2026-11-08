@@ -15,11 +15,13 @@ const GUEST_ORDER_MAX_AGE = Number.parseInt(
 export async function rememberGuestOrder(orderId: string, token: string, originalSessionId?: string) {
   const cookieStore = await cookies();
   const secure = process.env.NODE_ENV === 'production';
+  // Production is HTTPS; None lets a framed shop (Oathkeeper Browser, embeds) keep the order proof.
+  const sameSite = secure ? 'none' as const : 'lax' as const;
   const sessionId=originalSessionId || cookieStore.get(GUEST_CART_COOKIE)?.value;
-  if(sessionId) cookieStore.set(`grocery_order_session_${orderId}`,sessionId,{httpOnly:true,sameSite:'lax',secure,path:'/',maxAge:GUEST_ORDER_MAX_AGE});
+  if(sessionId) cookieStore.set(`grocery_order_session_${orderId}`,sessionId,{httpOnly:true,sameSite,secure,path:'/',maxAge:GUEST_ORDER_MAX_AGE});
   cookieStore.set(`${GUEST_ORDER_COOKIE_PREFIX}${orderId}`, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite,
     secure,
     path: '/',
     maxAge: GUEST_ORDER_MAX_AGE,
