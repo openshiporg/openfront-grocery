@@ -11,6 +11,7 @@ import { isInventoryLotEligible } from '../lib/inventorySafety';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { noChargeOrderPaymentState } from '../lib/checkoutIdentity';
 import { finalSaleSnapshotHash } from '../lib/finalSaleIdentity';
+import { publicError } from '../lib/publicError';
 
 export function hasOutstandingSettledPayment(statuses: string[]) {
   return statuses.some((status) => status === 'succeeded' || status === 'partially_refunded');
@@ -19,17 +20,17 @@ export function hasOutstandingSettledPayment(statuses: string[]) {
 /** Payment rows and their refund ledger are read only after the Order → Payment locks. */
 export function assertCancellationPaymentProof(payments: any[], orderId: string, storeId: string, finalized?: { settlement: any; finalSale: any; currencyCode: string }) {
   for (const payment of payments) {
-    if (!payment.id || payment.orderId !== orderId || payment.storeId !== storeId || !Number.isSafeInteger(payment.amountCents) || payment.amountCents < 0 || !Array.isArray(payment.refunds)) throw new Error('Cancellation requires complete payment ownership, amount and refund evidence');
-    if (['processing', 'unknown'].includes(payment.providerData?.authorizationVoid?.status)) throw new Error('Authorization void requires reconciliation before cancellation');
-    if (['authorized', 'pending'].includes(payment.status)) throw new Error('Void the active payment authorization before cancelling this order');
-    if (payment.status === 'processing') throw new Error('Payment reconciliation must complete before cancellation');
+    if (!payment.id || payment.orderId !== orderId || payment.storeId !== storeId || !Number.isSafeInteger(payment.amountCents) || payment.amountCents < 0 || !Array.isArray(payment.refunds)) throw publicError('Cancellation requires complete payment ownership, amount and refund evidence', 'CANCEL_REFUSED');
+    if (['processing', 'unknown'].includes(payment.providerData?.authorizationVoid?.status)) throw publicError('Authorization void requires reconciliation before cancellation', 'CANCEL_REFUSED');
+    if (['authorized', 'pending'].includes(payment.status)) throw publicError('Void the active payment authorization before cancelling this order', 'CANCEL_REFUSED');
+    if (payment.status === 'processing') throw publicError('Payment reconciliation must complete before cancellation', 'CANCEL_REFUSED');
     let refundedCents = 0;
     for (const refund of payment.refunds) {
-      if (!refund.id || refund.paymentId !== payment.id || !Number.isSafeInteger(refund.amountCents) || refund.amountCents <= 0 || !['processing', 'succeeded', 'failed', 'canceled'].includes(refund.status)) throw new Error('Cancellation requires complete and consistent refund evidence');
-      if (refund.status === 'processing' || refund.providerStatus === 'unknown') throw new Error('Refund reconciliation must complete before cancellation');
+      if (!refund.id || refund.paymentId !== payment.id || !Number.isSafeInteger(refund.amountCents) || refund.amountCents <= 0 || !['processing', 'succeeded', 'failed', 'canceled'].includes(refund.status)) throw publicError('Cancellation requires complete and consistent refund evidence', 'CANCEL_REFUSED');
+      if (refund.status === 'processing' || refund.providerStatus === 'unknown') throw publicError('Refund reconciliation must complete before cancellation', 'CANCEL_REFUSED');
       if (refund.status === 'succeeded') refundedCents += refund.amountCents;
     }
-    if (!Number.isSafeInteger(refundedCents) || refundedCents > payment.amountCents) throw new Error('Refund ledger exceeds the recorded payment amount');
+    if (!Number.isSafeInteger(refundedCents) || refundedCents > payment.amountCents) throw publicError('Refund ledger exceeds the recorded payment amount', 'CANCEL_REFUSED');
     if (payment.amountCents === 0) {
       const noCharge = noChargeOrderPaymentState(payment);
       const checkoutZero = noCharge && payment.status === 'succeeded' && !['capturedAmountCents', 'authorizedAmountCents', 'capturableAmountCents'].some(field => payment.providerData?.[field] != null && payment.providerData[field] !== 0);
@@ -60,12 +61,12 @@ export function assertCancellationPaymentProof(payments: any[], orderId: string,
         && typeof payment.providerPaymentId === 'string' && payment.providerPaymentId && !payment.providerPaymentId.startsWith('grocery_no_charge:')
         && settlement.totalCents === 0 && ['canceled', 'cancelled'].includes(evidence.status)
         && evidence.amountCents === 0 && evidence.refundedCents === 0 && payment.providerData.captureRecognition?.basis === 'no_capture';
-      if (payment.refunds.length || !(checkoutZero || replacedZero || voidedToZero)) throw new Error('Zero payment cancellation requires verified server no-charge evidence or finalized zero-exposure settlement proof');
+      if (payment.refunds.length || !(checkoutZero || replacedZero || voidedToZero)) throw publicError('Zero payment cancellation requires verified server no-charge evidence or finalized zero-exposure settlement proof', 'CANCEL_REFUSED');
       continue;
     }
-    if (hasOutstandingSettledPayment([payment.status])) throw new Error('Settled payments must be fully refunded through the refund workflow before cancelling the order');
-    if (payment.status === 'refunded' && refundedCents !== payment.amountCents) throw new Error('Fully refunded status requires matching succeeded refund evidence before cancellation');
-    if (!['refunded', 'failed', 'cancelled'].includes(payment.status)) throw new Error('Unknown payment state requires reconciliation before cancellation');
+    if (hasOutstandingSettledPayment([payment.status])) throw publicError('Settled payments must be fully refunded through the refund workflow before cancelling the order', 'CANCEL_REFUSED');
+    if (payment.status === 'refunded' && refundedCents !== payment.amountCents) throw publicError('Fully refunded status requires matching succeeded refund evidence before cancellation', 'CANCEL_REFUSED');
+    if (!['refunded', 'failed', 'cancelled'].includes(payment.status)) throw publicError('Unknown payment state requires reconciliation before cancellation', 'CANCEL_REFUSED');
   }
 }
 
@@ -88,8 +89,8 @@ export async function cancelGroceryOrderForStore(
 ) {
   const normalizedReason = reason.trim();
   const normalizedKey = idempotencyKey.trim();
-  if (normalizedReason.length < 3 || normalizedReason.length > 500) throw new Error('Cancellation reason must be between 3 and 500 characters');
-  if (normalizedKey.length < 12) throw new Error('Cancellation idempotency key is required');
+  if (normalizedReason.length < 3 || normalizedReason.length > 500) throw publicError('Cancellation reason must be between 3 and 500 characters', 'CANCEL_REFUSED');
+  if (normalizedKey.length < 12) throw publicError('Cancellation idempotency key is required', 'CANCEL_REFUSED');
 
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx: any = transactionContext.prisma;
@@ -110,18 +111,18 @@ export async function cancelGroceryOrderForStore(
         },
       },
     });
-    if (!order || order.storeId !== store.id) throw new Error('Order not found in active store');
+    if (!order || order.storeId !== store.id) throw publicError('Order not found in active store', 'CANCEL_REFUSED');
     const cancellation = (order.metadata as any)?.cancellation;
     if (order.status === 'cancelled') {
-      if (cancellation?.idempotencyKey !== normalizedKey || cancellation.reason !== normalizedReason || (cancellation.disposition || 'return_to_stock') !== (disposition || 'return_to_stock') || (cancellation.conditionNote || '') !== (conditionNote?.trim() || '')) throw new Error('Order was already cancelled by another operation');
+      if (cancellation?.idempotencyKey !== normalizedKey || cancellation.reason !== normalizedReason || (cancellation.disposition || 'return_to_stock') !== (disposition || 'return_to_stock') || (cancellation.conditionNote || '') !== (conditionNote?.trim() || '')) throw publicError('Order was already cancelled by another operation', 'CANCEL_REFUSED');
       return { success: true, orderId, status: 'cancelled', reused: true };
     }
     if (order.deliveryRouteId || order.status === 'out_for_delivery' || order.status === 'delivered') {
-      throw new Error('Dispatched or delivered orders cannot be cancelled');
+      throw publicError('Dispatched or delivered orders cannot be cancelled', 'CANCEL_REFUSED');
     }
-    if (!(allowedStatuses || ['pending', 'picking', 'packed', 'returned']).includes(order.status)) throw new Error(`Order status ${order.status} cannot be cancelled`);
+    if (!(allowedStatuses || ['pending', 'picking', 'packed', 'returned']).includes(order.status)) throw publicError(`Order status ${order.status} cannot be cancelled`, 'CANCEL_REFUSED');
     const settlement = await tx.orderSettlement.findFirst({ where: { orderId, status: { in: ['processing', 'requires_customer_authorization'] } } });
-    if (settlement) throw new Error('Resolve the reserved final sale before cancelling this order');
+    if (settlement) throw publicError('Resolve the reserved final sale before cancelling this order', 'CANCEL_REFUSED');
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "order" = $1 ORDER BY "id" FOR UPDATE', orderId);
     const payments = await tx.payment.findMany({ where: { orderId }, include: { refunds: true }, orderBy: { id: 'asc' } });
     const finalSale = order.metadata?.finalSale;
@@ -129,9 +130,9 @@ export async function cancelGroceryOrderForStore(
       ? { settlement: await tx.orderSettlement.findUnique({ where: { id: finalSale.settlementId } }), finalSale, currencyCode: order.currencyCode } : undefined;
     assertCancellationPaymentProof(payments, orderId, store.id, finalized);
 
-    if (['packed', 'returned'].includes(order.status) && (!disposition || !conditionNote?.trim())) throw new Error('Packed goods require explicit return, waste or quarantine disposition and condition evidence');
+    if (['packed', 'returned'].includes(order.status) && (!disposition || !conditionNote?.trim())) throw publicError('Packed goods require explicit return, waste or quarantine disposition and condition evidence', 'CANCEL_REFUSED');
     const returnDisposition = disposition || 'return_to_stock';
-    if (!['return_to_stock', 'waste', 'quarantine'].includes(returnDisposition)) throw new Error('Unsupported cancellation disposition');
+    if (!['return_to_stock', 'waste', 'quarantine'].includes(returnDisposition)) throw publicError('Unsupported cancellation disposition', 'CANCEL_REFUSED');
     const originalAllocations = order.lineItems.flatMap((line: any) => {
       const allocations = line.fulfillment ? line.fulfillment.allocations || [] : line.inventoryAllocations.length ? line.inventoryAllocations : (line.metadata?.inventoryAllocations || (line.inventoryLotId ? [{ inventoryLotId: line.inventoryLotId, quantity: line.quantity }] : []));
       return allocations.map((allocation: any) => ({ lineItemId: line.id, lotId: allocation.lotId || allocation.inventoryLotId, productId: allocation.productId || line.productId, quantity: Number(allocation.quantity) }));
@@ -143,12 +144,12 @@ export async function cancelGroceryOrderForStore(
     for (const allocation of originalAllocations) {
       const key = JSON.stringify([allocation.lineItemId, allocation.lotId]);
       const existing = remaining.get(key);
-      if (existing && existing.productId !== allocation.productId) throw new Error('Cancellation lot has conflicting product provenance');
+      if (existing && existing.productId !== allocation.productId) throw publicError('Cancellation lot has conflicting product provenance', 'CANCEL_REFUSED');
       remaining.set(key, { ...allocation, quantityMilli: quantityMilli(allocation.quantity) + (existing?.quantityMilli || 0) });
     }
     for (const prior of priorReturns) for (const returned of prior.returnedLots || []) {
       const allocation = remaining.get(JSON.stringify([prior.lineItemId, returned.lotId]));
-      if (!allocation || !Number.isSafeInteger(returned.quantityMilli) || returned.quantityMilli <= 0 || returned.quantityMilli > allocation.quantityMilli) throw new Error('Previously accepted return exceeds actual cancellation allocation');
+      if (!allocation || !Number.isSafeInteger(returned.quantityMilli) || returned.quantityMilli <= 0 || returned.quantityMilli > allocation.quantityMilli) throw publicError('Previously accepted return exceeds actual cancellation allocation', 'CANCEL_REFUSED');
       allocation.quantityMilli -= returned.quantityMilli;
     }
     const effectiveAllocations = [...remaining.values()].filter(allocation => allocation.quantityMilli > 0).map(({ quantityMilli: milli, ...allocation }) => ({ ...allocation, quantity: milli / 1000 }));
@@ -164,12 +165,12 @@ export async function cancelGroceryOrderForStore(
     for (const allocation of effectiveAllocations) {
       const lot = await tx.inventoryLot.findUnique({ where: { id: allocation.lotId } });
       const product = await tx.product.findUnique({ where: { id: allocation.productId } });
-      if (!lot || !product || lot.storeId !== store.id || product.storeId !== store.id || lot.productId !== product.id) throw new Error('Cancellation allocation is outside the active store');
-      if (returnDisposition === 'return_to_stock' && ['packed', 'returned'].includes(order.status) && !isInventoryLotEligible(lot)) throw new Error('Unsafe or expired packed stock requires quarantine or waste disposition');
+      if (!lot || !product || lot.storeId !== store.id || product.storeId !== store.id || lot.productId !== product.id) throw publicError('Cancellation allocation is outside the active store', 'CANCEL_REFUSED');
+      if (returnDisposition === 'return_to_stock' && ['packed', 'returned'].includes(order.status) && !isInventoryLotEligible(lot)) throw publicError('Unsafe or expired packed stock requires quarantine or waste disposition', 'CANCEL_REFUSED');
       const delta = returnDisposition === 'waste' ? 0 : quantityMilli(allocation.quantity);
       const nextLot = (quantityMilli(lot.quantityRemaining) + delta) / 1000;
       const nextStock = (quantityMilli(product.stockQuantity) + delta) / 1000;
-      if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, store.id, lot)) throw new Error('Cancellation would exceed received lot quantity remaining after conversions');
+      if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, store.id, lot)) throw publicError('Cancellation would exceed received lot quantity remaining after conversions', 'CANCEL_REFUSED');
       await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot, ...(returnDisposition === 'quarantine' && lot.safetyStatus !== 'recalled' ? { safetyStatus: 'quarantined', safetyReason: conditionNote?.trim() || normalizedReason } : {}) } });
       await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextStock, inStock: nextStock > 0 } });
       await appendInventoryMovement(tx, { storeId: store.id, productId: product.id, inventoryLotId: lot.id, orderId, sourceType: `cancellation_${returnDisposition}`, sourceId: orderId, idempotencyKey: `cancel:${normalizedKey}:${allocation.lineItemId}:${lot.id}`, actorId: actorId || undefined, reason: normalizedReason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextStock, metadata: { disposition: returnDisposition, conditionNote: conditionNote?.trim() || null, quantity: allocation.quantity, lineItemId: allocation.lineItemId } });
@@ -217,7 +218,7 @@ export async function cancelGroceryOrderForStore(
     };
     assertTransition(ORDER_TRANSITIONS, 'Order', order.status, 'cancelled');
     const cancelMoved = await tx.order.updateMany({ where: { id: orderId, status: order.status }, data: { status: 'cancelled', canceledAt: cancelledAt, metadata } });
-    if (cancelMoved.count !== 1) throw new Error('Order changed while cancelling; refresh and retry');
+    if (cancelMoved.count !== 1) throw publicError('Order changed while cancelling; refresh and retry', 'CANCEL_REFUSED');
     await enqueueGroceryOutboxEvent(tx, {
       storeId: store.id,
       eventKey: `order.cancelled:${orderId}:${normalizedKey}`,

@@ -55,3 +55,12 @@ test('the migration backs each invariant with a constraint', () => {
   assert.ok(!/LoyaltyTransaction_running_balance/.test(sql), 'loyalty debt from refund clawback stays legal');
   assert.match(read('features/keystone/lib/rollingFulfillment.ts'), /deliverySlot\.createMany\(\{\s*skipDuplicates: true/);
 });
+
+test('money and capacity refusals reach staff as coded messages, not "Unexpected error"', () => {
+  for (const file of ['mutations/managePaymentRefund.ts', 'mutations/cancelOrder.ts', 'mutations/voidGroceryPaymentAuthorization.ts', 'mutations/manageStoreCapacity.ts', 'lib/refundRecovery.ts']) {
+    const source = read(`features/keystone/${file}`);
+    // Only the provider-failure rethrow (raw provider text) may stay masked.
+    const plain = (source.match(/throw new Error\(/g) || []).length - (source.match(/throw new Error\(message\)/g) || []).length;
+    assert.equal(plain, 0, `${file} has ${plain} plain Error refusals`);
+  }
+});

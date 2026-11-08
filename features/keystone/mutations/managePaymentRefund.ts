@@ -9,6 +9,7 @@ import { withSerializableRetry } from '../utils/serializableTransaction';
 import { assertRefundBudget, assertRefundCreationWindow, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
 
 import { isPaymentProviderInstalled } from '../../integrations/payment/stripeEnabled';
+import { publicError } from '../lib/publicError';
 
 export type RefundArgs = {
   paymentId: string;
@@ -36,10 +37,10 @@ export function normalizeRefundRequest(args: RefundArgs) {
   const idempotencyKey = args.idempotencyKey.trim();
   const amountCents = Number(args.amountCents);
   const reason = args.reason.trim();
-  if (!paymentId) throw new Error('Payment is required');
-  if (!Number.isInteger(amountCents) || amountCents < 1) throw new Error('Refund amount must be a positive integer number of cents');
-  if (reason.length < 3 || reason.length > 500) throw new Error('A refund reason between 3 and 500 characters is required');
-  if (idempotencyKey.length < 12 || idempotencyKey.length > 200) throw new Error('A valid refund idempotency key is required');
+  if (!paymentId) throw publicError('Payment is required', 'REFUND_REFUSED');
+  if (!Number.isInteger(amountCents) || amountCents < 1) throw publicError('Refund amount must be a positive integer number of cents', 'REFUND_REFUSED');
+  if (reason.length < 3 || reason.length > 500) throw publicError('A refund reason between 3 and 500 characters is required', 'REFUND_REFUSED');
+  if (idempotencyKey.length < 12 || idempotencyKey.length > 200) throw publicError('A valid refund idempotency key is required', 'REFUND_REFUSED');
   return { paymentId, amountCents, reason, idempotencyKey };
 }
 
@@ -89,12 +90,12 @@ export async function refundPaymentForOrder(
           generatePaymentLinkFunction: true, handleWebhookFunction: true } },
       },
     });
-    if (!payment || payment.storeId !== store.id) throw new Error('Payment not found in active store');
+    if (!payment || payment.storeId !== store.id) throw publicError('Payment not found in active store', 'REFUND_REFUSED');
     const authorizationVoid = (payment.providerData as any)?.authorizationVoid;
-    if (authorizationVoid && ['processing', 'unknown'].includes(authorizationVoid.status) && args.idempotencyKey !== `${authorizationVoid.key}:original-refund`) throw new Error('An authorization abandonment is unresolved; finish it before another refund');
-    if (!payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw new Error('Payment provider settlement is unavailable');
+    if (authorizationVoid && ['processing', 'unknown'].includes(authorizationVoid.status) && args.idempotencyKey !== `${authorizationVoid.key}:original-refund`) throw publicError('An authorization abandonment is unresolved; finish it before another refund', 'REFUND_REFUSED');
+    if (!payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw publicError('Payment provider settlement is unavailable', 'REFUND_REFUSED');
     if (!['succeeded', 'partially_refunded', 'refunded'].includes(payment.status)) {
-      throw new Error(`Only settled payments can be refunded: ${payment.status}`);
+      throw publicError(`Only settled payments can be refunded: ${payment.status}`, 'REFUND_REFUSED');
     }
 
     const paymentCents = Number(payment.amountCents || Math.round(Number(payment.amount) * 100));
@@ -102,13 +103,13 @@ export async function refundPaymentForOrder(
     if (existing) {
       await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentRefund" WHERE "id" = $1 FOR UPDATE', existing.id);
       existing = await tx.paymentRefund.findUnique({ where: { id: existing.id } });
-      if (!existing) throw new Error('Refund evidence disappeared during claim');
+      if (!existing) throw publicError('Refund evidence disappeared during claim', 'REFUND_REFUSED');
       if (
         existing.paymentId !== payment.id ||
         existing.amountCents !== args.amountCents ||
         (existing.providerData as any)?.requestReason !== args.reason
       ) {
-        throw new Error('Refund idempotency key was reused with different payment, amount, or reason');
+        throw publicError('Refund idempotency key was reused with different payment, amount, or reason', 'REFUND_REFUSED');
       }
       if (existing.status === 'succeeded') {
         return {
@@ -235,7 +236,7 @@ export async function refundPaymentForOrder(
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', claim.paymentId);
     const refund = await tx.paymentRefund.findUnique({ where: { id: claim.refundId } });
-    if (!refund) throw new Error('Refund evidence disappeared during provider processing');
+    if (!refund) throw publicError('Refund evidence disappeared during provider processing', 'REFUND_REFUSED');
     if (refund.status !== 'processing') {
       return refundResult({ ...claim, providerRefundId: refund.providerRefundId || null }, refund.status, refund.providerRefundId || null, true, 'Refund state was finalized by another provider event.');
     }
