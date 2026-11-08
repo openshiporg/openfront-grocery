@@ -25,6 +25,16 @@ function validateCouponInput(resolvedData: any, item: any, addValidationError: (
   }
   if (!isStringList(resolvedData.productCategories)) addValidationError('Departments must be a list of department handles.');
   if (!isStringList(resolvedData.excludedProducts)) addValidationError('Excluded products must be a list of product IDs.');
+  const discountType = resolvedData.discountType ?? item?.discountType ?? 'percentage';
+  const discountValue = resolvedData.discountValue !== undefined ? resolvedData.discountValue : item?.discountValue;
+  if (discountType === 'percentage' && Number(discountValue || 0) > 100) {
+    addValidationError('A percentage discount cannot be more than 100%.');
+  }
+  const validFrom = resolvedData.validFrom !== undefined ? resolvedData.validFrom : item?.validFrom;
+  const validTo = resolvedData.validTo !== undefined ? resolvedData.validTo : item?.validTo;
+  if (validFrom && validTo && new Date(validTo).getTime() <= new Date(validFrom).getTime()) {
+    addValidationError('The coupon must end after it starts. Choose a "valid to" date later than "valid from".');
+  }
   const maxUses = resolvedData.maxUses ?? item?.maxUses ?? 0;
   const currentUses = item?.currentUses ?? 0;
   if (Number(maxUses) > 0 && Number(maxUses) < Number(currentUses)) {

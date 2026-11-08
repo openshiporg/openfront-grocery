@@ -432,11 +432,13 @@ export async function ensureRollingFulfillmentAvailability(
     });
     if (plan.deliveryCreates.length) {
       await tx.deliverySlot.createMany({
+        skipDuplicates: true,
         data: plan.deliveryCreates.map((slot) => ({ ...slot, storeId: store.id })),
       });
     }
     if (plan.pickupCreates.length) {
       await tx.pickupSlot.createMany({
+        skipDuplicates: true,
         data: plan.pickupCreates.map((slot) => ({ ...slot, storeId: store.id })),
       });
     }

@@ -10,6 +10,7 @@ import { trackingFields } from "./trackingFields";
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { isSignedIn, permissions } from "../access";
 import { currentMembershipStoreId, storeScopedFilter } from '../lib/storeAccess';
+import { slotWindowError } from '../lib/slotWindow';
 
 export const PickupSlot = list({
   access: {
@@ -32,7 +33,18 @@ export const PickupSlot = list({
       if (!storeId) throw new Error('An active store is required');
       return { ...resolvedData, store: { connect: { id: storeId } } };
     },
-    validate: { delete: async ({ item, addValidationError }) => { if (Number(item.currentOrders || 0) > 0) addValidationError('Booked pickup slots cannot be deleted'); } },
+    validate: {
+      create: async ({ resolvedData, context, addValidationError }) => {
+        const windowError = slotWindowError(resolvedData.startTime, resolvedData.endTime);
+        if (windowError) addValidationError(windowError);
+        const storeId = resolvedData.store?.connect?.id;
+        if (!windowError && storeId && resolvedData.date) {
+          const duplicate = await context.prisma.pickupSlot.findFirst({ where: { storeId, date: new Date(resolvedData.date), startTime: resolvedData.startTime, endTime: resolvedData.endTime }, select: { id: true } });
+          if (duplicate) addValidationError(`There is already a pickup slot for ${resolvedData.startTime}–${resolvedData.endTime} on that day.`);
+        }
+        if (resolvedData.maxOrders !== undefined && Number(resolvedData.maxOrders) < 1) addValidationError('A slot needs room for at least one order.');
+      },
+      delete: async ({ item, addValidationError }) => { if (Number(item.currentOrders || 0) > 0) addValidationError('Booked pickup slots cannot be deleted'); } },
   },
   ui: {
     listView: {

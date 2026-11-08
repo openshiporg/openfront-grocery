@@ -100,7 +100,9 @@ test('form errors show Keystone validation text, never Prisma, stack or GraphQL 
   const of = (...errors) => publicGraphQLErrorMessage({ response: { errors } });
   assert.equal(of({ message: 'You provided invalid data for this operation.\n  - User.password: Password must be at least 10 characters long',
     extensions: { code: 'KS_VALIDATION_FAILURE' } }),
-  'You provided invalid data for this operation.\nPassword must be at least 10 characters long');
+  'Password must be at least 10 characters long');
+  assert.equal(of({ message: 'You provided invalid data for this operation.\n  - Coupon: The coupon must end after it starts.',
+    extensions: { code: 'KS_VALIDATION_FAILURE' } }), 'The coupon must end after it starts.');
   assert.equal(of({ message: 'Prisma error: Unique constraint failed on the fields: (`email`)', extensions: { code: 'KS_PRISMA_ERROR' } }),
     'A record with this email already exists.');
   for (const leak of [

@@ -24,7 +24,9 @@ export const NotificationPreference = list({
     },
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      // The owner is fixed at creation; an edit never re-links the record.
+      if (operation !== 'create') return resolvedData;
       if (!context.session?.itemId) throw new Error('An authenticated owner is required');
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     },

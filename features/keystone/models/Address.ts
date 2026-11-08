@@ -37,7 +37,9 @@ export const Address = list({
     },
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      // The owner is fixed at creation; an edit never re-links the record.
+      if (operation !== 'create') return resolvedData;
       if (!context.session?.itemId) return resolvedData;
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     },
