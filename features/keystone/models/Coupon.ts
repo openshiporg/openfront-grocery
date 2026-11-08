@@ -108,22 +108,24 @@ export const Coupon = list({
       },
     }),
     discountValue: float({
-      label: "Discount Value",
+      label: "Discount",
       ui: {
-        description: "Percentage (0-100) or fixed dollar amount",
+        description: "Percent off (0–100) for a percentage coupon, or dollars off for a fixed-amount coupon.",
       },
       validation: { min: 0 },
     }),
-    discountValueCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative fixed discount (minor units)' }),
+    // Checkout and order finalisation charge from the cents copies; resolveInput derives them from the
+    // dollar fields above, so the form shows dollars only.
+    discountValueCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Fixed discount', ui: { createView: { fieldMode: 'hidden' }, itemView: { fieldMode: 'hidden' } } }),
     minPurchase: float({
-      label: "Legacy display minimum purchase",
+      label: "Minimum order",
       ui: {
-        description: "Minimum order amount required to use this coupon",
+        description: "Order subtotal in dollars needed to use this coupon. 0 means no minimum.",
       },
       validation: { min: 0 },
       defaultValue: 0,
     }),
-    minPurchaseCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Authoritative minimum purchase (minor units)' }),
+    minPurchaseCents: integer({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: 'Minimum order', ui: { createView: { fieldMode: 'hidden' }, itemView: { fieldMode: 'hidden' } } }),
     maxUses: integer({
       label: "Maximum Uses",
       ui: {

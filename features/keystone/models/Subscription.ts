@@ -110,8 +110,8 @@ export const Subscription = list({
     }),
     // Subscription discount percentage
     discount: float({
-      label: "Discount percentage (legacy display)",
-      ui: { description: "Legacy display value; discountBps is authoritative" },
+      label: "Discount (%)",
+      ui: { description: "Percent off each delivery." },
       validation: { min: 0, max: 100 },
       defaultValue: 0,
     }),
@@ -119,7 +119,9 @@ export const Subscription = list({
       defaultValue: 0,
       validation: { isRequired: true, min: 0, max: 10000 },
       access: { create: () => false, update: () => false },
-      label: "Discount (basis points)",
+      // Pricing copy kept in hundredths of a percent; the form shows the percentage above.
+      label: "Discount",
+      ui: { createView: { fieldMode: 'hidden' }, itemView: { fieldMode: 'hidden' } },
     }),
     // Whether subscription is currently active
     isActive: checkbox({
