@@ -50,5 +50,6 @@ test('badge and pages count items the same way', () => {
 });
 
 test('the guest cart cookie is usable in a framed HTTPS page', () => {
-  assert.match(read('features/storefront/lib/data/cart.ts'), /SameSite=None; Secure/);
+  assert.match(read('features/storefront/lib/data/cart.ts'), /SameSite=None; Secure; Partitioned/);
+  assert.match(read('features/storefront/lib/data/guest-orders.ts'), /partitioned,/);
 });

@@ -15,14 +15,18 @@ const GUEST_ORDER_MAX_AGE = Number.parseInt(
 export async function rememberGuestOrder(orderId: string, token: string, originalSessionId?: string) {
   const cookieStore = await cookies();
   const secure = process.env.NODE_ENV === 'production';
-  // Production is HTTPS; None lets a framed shop (Oathkeeper Browser, embeds) keep the order proof.
+  // Production is HTTPS: None + Partitioned (CHIPS) lets a framed shop (the
+  // Oathkeeper Browser, an embed, Safari) keep the order proof; it is scoped to
+  // the top-level site, so a direct visit is unchanged.
   const sameSite = secure ? 'none' as const : 'lax' as const;
+  const partitioned = secure;
   const sessionId=originalSessionId || cookieStore.get(GUEST_CART_COOKIE)?.value;
-  if(sessionId) cookieStore.set(`grocery_order_session_${orderId}`,sessionId,{httpOnly:true,sameSite,secure,path:'/',maxAge:GUEST_ORDER_MAX_AGE});
+  if(sessionId) cookieStore.set(`grocery_order_session_${orderId}`,sessionId,{httpOnly:true,sameSite,secure,partitioned,path:'/',maxAge:GUEST_ORDER_MAX_AGE});
   cookieStore.set(`${GUEST_ORDER_COOKIE_PREFIX}${orderId}`, token, {
     httpOnly: true,
     sameSite,
     secure,
+    partitioned,
     path: '/',
     maxAge: GUEST_ORDER_MAX_AGE,
   });

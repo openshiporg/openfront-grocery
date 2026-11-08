@@ -15,17 +15,31 @@ function getClientCookie(name: string) {
 
 function setClientCookie(name: string, value: string) {
   if (typeof document === 'undefined') return;
-  // Over HTTPS the cookie is also sent when the shop is framed (the Oathkeeper
-  // Browser, an embed). Browsers that block it anyway still work: the cart and
-  // checkout pages reconcile with the browser-side basket read.
-  const sameSite = window.location.protocol === 'https:' ? 'SameSite=None; Secure' : 'SameSite=Lax';
-  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${GUEST_CART_COOKIE_MAX_AGE}; ${sameSite}`;
+  if (window.location.protocol === 'https:') clearLegacyCookie(name);
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${GUEST_CART_COOKIE_MAX_AGE}; ${cookieScope()}`;
+}
+
+// Earlier releases set an unpartitioned SameSite=Lax cookie. A partitioned
+// cookie is stored separately, so the old one is removed explicitly or it
+// would outlive a cleared or merged cart.
+function clearLegacyCookie(name: string) {
+  document.cookie = `${name}=; path=/; max-age=0; SameSite=Lax; Secure`;
+}
+
+// Over HTTPS the guest cookie is SameSite=None; Secure; Partitioned (CHIPS), so
+// it is also kept when the shop is framed (the Oathkeeper Browser, an embed):
+// Safari stores a framed cookie only when it is partitioned. A partitioned
+// cookie is scoped to the top-level site, so a direct visit is unchanged.
+// Browsers that drop it anyway still agree: the cart and checkout pages
+// reconcile with the browser-side basket read.
+function cookieScope() {
+  return window.location.protocol === 'https:' ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax';
 }
 
 function clearClientCookie(name: string) {
   if (typeof document === 'undefined') return;
-  const sameSite = window.location.protocol === 'https:' ? 'SameSite=None; Secure' : 'SameSite=Lax';
-  document.cookie = `${name}=; path=/; max-age=0; ${sameSite}`;
+  if (window.location.protocol === 'https:') clearLegacyCookie(name);
+  document.cookie = `${name}=; path=/; max-age=0; ${cookieScope()}`;
 }
 
 async function getServerSessionId() {
