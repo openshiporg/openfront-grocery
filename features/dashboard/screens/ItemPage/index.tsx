@@ -38,12 +38,28 @@ export async function ItemPage({ params }: ItemPageParams) {
   // Use the working dashboard action for item data
   const response = await getItemAction(list, itemId, {}, cacheOptions)
 
-  // A failed fetch or an unreadable/missing record is a real 404, never a 200 or 500.
-  if (!response.success || !response.data?.item) {
-    notFound()
+  let fetchedItem: Record<string, unknown> | null = response.success ? (response.data?.item as Record<string, unknown> | null) ?? null : null
+  // A record whose relationship cannot be read (a broken link) still exists: query it again without
+  // the relationship fields, show it, and mark those fields unavailable. A null record is a real 404.
+  const unavailable: string[] = []
+  if (!fetchedItem) {
+    const relationshipPaths = Object.values(list.fields as Record<string, any>)
+      .filter((field: any) => typeof field.viewsIndex === 'number' && field.fieldMeta?.refListKey && field.path !== 'id')
+      .map((field: any) => field.path as string)
+    if (relationshipPaths.length) {
+      const safeList = {
+        ...list,
+        fields: Object.fromEntries(Object.entries(list.fields as Record<string, any>).filter(([path]) => !relationshipPaths.includes(path))),
+      }
+      const safe = await getItemAction(safeList, itemId, {}, cacheOptions)
+      const safeItem = safe.success ? (safe.data?.item as Record<string, unknown> | null) : null
+      if (safeItem) {
+        fetchedItem = { ...safeItem }
+        for (const path of relationshipPaths) { fetchedItem[path] = null; unavailable.push(path) }
+      }
+    }
   }
-  const fetchedItem = response.data.item as Record<string, unknown>
-
+  if (!fetchedItem) notFound()
   // Get adminMeta for the list structure
   const adminMetaResponse = await getAdminMetaAction(list.key)
   
@@ -69,12 +85,20 @@ export async function ItemPage({ params }: ItemPageParams) {
     })
   }
 
+  const unavailableLabel = (path: string) => (path === 'user' ? 'Customer' : String(enhancedList.fields?.[path]?.label || path)) + ' unavailable'
   return (
-    <ItemPageClient
-      list={enhancedList}
-      item={fetchedItem}
-      itemId={itemId}
-    />
+    <>
+      {unavailable.length > 0 && (
+        <div role="status" className="mb-4 rounded-md border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          {unavailable.map(unavailableLabel).join(' · ')}: the linked record could not be read, so it is shown empty here.
+        </div>
+      )}
+      <ItemPageClient
+        list={enhancedList}
+        item={fetchedItem}
+        itemId={itemId}
+      />
+    </>
   )
 }
 
