@@ -1,10 +1,10 @@
-import { groceryOutboxPayloadHash } from './groceryOutbox';
+import { payloadHash } from './payloadHash';
 /** Payment intent binds customer instructions/ownership as well as commercial amount. */
 export function checkoutRequestFingerprint(data: any) {
   if (!data || typeof data !== 'object') throw new Error('Checkout request evidence is missing');
   const address = data.deliveryAddress || {};
   const ownerId = data.checkoutOwnerId || null;
-  return groceryOutboxPayloadHash({ cartId: data.cartId, ownerId, sessionId: ownerId ? null : String(data.sessionId || '').trim() || null,
+  return payloadHash({ cartId: data.cartId, ownerId, sessionId: ownerId ? null : String(data.sessionId || '').trim() || null,
     email: String(data.email || '').trim().toLowerCase(),
     address: Object.fromEntries(['firstName', 'lastName', 'address1', 'address2', 'city', 'province', 'postalCode', 'phone'].map(key => [key, String(address[key] || '').trim()])),
     fulfillmentMethod: data.fulfillmentMethod, deliverySlotId: data.deliverySlotId || null, pickupSlotId: data.pickupSlotId || null,
@@ -15,7 +15,7 @@ export function checkoutRequestFingerprint(data: any) {
   });
 }
 export function checkoutCartFingerprint(cart: any) {
-  return groceryOutboxPayloadHash({ items: (cart.items || []).map((item: any) => ({ id: item.id, quantity: item.quantity,
+  return payloadHash({ items: (cart.items || []).map((item: any) => ({ id: item.id, quantity: item.quantity,
     productId: item.product?.id, unitPriceCents: item.product?.priceCents, taxRateBasisPoints: item.product?.taxRateBasisPoints ?? null,
     substitutionPreference: item.substitutionPreference || null, pricingMethod: item.product?.pricingMethod, unitOfMeasure: item.product?.unitOfMeasure,
   })).sort((a: any, b: any) => a.id.localeCompare(b.id)) });
@@ -31,7 +31,7 @@ function checkoutDateKey(value: unknown) {
 }
 /** Binds an explicit compensated-checkout restart to the same customer-visible commercial terms. */
 export function checkoutTermsFingerprint(data: any) {
-  return groceryOutboxPayloadHash({
+  return payloadHash({
     amountInCents: Number(data?.amountInCents ?? 0),
     subtotalCents: moneyCents(data?.subtotal),
     taxCents: moneyCents(data?.tax),

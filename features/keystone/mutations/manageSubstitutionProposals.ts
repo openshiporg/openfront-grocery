@@ -4,7 +4,6 @@ import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
 import { convertMeasureMilli, measureMilli, measuredSubtotalCents } from '../lib/fulfillmentActuals';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { publicError } from '../lib/publicError';
 import { requireSessionStore } from '../lib/storeScope';
 import { verifyGuestOrderToken } from '../utils/guestOrderToken';
@@ -105,12 +104,6 @@ export async function proposeOrderLineSubstitution(_root: unknown, args: Propose
       ...(existing ? { previous: [...earlier, prior as Omit<SubstitutionProposal, 'previous'>].slice(-10) } : {}),
     };
     await tx.prisma.order.update({ where: { id: order.id }, data: { metadata: { ...(order.metadata as any), substitutionProposals: { ...proposals, [lineItemId]: proposal } } } });
-    // A required service message: queued for the customer; delivery is tracked in Communications.
-    await enqueueGroceryOutboxEvent(tx.prisma, {
-      storeId: store.id, eventKey: `order:${order.id}:substitution:${proposal.id}:proposed:v1`, eventType: 'order.substitution.proposed',
-      aggregateType: 'Order', aggregateId: order.id, occurredAt: proposal.proposedAt,
-      payload: { orderId: order.id, lineItemId, proposalId: proposal.id, originalTitle: line.title, productTitle: product.title, quantityMilli, unitOfMeasure: product.unitOfMeasure, estimatedSubtotalCents: proposal.estimatedSubtotalCents },
-    });
     return { proposalId: proposal.id, status: proposal.status, reused: false };
   }, { isolationLevel: 'ReadCommitted' as any }));
 }

@@ -1,7 +1,6 @@
 import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 
@@ -108,25 +107,6 @@ export async function recordOrderItemSubstitution(
       if (!matches) {
         throw new Error('Substitution idempotency key was reused with different substitution input');
       }
-      await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-        storeId: store.id,
-        eventKey: `substitution:${args.idempotencyKey}:recorded:v1`,
-        eventType: 'substitution.recorded',
-        aggregateType: 'order_line_item',
-        aggregateId: args.orderItemId,
-        occurredAt: new Date(existing.createdAt).toISOString(),
-        payload: {
-          substitutionId: existing.id,
-          orderId: order.id,
-          orderItemId: args.orderItemId,
-          originalProduct: existing.originalProduct,
-          substitutedProduct: existing.substitutedProduct,
-          reason: existing.reason || '',
-          customerApproved: Boolean(existing.customerApproved),
-          approvedAt: existing.approvedAt ? new Date(existing.approvedAt).toISOString() : null,
-          recordedById: existing.recordedBy?.id || null,
-        },
-      });
       return {
         success: true,
         substitutionId: existing.id,
@@ -152,25 +132,6 @@ export async function recordOrderItemSubstitution(
       },
     });
 
-    await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-      storeId: store.id,
-      eventKey: `substitution:${args.idempotencyKey}:recorded:v1`,
-      eventType: 'substitution.recorded',
-      aggregateType: 'order_line_item',
-      aggregateId: args.orderItemId,
-      occurredAt: new Date(substitution.createdAt).toISOString(),
-      payload: {
-        substitutionId: substitution.id,
-        orderId: order.id,
-        orderItemId: args.orderItemId,
-        originalProduct: lineItem.title,
-        substitutedProduct: args.substitutedProduct,
-        reason: args.reason,
-        customerApproved: args.customerApproved,
-        approvedAt: substitution.approvedAt ? new Date(substitution.approvedAt).toISOString() : null,
-        recordedById: context.session?.itemId || null,
-      },
-    });
 
     if (process.env.GROCERY_SUBSTITUTION_ROLLBACK_PROOF === args.idempotencyKey) {
       throw new Error('Injected substitution rollback proof');

@@ -56,7 +56,6 @@ export const Store = list({
     payments: relationship({ ref: 'Payment.store', many: true }),
     orderLineInventoryAllocations: relationship({ ref: 'OrderLineInventoryAllocation.store', many: true }),
     paymentWebhookEvents: relationship({ ref: 'PaymentWebhookEvent.store', many: true }),
-    outboxEvents: relationship({ ref: 'GroceryOutboxEvent.store', many: true }),
     ...trackingFields,
   },
 });

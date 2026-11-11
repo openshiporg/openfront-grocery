@@ -1755,117 +1755,6 @@ input ProductInformationVersionCreateInput {
   updatedAt: DateTime
 }
 
-type CustomerMessage {
-  id: ID!
-  store: Store
-  eventKey: String
-  order: Order
-  user: User
-  recipient: String
-  subject: String
-  body: String
-  channel: String
-  status: String
-  attempts: Int
-  providerEvidence: JSON
-  failureMessage: String
-  sentAt: DateTime
-  deliveryToken: String
-  deliveryLeaseExpiresAt: DateTime
-  createdAt: DateTime
-  updatedAt: DateTime
-}
-
-input CustomerMessageWhereUniqueInput {
-  id: ID
-  eventKey: String
-}
-
-input CustomerMessageWhereInput {
-  AND: [CustomerMessageWhereInput!]
-  OR: [CustomerMessageWhereInput!]
-  NOT: [CustomerMessageWhereInput!]
-  id: IDFilter
-  store: StoreWhereInput
-  eventKey: StringFilter
-  order: OrderWhereInput
-  user: UserWhereInput
-  recipient: StringFilter
-  subject: StringFilter
-  body: StringFilter
-  channel: StringFilter
-  status: StringFilter
-  attempts: IntNullableFilter
-  failureMessage: StringFilter
-  sentAt: DateTimeNullableFilter
-  deliveryToken: StringFilter
-  deliveryLeaseExpiresAt: DateTimeNullableFilter
-  createdAt: DateTimeFilter
-  updatedAt: DateTimeFilter
-}
-
-input CustomerMessageOrderByInput {
-  id: OrderDirection
-  eventKey: OrderDirection
-  recipient: OrderDirection
-  subject: OrderDirection
-  body: OrderDirection
-  channel: OrderDirection
-  status: OrderDirection
-  attempts: OrderDirection
-  failureMessage: OrderDirection
-  sentAt: OrderDirection
-  deliveryToken: OrderDirection
-  deliveryLeaseExpiresAt: OrderDirection
-  createdAt: OrderDirection
-  updatedAt: OrderDirection
-}
-
-input CustomerMessageUpdateInput {
-  store: StoreRelateToOneForUpdateInput
-  eventKey: String
-  order: OrderRelateToOneForUpdateInput
-  user: UserRelateToOneForUpdateInput
-  recipient: String
-  subject: String
-  body: String
-  channel: String
-  status: String
-  attempts: Int
-  providerEvidence: JSON
-  failureMessage: String
-  sentAt: DateTime
-  deliveryToken: String
-  deliveryLeaseExpiresAt: DateTime
-  createdAt: DateTime
-  updatedAt: DateTime
-}
-
-input CustomerMessageUpdateArgs {
-  where: CustomerMessageWhereUniqueInput!
-  data: CustomerMessageUpdateInput!
-}
-
-input CustomerMessageCreateInput {
-  store: StoreRelateToOneForCreateInput
-  eventKey: String
-  order: OrderRelateToOneForCreateInput
-  user: UserRelateToOneForCreateInput
-  recipient: String
-  subject: String
-  body: String
-  channel: String
-  status: String
-  attempts: Int
-  providerEvidence: JSON
-  failureMessage: String
-  sentAt: DateTime
-  deliveryToken: String
-  deliveryLeaseExpiresAt: DateTime
-  createdAt: DateTime
-  updatedAt: DateTime
-}
-
 type ContactMessage {
   id: ID!
   store: Store!
@@ -3762,124 +3651,6 @@ input FavoriteProductCreateInput {
   updatedAt: DateTime
 }
 
-type GroceryOutboxEvent {
-  id: ID!
-  store: Store!
-  eventKey: String
-  eventType: String
-  aggregateType: String
-  aggregateId: String
-  schemaVersion: Int
-  payload: JSON
-  payloadHash: String
-  occurredAt: DateTime
-  status: String
-  attempts: Int
-  claimToken: String
-  claimedAt: DateTime
-  deliveredAt: DateTime
-  nextAttemptAt: DateTime
-  lastError: String
-  createdAt: DateTime
-  updatedAt: DateTime
-}
-
-input GroceryOutboxEventWhereUniqueInput {
-  id: ID
-  eventKey: String
-}
-
-input GroceryOutboxEventWhereInput {
-  AND: [GroceryOutboxEventWhereInput!]
-  OR: [GroceryOutboxEventWhereInput!]
-  NOT: [GroceryOutboxEventWhereInput!]
-  id: IDFilter
-  store: StoreWhereInput
-  eventKey: StringFilter
-  eventType: StringFilter
-  aggregateType: StringFilter
-  aggregateId: StringFilter
-  schemaVersion: IntFilter
-  payloadHash: StringFilter
-  occurredAt: DateTimeFilter
-  status: StringFilter
-  attempts: IntNullableFilter
-  claimToken: StringFilter
-  claimedAt: DateTimeNullableFilter
-  deliveredAt: DateTimeNullableFilter
-  nextAttemptAt: DateTimeNullableFilter
-  lastError: StringFilter
-  createdAt: DateTimeFilter
-  updatedAt: DateTimeFilter
-}
-
-input GroceryOutboxEventOrderByInput {
-  id: OrderDirection
-  eventKey: OrderDirection
-  eventType: OrderDirection
-  aggregateType: OrderDirection
-  aggregateId: OrderDirection
-  schemaVersion: OrderDirection
-  payloadHash: OrderDirection
-  occurredAt: OrderDirection
-  status: OrderDirection
-  attempts: OrderDirection
-  claimToken: OrderDirection
-  claimedAt: OrderDirection
-  deliveredAt: OrderDirection
-  nextAttemptAt: OrderDirection
-  lastError: OrderDirection
-  createdAt: OrderDirection
-  updatedAt: OrderDirection
-}
-
-input GroceryOutboxEventUpdateInput {
-  store: StoreRelateToOneForUpdateInput
-  eventKey: String
-  eventType: String
-  aggregateType: String
-  aggregateId: String
-  schemaVersion: Int
-  payload: JSON
-  payloadHash: String
-  occurredAt: DateTime
-  status: String
-  attempts: Int
-  claimToken: String
-  claimedAt: DateTime
-  deliveredAt: DateTime
-  nextAttemptAt: DateTime
-  lastError: String
-  createdAt: DateTime
-  updatedAt: DateTime
-}
-
-input GroceryOutboxEventUpdateArgs {
-  where: GroceryOutboxEventWhereUniqueInput!
-  data: GroceryOutboxEventUpdateInput!
-}
-
-input GroceryOutboxEventCreateInput {
-  store: StoreRelateToOneForCreateInput!
-  eventKey: String
-  eventType: String
-  aggregateType: String
-  aggregateId: String
-  schemaVersion: Int
-  payload: JSON
-  payloadHash: String
-  occurredAt: DateTime
-  status: String
-  attempts: Int
-  claimToken: String
-  claimedAt: DateTime
-  deliveredAt: DateTime
-  nextAttemptAt: DateTime
-  lastError: String
-  createdAt: DateTime
-  updatedAt: DateTime
-}
-
 type InventoryLot {
   id: ID!
   lotNumber: String
@@ -4451,6 +4222,7 @@ type Order {
   displayId: Int
   email: String
   status: OrderStatusType
+  fulfillmentStage: String
   taxRate: Float
   currencyCode: String
   subtotalCents: Int
@@ -7457,8 +7229,6 @@ type Store {
   orderLineInventoryAllocationsCount(where: OrderLineInventoryAllocationWhereInput! = {}): Int
   paymentWebhookEvents(where: PaymentWebhookEventWhereInput! = {}, orderBy: [PaymentWebhookEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: PaymentWebhookEventWhereUniqueInput): [PaymentWebhookEvent!]
   paymentWebhookEventsCount(where: PaymentWebhookEventWhereInput! = {}): Int
-  outboxEvents(where: GroceryOutboxEventWhereInput! = {}, orderBy: [GroceryOutboxEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: GroceryOutboxEventWhereUniqueInput): [GroceryOutboxEvent!]
-  outboxEventsCount(where: GroceryOutboxEventWhereInput! = {}): Int
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -7499,7 +7269,6 @@ input StoreWhereInput {
   payments: PaymentManyRelationFilter
   orderLineInventoryAllocations: OrderLineInventoryAllocationManyRelationFilter
   paymentWebhookEvents: PaymentWebhookEventManyRelationFilter
-  outboxEvents: GroceryOutboxEventManyRelationFilter
   createdAt: DateTimeFilter
   updatedAt: DateTimeFilter
 }
@@ -7582,12 +7351,6 @@ input PurchaseOrderManyRelationFilter {
   none: PurchaseOrderWhereInput
 }
 
-input GroceryOutboxEventManyRelationFilter {
-  every: GroceryOutboxEventWhereInput
-  some: GroceryOutboxEventWhereInput
-  none: GroceryOutboxEventWhereInput
-}
-
 input StoreOrderByInput {
   id: OrderDirection
   code: OrderDirection
@@ -7626,7 +7389,6 @@ input StoreUpdateInput {
   payments: PaymentRelateToManyForUpdateInput
   orderLineInventoryAllocations: OrderLineInventoryAllocationRelateToManyForUpdateInput
   paymentWebhookEvents: PaymentWebhookEventRelateToManyForUpdateInput
-  outboxEvents: GroceryOutboxEventRelateToManyForUpdateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -7722,13 +7484,6 @@ input PurchaseOrderRelateToManyForUpdateInput {
   connect: [PurchaseOrderWhereUniqueInput!]
 }
 
-input GroceryOutboxEventRelateToManyForUpdateInput {
-  disconnect: [GroceryOutboxEventWhereUniqueInput!]
-  set: [GroceryOutboxEventWhereUniqueInput!]
-  create: [GroceryOutboxEventCreateInput!]
-  connect: [GroceryOutboxEventWhereUniqueInput!]
-}
-
 input StoreUpdateArgs {
   where: StoreWhereUniqueInput!
   data: StoreUpdateInput!
@@ -7761,7 +7516,6 @@ input StoreCreateInput {
   payments: PaymentRelateToManyForCreateInput
   orderLineInventoryAllocations: OrderLineInventoryAllocationRelateToManyForCreateInput
   paymentWebhookEvents: PaymentWebhookEventRelateToManyForCreateInput
-  outboxEvents: GroceryOutboxEventRelateToManyForCreateInput
   createdAt: DateTime
   updatedAt: DateTime
 }
@@ -7829,11 +7583,6 @@ input DeliveryRouteRelateToManyForCreateInput {
 input PurchaseOrderRelateToManyForCreateInput {
   create: [PurchaseOrderCreateInput!]
   connect: [PurchaseOrderWhereUniqueInput!]
-}
-
-input GroceryOutboxEventRelateToManyForCreateInput {
-  create: [GroceryOutboxEventCreateInput!]
-  connect: [GroceryOutboxEventWhereUniqueInput!]
 }
 
 type StoreSettings {
@@ -8392,12 +8141,6 @@ type Mutation {
   updateProductInformationVersions(data: [ProductInformationVersionUpdateArgs!]!): [ProductInformationVersion]
   deleteProductInformationVersion(where: ProductInformationVersionWhereUniqueInput!): ProductInformationVersion
   deleteProductInformationVersions(where: [ProductInformationVersionWhereUniqueInput!]!): [ProductInformationVersion]
-  createCustomerMessage(data: CustomerMessageCreateInput!): CustomerMessage
-  createCustomerMessages(data: [CustomerMessageCreateInput!]!): [CustomerMessage]
-  updateCustomerMessage(where: CustomerMessageWhereUniqueInput!, data: CustomerMessageUpdateInput!): CustomerMessage
-  updateCustomerMessages(data: [CustomerMessageUpdateArgs!]!): [CustomerMessage]
-  deleteCustomerMessage(where: CustomerMessageWhereUniqueInput!): CustomerMessage
-  deleteCustomerMessages(where: [CustomerMessageWhereUniqueInput!]!): [CustomerMessage]
   createContactMessage(data: ContactMessageCreateInput!): ContactMessage
   createContactMessages(data: [ContactMessageCreateInput!]!): [ContactMessage]
   updateContactMessage(where: ContactMessageWhereUniqueInput!, data: ContactMessageUpdateInput!): ContactMessage
@@ -8500,12 +8243,6 @@ type Mutation {
   updateFavoriteProducts(data: [FavoriteProductUpdateArgs!]!): [FavoriteProduct]
   deleteFavoriteProduct(where: FavoriteProductWhereUniqueInput!): FavoriteProduct
   deleteFavoriteProducts(where: [FavoriteProductWhereUniqueInput!]!): [FavoriteProduct]
-  createGroceryOutboxEvent(data: GroceryOutboxEventCreateInput!): GroceryOutboxEvent
-  createGroceryOutboxEvents(data: [GroceryOutboxEventCreateInput!]!): [GroceryOutboxEvent]
-  updateGroceryOutboxEvent(where: GroceryOutboxEventWhereUniqueInput!, data: GroceryOutboxEventUpdateInput!): GroceryOutboxEvent
-  updateGroceryOutboxEvents(data: [GroceryOutboxEventUpdateArgs!]!): [GroceryOutboxEvent]
-  deleteGroceryOutboxEvent(where: GroceryOutboxEventWhereUniqueInput!): GroceryOutboxEvent
-  deleteGroceryOutboxEvents(where: [GroceryOutboxEventWhereUniqueInput!]!): [GroceryOutboxEvent]
   createInventoryLot(data: InventoryLotCreateInput!): InventoryLot
   createInventoryLots(data: [InventoryLotCreateInput!]!): [InventoryLot]
   updateInventoryLot(where: InventoryLotWhereUniqueInput!, data: InventoryLotUpdateInput!): InventoryLot
@@ -8726,7 +8463,7 @@ type Mutation {
   revokeGroceryStaffInvitation(invitationId: ID!, reason: String!): JSON!
   updateGroceryStaffAccess(userId: ID!, capabilities: JSON!, reason: String!): JSON!
   acceptGroceryStaffInvitation(token: String!, password: String!): JSON!
-  inviteGroceryStaff(name: String!, email: String!, capabilities: JSON!, delivery: String): JSON!
+  inviteGroceryStaff(name: String!, email: String!, capabilities: JSON!): JSON!
   voidGroceryPaymentAuthorization(paymentId: ID!, reason: String!, idempotencyKey: String!): GroceryVoidResult!
   refundGroceryOrderLines(orderId: ID!, paymentId: ID!, idempotencyKey: String!, reason: String!, lines: JSON!): GroceryLineRefundResult!
   updateGroceryNotificationPreferences(orderUpdates: Boolean!, deliveryAlerts: Boolean!, backInStock: Boolean!, emailEnabled: Boolean): Boolean!
@@ -8742,7 +8479,6 @@ type Mutation {
   updateProductInformation(productId: ID!, input: JSON!, idempotencyKey: String!): JSON!
   authorizeOrderAdjustment(orderId: ID!, sessionId: String, token: String): JSON!
   respondToOrderLineSubstitution(orderId: ID!, lineItemId: ID!, proposalId: String!, decision: String!, sessionId: String, token: String): JSON!
-  requestGuestOrderAccess(orderId: ID!, email: String!): Boolean!
   submitGroceryContactMessage(data: GroceryContactMessageInput!): GroceryContactMessageReceipt!
   registerGroceryCustomer(name: String!, email: String!, password: String!): RegisterGroceryCustomerResult!
   saveFavoriteProduct(productId: ID!): SaveFavoriteProductResult!
@@ -8795,11 +8531,6 @@ type Mutation {
   advanceOrderFulfillment(orderId: ID!, target: String!): OrderFulfillmentWorkflowResult!
   recordOrderItemSubstitution(orderItemId: ID!, substitutedProduct: String!, reason: String, customerApproved: Boolean, idempotencyKey: String!): OrderItemSubstitutionWorkflowResult!
   proposeOrderLineSubstitution(orderId: ID!, lineItemId: ID!, productId: ID!, quantity: String!, unitOfMeasure: String!, reason: String!, idempotencyKey: String!): JSON!
-  claimGroceryOutboxEvents(workerId: String!, limit: Int): [GroceryOutboxEventResult!]!
-  completeGroceryOutboxEvent(eventId: ID!, claimToken: String!, succeeded: Boolean!, unknown: Boolean, error: String): GroceryOutboxEventResult!
-  replayGroceryOutboxEvent(eventId: ID!): GroceryOutboxEventResult!
-  reconcileGroceryCustomerDelivery(eventId: ID!, action: String!, reason: String!, confirmDuplicateRisk: Boolean): GroceryOutboxEventResult!
-  deliverGroceryOutboxNow(limit: Int): JSON!
   configureDeliverySlot(slotId: ID!, capacity: Int, deliveryFee: Int, isActive: Boolean, idempotencyKey: String!): StoreCapacityResult!
   configurePickupSlot(slotId: ID!, maxOrders: Int, isAvailable: Boolean, idempotencyKey: String!): StoreCapacityResult!
   configureParkingSpot(spotId: ID!, isAvailable: Boolean!, idempotencyKey: String!): StoreCapacityResult!
@@ -8878,9 +8609,6 @@ type Query {
   productInformationVersion(where: ProductInformationVersionWhereUniqueInput!): ProductInformationVersion
   productInformationVersions(where: ProductInformationVersionWhereInput! = {}, orderBy: [ProductInformationVersionOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ProductInformationVersionWhereUniqueInput): [ProductInformationVersion!]
   productInformationVersionsCount(where: ProductInformationVersionWhereInput! = {}): Int
-  customerMessage(where: CustomerMessageWhereUniqueInput!): CustomerMessage
-  customerMessages(where: CustomerMessageWhereInput! = {}, orderBy: [CustomerMessageOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: CustomerMessageWhereUniqueInput): [CustomerMessage!]
-  customerMessagesCount(where: CustomerMessageWhereInput! = {}): Int
   contactMessage(where: ContactMessageWhereUniqueInput!): ContactMessage
   contactMessages(where: ContactMessageWhereInput! = {}, orderBy: [ContactMessageOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: ContactMessageWhereUniqueInput): [ContactMessage!]
   contactMessagesCount(where: ContactMessageWhereInput! = {}): Int
@@ -8932,9 +8660,6 @@ type Query {
   favoriteProduct(where: FavoriteProductWhereUniqueInput!): FavoriteProduct
   favoriteProducts(where: FavoriteProductWhereInput! = {}, orderBy: [FavoriteProductOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: FavoriteProductWhereUniqueInput): [FavoriteProduct!]
   favoriteProductsCount(where: FavoriteProductWhereInput! = {}): Int
-  groceryOutboxEvent(where: GroceryOutboxEventWhereUniqueInput!): GroceryOutboxEvent
-  groceryOutboxEvents(where: GroceryOutboxEventWhereInput! = {}, orderBy: [GroceryOutboxEventOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: GroceryOutboxEventWhereUniqueInput): [GroceryOutboxEvent!]
-  groceryOutboxEventsCount(where: GroceryOutboxEventWhereInput! = {}): Int
   inventoryLot(where: InventoryLotWhereUniqueInput!): InventoryLot
   inventoryLots(where: InventoryLotWhereInput! = {}, orderBy: [InventoryLotOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: InventoryLotWhereUniqueInput): [InventoryLot!]
   inventoryLotsCount(where: InventoryLotWhereInput! = {}): Int
@@ -9074,7 +8799,6 @@ type Query {
   publicGroceryProducts(department: String, search: String, availability: String, organic: Boolean, sort: String, take: Int, skip: Int, ids: [ID!]): PublicGroceryProductConnection!
   publicGroceryProduct(handle: String!): PublicGroceryProduct
   publicGroceryAvailability(days: Int): PublicGroceryAvailability!
-  groceryOutboxStatus: GroceryOutboxStatusResult!
   availablePickupSlots(days: Int, minCapacity: Int): [PickupSlotResult!]!
   pickupSlotsByDate(days: Int, minCapacity: Int): [PickupSlotsByDateResult!]!
   availableParkingSpots(accessibleOnly: Boolean): [ParkingSpotResult!]!
@@ -9735,30 +9459,6 @@ type OrderItemSubstitutionWorkflowResult {
   customerApproved: Boolean!
   approvedAt: String
   reused: Boolean!
-}
-
-type GroceryOutboxEventResult {
-  eventId: ID!
-  eventKey: String!
-  eventType: String!
-  aggregateType: String!
-  aggregateId: String!
-  schemaVersion: Int!
-  payload: JSON!
-  payloadHash: String!
-  occurredAt: String!
-  status: String!
-  attempts: Int!
-  claimToken: String
-}
-
-type GroceryOutboxStatusResult {
-  pending: Int!
-  processing: Int!
-  delivered: Int!
-  failed: Int!
-  unknown: Int!
-  reconciled: Int!
 }
 
 type StoreCapacityResult {

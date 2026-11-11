@@ -4,7 +4,7 @@ import { evaluateDeliveryPolicy } from './deliveryPolicy';
 import { zonedDateKey, zonedDateTimeForDateKey } from './storeTime';
 import { assertOrderHandoffPayment } from './fulfillmentPayment';
 import { assertOrderInventoryEligible } from './inventorySafety';
-import { enqueueGroceryOutboxEvent, groceryOutboxPayloadHash } from './groceryOutbox';
+import { payloadHash } from './payloadHash';
 
 export type ReturnedDeliveryRescheduleInput = { orderId: string; deliverySlotId: string; customerApproval: string; conditionEvidence: string; idempotencyKey: string };
 export function normalizeReturnedDeliveryReschedule(input: ReturnedDeliveryRescheduleInput) {
@@ -41,7 +41,7 @@ export function rescheduleSlotDecision(order: any, slot: any, store: any, settin
 /** Reserved actual goods remain allocated; this moves only the customer promise and slot capacity. */
 export async function rescheduleReturnedDeliveryInTransaction(tx: any, actor: { storeId: string; userId: string }, rawInput: ReturnedDeliveryRescheduleInput, now = new Date()) {
   const input = normalizeReturnedDeliveryReschedule(rawInput);
-  const fingerprint = groceryOutboxPayloadHash(input);
+  const fingerprint = payloadHash(input);
   await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id"=$1 FOR UPDATE', input.orderId);
   const order = await tx.order.findUnique({ where: { id: input.orderId } });
   if (!order || order.storeId !== actor.storeId) throw new Error('Order not found in active store');
@@ -76,7 +76,5 @@ export async function rescheduleReturnedDeliveryInTransaction(tx: any, actor: { 
   await tx.order.update({ where: { id: order.id }, data: { status: 'packed', deliverySlotId: newSlot.id, deliveryDate: new Date(newSlot.date), deliveryTimeWindow,
     metadata: { ...order.metadata, ...after, deliveryPolicySnapshot: decision.policy, deliveryReschedules: [...history, event],
       deliveryOutcome: { status: 'rescheduled', custody: 'store', occurredAt: event.occurredAt, reason: 'Customer-approved later delivery window', retryAt: decision.startsAt.toISOString() } } } });
-  await enqueueGroceryOutboxEvent(tx, { storeId: actor.storeId, eventKey: `order.rescheduled:${groceryOutboxPayloadHash({ orderId: order.id, key: input.idempotencyKey })}`,
-    eventType: 'order.rescheduled', aggregateType: 'Order', aggregateId: order.id, occurredAt: now.toISOString(), payload: { orderId: order.id, before, after } });
   return { success: true, orderId: order.id, deliverySlotId: newSlot.id, promiseEndsAt: after.promiseEndsAt, reused: false };
 }

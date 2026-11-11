@@ -7,7 +7,6 @@ import { verifyPaymentWebhook } from '../utils/paymentProviderAdapter';
 import { shouldApplyRefundTransition, type RefundEventOrder, type RefundStatus } from '../lib/refundState';
 import { paymentEventOrderFromProviderData, shouldApplyPaymentTransition, type PaymentEventStatus } from '../lib/paymentState';
 import { assertRefundBudget, normalizeProviderRefund, refundProviderData } from '../lib/refundRecovery';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requirePrismaSuccess, withSerializableRetry } from '../utils/serializableTransaction';
 import { requireSessionStore } from '../lib/storeScope';
 
@@ -298,7 +297,6 @@ async function processVerifiedPaymentEvent(providerCode: string, verified: any, 
               const aggregate = await tx.paymentRefund.aggregate({ where: { paymentId: knownPayment.id, status: 'succeeded' }, _sum: { amountCents: true } });
               const refundedCents = Number(aggregate._sum.amountCents || 0);
               await tx.payment.update({ where: { id: knownPayment.id }, data: { status: refundedCents >= knownPayment.amountCents ? 'refunded' : 'partially_refunded', providerData: { ...((knownPayment.providerData as any) || {}), refundedAmountCents: refundedCents } } });
-              await enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `payment-refund:${refund.id}:completed:v1`, eventType: 'payment.refunded', aggregateType: 'payment', aggregateId: knownPayment.id, occurredAt: new Date().toISOString(), payload: { paymentId: knownPayment.id, refundId: refund.id, amountCents, cumulativeRefundedCents: refundedCents, providerCode, providerPaymentId: paymentId, providerRefundId: refundId } });
             }
           }
           updatedPaymentId = knownPayment.id;

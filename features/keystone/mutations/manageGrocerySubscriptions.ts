@@ -1,7 +1,7 @@
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
-import { canonicalGroceryOutboxPayload } from '../lib/groceryOutbox';
+import { canonicalPayload } from '../lib/payloadHash';
 import { nextSubscriptionOccurrence, prepareSubscriptionRun, subscriptionAnchorDay } from '../lib/recurringOrders';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 
@@ -10,7 +10,7 @@ export async function manageGrocerySubscription(_root: unknown, args: Args, cont
   const store = await requireSessionStore(context);
   const userId = context.session!.itemId;
   if (!['create', 'pause', 'resume', 'skip', 'cancel', 'prepare'].includes(args.action) || args.idempotencyKey?.trim().length < 12) throw new Error('Valid recurring order action and idempotency key required');
-  const fingerprint = canonicalGroceryOutboxPayload({ ...args, idempotencyKey: undefined });
+  const fingerprint = canonicalPayload({ ...args, idempotencyKey: undefined });
   return withSerializableRetry(() => context.transaction(async transactionContext => {
     const tx: any = transactionContext.prisma;
     await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-subscription'), hashtext($1))", args.subscriptionId || args.idempotencyKey);

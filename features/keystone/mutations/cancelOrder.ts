@@ -4,7 +4,6 @@ import { releaseOrderCoupon } from '../lib/couponRedemptions';
 import { restoreLoyaltyRedemptionForOrder, reconcileOrderLoyalty } from "../lib/loyaltyAccounting";
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
 import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import { isInventoryLotEligible } from '../lib/inventorySafety';
@@ -219,15 +218,6 @@ export async function cancelGroceryOrderForStore(
     assertTransition(ORDER_TRANSITIONS, 'Order', order.status, 'cancelled');
     const cancelMoved = await tx.order.updateMany({ where: { id: orderId, status: order.status }, data: { status: 'cancelled', canceledAt: cancelledAt, metadata } });
     if (cancelMoved.count !== 1) throw publicError('Order changed while cancelling; refresh and retry', 'CANCEL_REFUSED');
-    await enqueueGroceryOutboxEvent(tx, {
-      storeId: store.id,
-      eventKey: `order.cancelled:${orderId}:${normalizedKey}`,
-      eventType: 'order.cancelled',
-      aggregateType: 'Order',
-      aggregateId: orderId,
-      occurredAt: cancelledAt.toISOString(),
-      payload: { orderId, reason: normalizedReason, idempotencyKey: normalizedKey, inventoryRestored: returnDisposition !== 'waste', disposition: returnDisposition, fulfillmentCapacityReleased: true, couponRedemptionReleased: couponRelease.released },
-    });
     return { success: true, orderId, status: 'cancelled', reused: false };
   }, { isolationLevel: 'Serializable' as any }));
 }

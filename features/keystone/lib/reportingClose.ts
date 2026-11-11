@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { canonicalGroceryOutboxPayload } from './groceryOutbox';
+import { canonicalPayload } from './payloadHash';
 import { zonedDateKey, zonedStartOfDateKey } from './storeTime';
 import { quantityMilli } from './inventoryMovements';
 
@@ -227,4 +227,4 @@ export function compileFinancialClose(storeId: string, currencyCode: string, per
     basis: 'Requested orders by placed date; actual goods, discount, tax and fees by original finalization timestamp. Captures/refunds by processed date and provider entries by settlement date. Missing historical finalization timestamps remain exceptions.', totals, rows, exceptions };
 }
 
-export const reportHash = (value: unknown) => createHash('sha256').update(canonicalGroceryOutboxPayload(value as Record<string, unknown>)).digest('hex');
+export const reportHash = (value: unknown) => createHash('sha256').update(canonicalPayload(value as Record<string, unknown>)).digest('hex');

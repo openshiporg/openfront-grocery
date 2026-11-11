@@ -13,15 +13,11 @@
     "url": "https://github.com/openshiporg/openfront-grocery/issues"
   },
   "scripts": {
-    "worker:events": "tsx scripts/grocery-event-worker.ts",
-    "worker:subscriptions": "tsx scripts/grocery-subscription-worker.ts",
     "dev": "keystone build --no-ui && npm run migrate && next dev",
     "build": "keystone build --no-ui && next build",
     "start": "next start",
     "test:security": "node --import tsx --test features/keystone/lib/internal-origin.test.ts features/keystone/lib/keystonePrismaErrors.test.ts",
     "lint": "eslint .",
-    "worker:refund-reconcile": "tsx scripts/refund-reconciliation-worker.ts",
-    "worker:refund-reconcile:once": "tsx scripts/reconcile-payment-refunds.ts",
     "migrate:gen": "keystone build --no-ui && tsx features/keystone/view-order/generate-view-order.ts && keystone prisma migrate dev",
     "migrate": "prisma migrate deploy"
   },

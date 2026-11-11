@@ -101,8 +101,8 @@ openfront-grocery/
 │   ├── keystone/           # Models, access, commands, and projections
 │   ├── platform/           # Store operations and onboarding
 │   ├── storefront/         # Shopper components and screens
-│   └── integrations/       # Payments, events, and communications
-├── scripts/                # Event, subscription, and refund workers
+│   └── integrations/       # Payments
+├── scripts/                # Operator scripts
 └── components/             # Shared UI components
 ```
 
@@ -183,10 +183,6 @@ The [Keystone model registry](features/keystone/models/index.ts) and [Prisma sch
 - `npm run migrate:gen` - Build Keystone, generate view ordering, and generate/apply development migrations.
 - `npm run migrate` - Apply checked-in Prisma migrations.
 - `npm run lint` - Run ESLint.
-- `npm run worker:events` - Run the grocery event worker.
-- `npm run worker:subscriptions` - Run the recurring-order worker.
-- `npm run worker:refund-reconcile` - Run the refund-reconciliation worker.
-- `npm run worker:refund-reconcile:once` - Run one refund-reconciliation pass.
 
 Use a development database for `migrate:gen`; it generates and applies schema changes.
 
@@ -194,7 +190,11 @@ Use a development database for `migrate:gen`; it generates and applies schema ch
 [Payment adapters](features/integrations/payment/index.ts) register Stripe for public checkout and a separate local test adapter. Custom remote operations require an explicitly allowed HTTPS origin. Configure Stripe using [`.env.example`](.env.example); test adapters are not production checkout providers.
 
 ### Fulfillment Integration
-[Order-line fulfillment](features/keystone/mutations/resolveOrderLineFulfillment.ts), delivery-route commands, and pickup actions coordinate store work through controlled mutations. Event, subscription, and refund workers need the store-scoped operator IDs documented in `.env.example`.
+[Order-line fulfillment](features/keystone/mutations/resolveOrderLineFulfillment.ts), delivery-route commands, and pickup actions coordinate store work through controlled mutations. Recurring baskets and refund status checks run from staff buttons; there are no workers or timers.
+
+## Events and notifications
+
+NEVER build outbox/texting/email notification machinery or cron/worker services. External events = Openfront Commerce webhooks (`features/webhooks` in the openfront repo) only.
 
 ## Documentation
 
@@ -254,7 +254,7 @@ npm start
 Back up an existing database before applying migrations. The included [`railway.toml`](railway.toml) builds without migrations and applies them when the application starts.
 
 ### Scaling Considerations
-Run the event, subscription, and refund workers as separate supervised processes when those workflows are enabled. Supply their store-scoped operator identities and use the shared PostgreSQL database and object storage. Recurring orders and external event delivery depend on those workers, not just the web process.
+The web process is the only process. There are no worker, cron or scheduler services; time-based states are computed when a page loads or when staff press a button.
 
 ## Contributing
 

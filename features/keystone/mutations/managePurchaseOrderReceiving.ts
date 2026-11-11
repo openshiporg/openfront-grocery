@@ -1,4 +1,3 @@
-import {enqueueGroceryOutboxEvent} from "../lib/groceryOutbox";
 import { createHash } from 'node:crypto';
 import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import type { Context } from '.keystone/types';
@@ -141,13 +140,12 @@ export async function transitionPurchaseOrder(
     if(status==='sent') {
       const supplier:any=purchaseOrder.supplier;
       if(!supplier || supplier.store?.id!==store.id || !supplier.email?.trim())throw new Error('Purchase order needs a same-Store supplier email before sending');
-      await enqueueGroceryOutboxEvent(transactionContext.prisma,{storeId:store.id,eventKey:`purchase-order:${purchaseOrderId}:send`,eventType:'purchase_order.send_requested',aggregateType:'PurchaseOrder',aggregateId:purchaseOrderId,occurredAt:new Date().toISOString(),payload:{purchaseOrderId,supplierId:supplier.id,recipient:supplier.email,poNumber:purchaseOrder.poNumber,currencyCode:store.currencyCode,lines:purchaseOrder.items.map((item:any)=>({title:item.productTitle || item.product?.title,sku:item.productSku,quantity:Number(item.quantity),unitCostCents:Number(item.unitCostCents)}))}});
     }
     await sudoContext.db.PurchaseOrder.updateOne({
       where: { id: purchaseOrderId },
       data: { status: status as any },
     });
-    return { success: true, purchaseOrderId, status, receivedUnits: 0, message: status==='sent'?'Purchase order queued for supplier delivery; inspect Communications for the delivery outcome.':`Purchase order moved to ${status}.` };
+    return { success: true, purchaseOrderId, status, receivedUnits: 0, message: status==='sent'?'Purchase order marked sent. Send it to the supplier yourself.':`Purchase order moved to ${status}.` };
   }, { isolationLevel: 'Serializable' as any }));
 }
 

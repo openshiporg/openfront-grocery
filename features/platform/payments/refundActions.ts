@@ -13,3 +13,11 @@ export async function refundOrderLinesTask(input: { orderId: string; paymentId: 
   revalidatePath('/dashboard/platform/payments'); revalidatePath('/dashboard/platform/orders');
   return { ok: true as const, data: result.data?.refundGroceryOrderLines };
 }
+
+/** Staff button: one provider status pass over pending refunds. No timer or worker runs this. */
+export async function reconcileRefundsTask() {
+  const result = await keystoneClient<any>('mutation{reconcilePaymentRefunds(limit:20){scanned results}}', {}, { cache: 'no-store' });
+  if (!result.success) return { ok: false as const, error: result.error || 'Refund status check failed' };
+  revalidatePath('/dashboard/platform/payments');
+  return { ok: true as const, data: result.data?.reconcilePaymentRefunds };
+}

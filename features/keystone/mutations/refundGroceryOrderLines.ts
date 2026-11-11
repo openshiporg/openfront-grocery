@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
-import { canonicalGroceryOutboxPayload } from '../lib/groceryOutbox';
+import { canonicalPayload } from '../lib/payloadHash';
 import { allocateFinalSaleRefund, commercialAdjustmentsForRefund, reconcileOrderLineRefundRows, unlinkedLineRefundReservedCents, type RefundLineInput } from '../lib/refundAllocations';
 import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import { isInventoryLotEligible } from '../lib/inventorySafety';
@@ -41,7 +41,7 @@ export async function refundGroceryOrderLinesWithDependencies(args: Args, contex
   const store = await requireSessionStore(context);
   const reason = args.reason?.trim(), requestKey = args.idempotencyKey?.trim();
   if (!reason || reason.length < 3 || reason.length > 500 || !requestKey || requestKey.length < 12 || requestKey.length > 150 || !Array.isArray(args.lines)) throw publicError('Line refund requires a reason, idempotency key and explicit lines');
-  const fingerprint = canonicalGroceryOutboxPayload({ orderId: args.orderId, paymentId: args.paymentId, reason, lines: [...args.lines].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map(line => ({ ...line, conditionNote: line.conditionNote?.trim() || '', returnedLots: [...(line.returnedLots || [])].sort((a, b) => a.lotId.localeCompare(b.lotId)) })) });
+  const fingerprint = canonicalPayload({ orderId: args.orderId, paymentId: args.paymentId, reason, lines: [...args.lines].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map(line => ({ ...line, conditionNote: line.conditionNote?.trim() || '', returnedLots: [...(line.returnedLots || [])].sort((a, b) => a.lotId.localeCompare(b.lotId)) })) });
   const providerRefundKey = `line-refund:${createHash('sha256').update(`${store.id}:${args.orderId}:${requestKey}`).digest('hex')}`;
   const claim = await withSerializableRetry(() => context.transaction(async transactionContext => {
     const tx: any = transactionContext.prisma;

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
 import { checkoutRequestFingerprint } from '../lib/checkoutIdentity';
-import { groceryOutboxPayloadHash } from '../lib/groceryOutbox';
+import { payloadHash } from '../lib/payloadHash';
 import { getPaymentStatus } from '../utils/paymentProviderAdapter';
 import { ensureCheckoutAttempt } from './submitGroceryOrder';
 import { STRIPE_PROVIDER_CODE } from '../../integrations/payment';
@@ -94,7 +94,7 @@ export async function recoverPaymentCreationWithDependencies(_root: unknown, inp
       || (!current.cart.customerId && current.cart.sessionId !== claim.session.cart.sessionId)
       || current.paymentProvider.id !== claim.session.paymentProvider.id || data.creationBindingVersion !== 1
       || data.checkoutFingerprint !== claim.session.data.checkoutFingerprint || data.cartFingerprint !== claim.session.data.cartFingerprint
-      || current.amountCents !== claim.session.amountCents || groceryOutboxPayloadHash(data.recoveryRequest) !== groceryOutboxPayloadHash(claim.draft)
+      || current.amountCents !== claim.session.amountCents || payloadHash(data.recoveryRequest) !== payloadHash(claim.draft)
       || (data.paymentIntentId && data.paymentIntentId !== args.providerPaymentId)) throw new Error('Checkout recovery claim changed; retry after the active operation completes');
     if (failure) {
       await tc.prisma.paymentSession.update({ where: { id: current.id }, data: { data: { ...data, creationClaimToken: null,

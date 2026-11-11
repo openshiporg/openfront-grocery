@@ -6,7 +6,6 @@ import { requireSessionStore } from '../lib/storeScope';
 import { getFulfillmentActualLines } from '../lib/fulfillmentActuals';
 import { priceCommercialLines, isCouponLineEligible } from '../lib/commercialPricing';
 import { capturePayment, cancelPayment, getPaymentStatus } from '../utils/paymentProviderAdapter';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { reconcileOrderLoyalty } from '../lib/loyaltyAccounting';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { refundPaymentForOrder } from './managePaymentRefund';
@@ -90,7 +89,7 @@ function checkVoid(payment: any) {
   if (['processing', 'unknown'].includes(payment.providerData?.authorizationVoid?.status)) throw new Error('Authorization void requires reconciliation before finalization');
 }
 const defaults = { requireFreshCapability, requireSessionStore, getFulfillmentActualLines, capturePayment, cancelPayment, getPaymentStatus,
-  enqueueGroceryOutboxEvent, reconcileOrderLoyalty, refundPaymentForOrder, now: () => Date.now(), token: randomUUID };
+  reconcileOrderLoyalty, refundPaymentForOrder, now: () => Date.now(), token: randomUUID };
 
 /** Short locked transactions fence provider work; every retry retrieves provider state before acting. */
 export function makeFinalizeGroceryOrderActuals(overrides: Partial<typeof defaults> = {}) {
@@ -134,7 +133,6 @@ export function makeFinalizeGroceryOrderActuals(overrides: Partial<typeof defaul
         || revised.fingerprint !== adjustmentFingerprint(settlement, payment)
         || providerEvidence.customerApproval?.fingerprint !== revised.fingerprint)) throw new Error('Customer approval does not match revised authorization');
       await tx.order.update({ where: { id: orderId }, data: { metadata: { ...order.metadata, finalSale: { ...customerFinalSaleSnapshot(snapshot), settlementId: settlement.id, status } } } });
-      if (status === 'requires_customer_authorization') await deps.enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `order.adjustment:${settlement.id}`, eventType: 'order.adjustment.requested', aggregateType: 'Order', aggregateId: orderId, occurredAt: new Date(deps.now()).toISOString(), payload: { orderId, totalCents: snapshot.totalCents } });
       return { done: false, settlement, order, payment, status, lease };
     });
     if (claim.done || claim.status === 'requires_customer_authorization') return { status: claim.status, totalCents: claim.settlement.totalCents,
@@ -247,7 +245,6 @@ export function makeFinalizeGroceryOrderActuals(overrides: Partial<typeof defaul
         }
         await tx.order.update({ where: { id: orderId }, data: { metadata: { ...order.metadata, finalSale } } });
         await deps.reconcileOrderLoyalty(tx, { storeId: store.id, orderId, actorId: context.session.itemId, sourceId: `settlement:${settlement.id}`, reason: 'Final picked goods settled', netGoodsCents: finalSale.subtotalCents - finalSale.discountCents, settled: true });
-        await deps.enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `order.finalized:${orderId}`, eventType: 'order.finalized', aggregateType: 'Order', aggregateId: orderId, occurredAt: finalSale.finalizedAt, payload: { orderId, settlementId: settlement.id, totalCents: desired } });
         return { status: 'finalized', totalCents: desired, message: 'Actual goods and final payment recorded' };
       });
     } catch (error) {

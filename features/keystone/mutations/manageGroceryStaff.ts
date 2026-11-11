@@ -1,8 +1,7 @@
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
-import { STAFF_CAPABILITIES, assertCapabilitiesRecoverable, assertLastManagerSafe, createStaffInvitationToken, encryptStaffInvitationToken, normalizeStaffCapabilities, staffInvitationHash, verifyStaffInvitationToken } from '../lib/staffInvitations';
+import { STAFF_CAPABILITIES, assertCapabilitiesRecoverable, assertLastManagerSafe, createStaffInvitationToken, normalizeStaffCapabilities, staffInvitationHash, verifyStaffInvitationToken } from '../lib/staffInvitations';
 
 async function lockedStaffActor(tx: any, actorId: string, storeId: string) {
   await tx.$queryRawUnsafe('SELECT "id" FROM "Store" WHERE "id" = $1 FOR UPDATE', storeId);
@@ -33,16 +32,13 @@ export async function groceryStaffDirectory(_root: unknown, args: { page?: numbe
   ]);
   return { staff, invitations, events, privacyRequests, search, access, accessCounts: Object.fromEntries(accessCounts), pagination: { page, pageSize, totalPages: Math.max(1, Math.ceil(Math.max(staffCount, invitationCount, eventCount, privacyCount) / pageSize)), counts: { staffCount, invitationCount, eventCount, privacyCount } } };
 }
-export async function inviteGroceryStaff(_root: unknown, args: { name: string; email: string; capabilities: unknown; delivery?: string | null }, context: Context) {
+export async function inviteGroceryStaff(_root: unknown, args: { name: string; email: string; capabilities: unknown }, context: Context) {
   await requireFreshCapability(context, 'canManageUsers'); const store = await requireSessionStore(context);
   const email = args.email.trim().toLowerCase(), name = args.name.trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || name.length < 2 || name.length > 120) throw new Error('A valid name and email are required');
-  // The inviting manager chooses how the single-use link travels: the store's email service, or
-  // handed over in person. Either way only the token hash is stored, the link expires in 48 hours,
-  // can be revoked, and acceptance re-checks the inviter's current authority.
-  if (args.delivery != null && !['email', 'manual'].includes(args.delivery)) throw new Error('Choose email or manual invitation delivery');
-  const delivery = args.delivery === 'manual' ? 'manual' : 'email';
-  const token = createStaffInvitationToken(); const encryptedToken = encryptStaffInvitationToken(token);
+  // The single-use link is handed over in person: only the token hash is stored, the link expires
+  // in 48 hours, can be revoked, and acceptance re-checks the inviter's current authority.
+  const token = createStaffInvitationToken();
   return context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma as any; const actor = await lockedStaffActor(tx, context.session!.itemId, store.id);
     const capabilities = normalizeStaffCapabilities(args.capabilities, actor.role);
@@ -50,14 +46,10 @@ export async function inviteGroceryStaff(_root: unknown, args: { name: string; e
     const pending = await tx.staffInvitation.findFirst({ where: { email, storeId: store.id, status: 'pending', expiresAt: { gt: new Date() } } });
     if (pending) throw new Error('A pending invitation already exists; revoke it before replacing it');
     const invitation = await tx.staffInvitation.create({ data: { storeId: store.id, name, email, tokenHash: staffInvitationHash(token), capabilities, expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), invitedById: actor.id, status: 'pending' } });
-    await tx.staffAccessEvent.create({ data: { storeId: store.id, actorId: actor.id, invitationId: invitation.id, action: 'invited', reason: delivery === 'manual' ? 'Staff invitation · link handed over by inviter' : 'Staff invitation · sent by email', after: capabilities } });
-    if (delivery === 'email') {
-      await enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `staff-invitation:${invitation.id}`, eventType: 'staff.invited', aggregateType: 'StaffInvitation', aggregateId: invitation.id, occurredAt: new Date().toISOString(), payload: { invitationId: invitation.id, encryptedToken } });
-      return { success: true, invitationId: invitation.id, expiresAt: invitation.expiresAt, delivery };
-    }
+    await tx.staffAccessEvent.create({ data: { storeId: store.id, actorId: actor.id, invitationId: invitation.id, action: 'invited', reason: 'Staff invitation · link handed over by inviter', after: capabilities } });
     // Manual handover: the link goes back once, in this response only, to the inviter; it is
     // never stored, queued or logged. The invitee still sets their own password to accept.
-    return { success: true, invitationId: invitation.id, expiresAt: invitation.expiresAt, delivery, acceptPath: `/staff/accept#${new URLSearchParams({ token })}` };
+    return { success: true, invitationId: invitation.id, expiresAt: invitation.expiresAt, acceptPath: `/staff/accept#${new URLSearchParams({ token })}` };
   });
 }
 export async function acceptGroceryStaffInvitation(_root: unknown, args: { token: string; password: string }, context: Context) {

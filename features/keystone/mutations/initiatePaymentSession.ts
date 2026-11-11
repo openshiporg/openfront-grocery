@@ -1,5 +1,5 @@
 import { checkoutRequestFingerprint, checkoutCartFingerprint, checkoutTermsFingerprint, claimPaymentCreationData, writePaymentCreationResult } from '../lib/checkoutIdentity';
-import { groceryOutboxPayloadHash } from '../lib/groceryOutbox';
+import { payloadHash } from '../lib/payloadHash';
 import { randomUUID } from 'node:crypto';
 import {requireSessionStore} from "../lib/storeScope";
 import {zonedDateKey,zonedDateTimeForDateKey} from "../lib/storeTime";
@@ -345,7 +345,7 @@ export async function initiatePaymentSessionWithDependencies(
     cartFingerprint,
     ...(restartSource ? { checkoutRestartOfPaymentSessionId: restartSource.paymentSessionId } : {}),
   };
-  idempotencyKey = `grocery-checkout:${groceryOutboxPayloadHash(identityPayload)}`;
+  idempotencyKey = `grocery-checkout:${payloadHash(identityPayload)}`;
 
   // Claim the durable checkout key before calling Stripe. The row lock and
   // unique idempotency key ensure concurrent browser submits share one

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
-import { canonicalGroceryOutboxPayload } from '../lib/groceryOutbox';
+import { canonicalPayload } from '../lib/payloadHash';
 import { quantityMilli } from '../lib/inventoryMovements';
 import { supplierAmountCents, supplierInvoicePayable, supplierLineCents, supplierMatchedQuantity } from '../lib/supplierMatching';
 import { withSerializableRetry } from '../utils/serializableTransaction';
@@ -28,7 +28,7 @@ export async function manageSupplierSettlement(_root: unknown, args: Args, conte
   const store = await requireSessionStore(context);
   if (args.idempotencyKey?.trim().length < 12) throw new Error('Supplier operation idempotency key is required');
   const input = args.input || {};
-  const fingerprint = canonicalGroceryOutboxPayload({ action: args.action, input, invoiceId: args.invoiceId || null, creditId: args.creditId || null });
+  const fingerprint = canonicalPayload({ action: args.action, input, invoiceId: args.invoiceId || null, creditId: args.creditId || null });
   const event = { action: args.action, idempotencyKey: args.idempotencyKey.trim(), fingerprint, actorId: context.session!.itemId, at: new Date().toISOString(), input };
   return withSerializableRetry(() => context.transaction(async transactionContext => {
     const tx: any = transactionContext.prisma;

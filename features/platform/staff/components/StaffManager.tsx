@@ -59,7 +59,7 @@ export function StaffManager({ data, now }: { data: any; now: number }) {
       const result = outcome.data || {};
       setFailed(false);
       setInviteLink(operation === 'invite' && typeof result.acceptPath === 'string' ? `${window.location.origin}${result.acceptPath}` : '');
-      setMessage(operation === 'invite' ? (result.delivery === 'manual' ? 'Invitation created. Give the link below to the invitee in person; it expires in 48 hours.' : 'Invitation created and queued for email. It expires in 48 hours; delivery is shown in Communications.') : result.message || (result.status === 'deferred' ? 'Erasure deferred under the displayed retention policy.' : 'Saved.'));
+      setMessage(operation === 'invite' ? 'Invitation created. Give the link below to the invitee in person; it expires in 48 hours.' : result.message || (result.status === 'deferred' ? 'Erasure deferred under the displayed retention policy.' : 'Saved.'));
       router.refresh();
     } catch { setFailed(true); setMessage('Unable to save. Check your connection and try again.'); } });
   }
@@ -163,11 +163,6 @@ export function StaffManager({ data, now }: { data: any; now: number }) {
             <PlatformField label="Name"><input className={platformInput} required name="name" minLength={2} maxLength={120} /></PlatformField>
             <PlatformField label="Email"><input className={platformInput} required name="email" type="email" /></PlatformField>
             <CapabilityFields role={{canAccessDashboard:true}} />
-            <fieldset className="space-y-2 text-sm">
-              <legend className="mb-1 font-medium">How should the invitation reach them?</legend>
-              <label className="flex items-start gap-2"><input type="radio" name="delivery" value="email" defaultChecked className="mt-1" />Email the invitation (uses the store&apos;s mail service)</label>
-              <label className="flex items-start gap-2"><input type="radio" name="delivery" value="manual" className="mt-1" />Show me a one-time link to hand over in person</label>
-            </fieldset>
             <button className={platformButton('primary', 'md', 'w-full')} disabled={pending}><MailPlus aria-hidden="true" />Create invitation</button>
           </form>
         </PlatformSurface>

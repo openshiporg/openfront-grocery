@@ -32,7 +32,6 @@ import { manageSupplierSettlement } from "./manageSupplierSettlement";
 import { resolveDeliveryStop } from "./manageDeliveryRoutes";
 import { updateProductInformation } from "./updateProductInformation";
 import { authorizeOrderAdjustment } from "./authorizeOrderAdjustment";
-import { requestGuestOrderAccess } from "./requestGuestOrderAccess";
 import { resumeGroceryCheckout } from "./resumeGroceryCheckout";
 import restartGroceryCheckout from './restartGroceryCheckout';
 import { updateGroceryDeliveryPolicy } from "./updateGroceryDeliveryPolicy";
@@ -124,14 +123,6 @@ import { submitGroceryContactMessage } from './submitGroceryContactMessage';
 import { registerGroceryCustomer } from './registerGroceryCustomer';
 import { saveFavoriteProduct } from './saveFavoriteProduct';
 import { refundPaymentForOrder } from './managePaymentRefund';
-import {
-  claimGroceryOutboxEvents,
-  completeGroceryOutboxEvent,
-  groceryOutboxStatus,
-  replayGroceryOutboxEvent,
-  reconcileGroceryCustomerDelivery,
-} from './manageGroceryOutbox';
-import { deliverGroceryOutboxNow } from './deliverGroceryEvents';
 import { configureDeliverySlot, configureParkingSpot, configurePickupSlot } from './manageStoreCapacity';
 import { provisionGroceryCustomer } from './provisionCustomer';
 import {
@@ -669,30 +660,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         customerApproved: Boolean!
         approvedAt: String
         reused: Boolean!
-      }
-
-      type GroceryOutboxEventResult {
-        eventId: ID!
-        eventKey: String!
-        eventType: String!
-        aggregateType: String!
-        aggregateId: String!
-        schemaVersion: Int!
-        payload: JSON!
-        payloadHash: String!
-        occurredAt: String!
-        status: String!
-        attempts: Int!
-        claimToken: String
-      }
-
-      type GroceryOutboxStatusResult {
-        pending: Int!
-        processing: Int!
-        delivered: Int!
-        failed: Int!
-        unknown: Int!
-        reconciled: Int!
       }
 
       type StoreCapacityResult {
@@ -1238,7 +1205,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         publicGroceryProducts(department: String, search: String, availability: String, organic: Boolean, sort: String, take: Int, skip: Int, ids: [ID!]): PublicGroceryProductConnection!
         publicGroceryProduct(handle: String!): PublicGroceryProduct
         publicGroceryAvailability(days: Int): PublicGroceryAvailability!
-        groceryOutboxStatus: GroceryOutboxStatusResult!
 
         # Pickup Slot queries
         availablePickupSlots(days: Int, minCapacity: Int): [PickupSlotResult!]!
@@ -1268,7 +1234,7 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         revokeGroceryStaffInvitation(invitationId: ID!, reason: String!): JSON!
         updateGroceryStaffAccess(userId: ID!, capabilities: JSON!, reason: String!): JSON!
         acceptGroceryStaffInvitation(token: String!, password: String!): JSON!
-        inviteGroceryStaff(name: String!, email: String!, capabilities: JSON!, delivery: String): JSON!
+        inviteGroceryStaff(name: String!, email: String!, capabilities: JSON!): JSON!
         voidGroceryPaymentAuthorization(paymentId: ID!, reason: String!, idempotencyKey: String!): GroceryVoidResult!
         refundGroceryOrderLines(orderId: ID!, paymentId: ID!, idempotencyKey: String!, reason: String!, lines: JSON!): GroceryLineRefundResult!
         updateGroceryNotificationPreferences(orderUpdates: Boolean!, deliveryAlerts: Boolean!, backInStock: Boolean!, emailEnabled: Boolean): Boolean!
@@ -1284,7 +1250,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         updateProductInformation(productId: ID!, input: JSON!, idempotencyKey: String!): JSON!
         authorizeOrderAdjustment(orderId: ID!, sessionId: String, token: String): JSON!
         respondToOrderLineSubstitution(orderId: ID!, lineItemId: ID!, proposalId: String!, decision: String!, sessionId: String, token: String): JSON!
-        requestGuestOrderAccess(orderId: ID!, email: String!): Boolean!
         submitGroceryContactMessage(data: GroceryContactMessageInput!): GroceryContactMessageReceipt!
         registerGroceryCustomer(name: String!, email: String!, password: String!): RegisterGroceryCustomerResult!
         saveFavoriteProduct(productId: ID!): SaveFavoriteProductResult!
@@ -1341,11 +1306,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         advanceOrderFulfillment(orderId: ID!, target: String!): OrderFulfillmentWorkflowResult!
         recordOrderItemSubstitution(orderItemId: ID!, substitutedProduct: String!, reason: String, customerApproved: Boolean, idempotencyKey: String!): OrderItemSubstitutionWorkflowResult!
         proposeOrderLineSubstitution(orderId: ID!, lineItemId: ID!, productId: ID!, quantity: String!, unitOfMeasure: String!, reason: String!, idempotencyKey: String!): JSON!
-        claimGroceryOutboxEvents(workerId: String!, limit: Int): [GroceryOutboxEventResult!]!
-        completeGroceryOutboxEvent(eventId: ID!, claimToken: String!, succeeded: Boolean!, unknown: Boolean, error: String): GroceryOutboxEventResult!
-        replayGroceryOutboxEvent(eventId: ID!): GroceryOutboxEventResult!
-        reconcileGroceryCustomerDelivery(eventId: ID!, action: String!, reason: String!, confirmDuplicateRisk: Boolean): GroceryOutboxEventResult!
-        deliverGroceryOutboxNow(limit: Int): JSON!
         configureDeliverySlot(slotId: ID!, capacity: Int, deliveryFee: Int, isActive: Boolean, idempotencyKey: String!): StoreCapacityResult!
         configurePickupSlot(slotId: ID!, maxOrders: Int, isAvailable: Boolean, idempotencyKey: String!): StoreCapacityResult!
         configureParkingSpot(spotId: ID!, isAvailable: Boolean!, idempotencyKey: String!): StoreCapacityResult!
@@ -1447,7 +1407,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         publicGroceryProducts: getPublicGroceryProducts,
         publicGroceryProduct: getPublicGroceryProduct,
         publicGroceryAvailability: getPublicGroceryAvailability,
-        groceryOutboxStatus,
         availablePickupSlots: getAvailablePickupSlots,
         pickupSlotsByDate: getPickupSlotsByDate,
         availableParkingSpots: getAvailableParkingSpots,
@@ -1480,7 +1439,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         updateProductInformation,
         authorizeOrderAdjustment,
         respondToOrderLineSubstitution,
-        requestGuestOrderAccess,
         submitGroceryContactMessage,
         registerGroceryCustomer,
         saveFavoriteProduct,
@@ -1539,11 +1497,6 @@ export function extendGraphqlSchema(baseSchema: GraphQLSchema) {
         advanceOrderFulfillment,
         recordOrderItemSubstitution,
         proposeOrderLineSubstitution,
-        claimGroceryOutboxEvents,
-        completeGroceryOutboxEvent,
-        replayGroceryOutboxEvent,
-        reconcileGroceryCustomerDelivery,
-        deliverGroceryOutboxNow,
         configureDeliverySlot,
         configurePickupSlot,
         configureParkingSpot,

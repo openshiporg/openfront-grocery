@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
-import { groceryOutboxPayloadHash } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
 import { CUSTOMER_PRIVACY_POLICY, customerExportIdentity, privacyErasureEligibility, scrubOrderContactMetadata } from '../lib/privacyPolicy';
 
@@ -64,7 +63,6 @@ export async function exportGroceryCustomerData(_root: unknown, args: { requestI
     redemptions:{model:'loyaltyRedemption',where:own,fields:['id','orderId','points','discountCents','status','usedAt','createdAt']},
     subscriptions:{model:'subscription',where:own,fields:['id','product','quantity','frequency','nextDeliveryDate','scheduleTimezone','status','isActive','pausedUntil','createdAt','consent','events'],map:row=>({...row,consent:pick(row.consent,['approveEachOrder','at','policy']),events:publicEvents(row.events)})},
     subscriptionRuns:{model:'subscriptionRun',where:own,fields:['id','subscriptionId','dueAt','status','productTitle','quantity','priceCents','orderId','failureReason','events'],map:row=>({...row,events:publicEvents(row.events)})},
-    messages:{model:'customerMessage',where:own,fields:['id','orderId','recipient','subject','body','channel','status','attempts','sentAt','createdAt'],map:row=>({...row,body:String(row.body||'').replace(/https?:\/\/\S+\/order-access#\S+/g,'[Private access link omitted]')})},
     carts:{model:'cart',where:{customerId:user.id,storeId:user.storeId},fields:['id','subtotalCents','itemCount','createdAt','updatedAt']},
     cartItems:{model:'cartItem',where:{cart:{customerId:user.id,storeId:user.storeId}},fields:['id','cartId','productId','quantity','subtotalCents','substitutionPreference','addedAt']},
     privacyRequests:{model:'customerPrivacyRequest',where:own,fields:['id','kind','status','policyVersion','reviewReason','createdAt','reviewedAt','eligibleAt','completedAt']},
@@ -101,8 +99,6 @@ export async function reviewGroceryCustomerErasure(_root: unknown, args: { reque
     if (!user || user.storeId !== store.id || user.roleId || user._count?.staffAccessEvents) throw new Error('Staff identities require staff lifecycle administration');
     const review = { reviewedById: context.session!.itemId, reviewedAt: new Date(), reviewReason: reason, policyVersion: CUSTOMER_PRIVACY_POLICY.version };
     if (!args.approve) { await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: 'rejected' } }); return { success: true, status: 'rejected' }; }
-    const activeDelivery = await tx.customerMessage.findFirst({ where: { userId: user.id, storeId: store.id, deliveryLeaseExpiresAt: { gt: new Date() } } });
-    if (activeDelivery) { await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: 'deferred', resultSummary: { reason: 'An authorized message or external event delivery is in progress' } } }); return { success: true, status: 'deferred', message: 'Wait for the active communication delivery to finish before erasure' }; }
     let orders = await tx.order.findMany({ where: { userId: user.id, storeId: store.id }, orderBy: { id: 'asc' } });
     const carts = await tx.cart.findMany({ where: { customerId: user.id, storeId: store.id }, select: { id: true }, orderBy: { id: 'asc' } });
     for (const cart of carts) await tx.$queryRawUnsafe('SELECT \"id\" FROM \"Cart\" WHERE \"id\" = $1 FOR UPDATE', cart.id);
@@ -141,14 +137,6 @@ export async function reviewGroceryCustomerErasure(_root: unknown, args: { reque
     await tx.checkoutAttempt.updateMany({ where: { storeId: store.id, OR: [{ cart: { customerId: user.id } }, { requestData: { path: ['checkoutOwnerId'], equals: user.id } }, { order: { userId: user.id } }] }, data: { requestData: { privacy: { pseudonymized: true, policyVersion: CUSTOMER_PRIVACY_POLICY.version } } } });
     const sessions = await tx.paymentSession.findMany({ where: { OR: [{ cartId: { in: carts.map((cart: any) => cart.id) } }, { checkoutAttempts: { some: { orderId: { in: orderIds } } } }] } });
     for (const session of sessions) await tx.paymentSession.update({ where: { id: session.id }, data: { data: scrubOrderContactMetadata(session.data) } });
-    const outbox = await tx.groceryOutboxEvent.findMany({ where: { storeId: store.id, OR: [{ aggregateId: { in: [user.id, ...orderIds, ...paymentRows.map((payment: any) => payment.id)] } }, { payload: { path: ['userId'], equals: user.id } }, ...orderIds.map((orderId: string) => ({ payload: { path: ['orderId'], equals: orderId } }))] } });
-    const redactedEventHashes = [];
-    for (const event of outbox) {
-      const payload = scrubOrderContactMetadata(event.payload);
-      redactedEventHashes.push({ eventId: event.id, originalPayloadHash: event.payloadHash });
-      await tx.groceryOutboxEvent.update({ where: { id: event.id }, data: { payload, payloadHash: groceryOutboxPayloadHash(payload), status: 'suppressed', claimToken: '', lastError: 'Suppressed after approved privacy retention review' } });
-    }
-    await tx.customerMessage.updateMany({ where: { storeId: store.id, OR: [{ userId: user.id }, { orderId: { in: orderIds } }, { recipient: user.email }] }, data: { recipient: '[erased]', subject: '[erased]', body: '[erased]', status: 'suppressed', failureMessage: '', providerEvidence: { privacy: { pseudonymized: true } } } });
     // Inbound messages linked to this account: the customer's own words and contact details
     // are erased; the store's operational record (reference, topic, status, dates, staff notes)
     // stays. Messages sent while signed out are matched to no account and are left untouched.
@@ -178,7 +166,7 @@ export async function reviewGroceryCustomerErasure(_root: unknown, args: { reque
     await tx.backInStockAlert.deleteMany({ where: { userId: user.id } });
     await transactionContext.sudo().db.User.updateOne({ where: { id: user.id }, data: { name: 'Erased customer', email: `erased-${user.id}@invalid.local`, password: randomBytes(48).toString('base64url') } });
     await tx.user.update({ where: { id: user.id }, data: { privacyErasedAt: new Date() } });
-    await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: 'completed', completedAt: new Date(), resultSummary: { retained: 'Pseudonymous transaction, inventory and audit identifiers; monetary records unchanged', erased: 'Account identity, addresses, nested order/fulfillment/delivery contact, checkout data, message content, reusable lists and notification preferences', redactedEventHashes, policyVersion: CUSTOMER_PRIVACY_POLICY.version } } });
+    await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: 'completed', completedAt: new Date(), resultSummary: { retained: 'Pseudonymous transaction, inventory and audit identifiers; monetary records unchanged', erased: 'Account identity, addresses, nested order/fulfillment/delivery contact, checkout data, message content, reusable lists and notification preferences', policyVersion: CUSTOMER_PRIVACY_POLICY.version } } });
     return { success: true, status: 'completed' };
   });
 }

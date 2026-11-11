@@ -1,6 +1,8 @@
 import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { OrderLineRefundForm } from '../components/OrderLineRefundForm';
 import { VoidAuthorizationForm } from '../components/VoidAuthorizationForm';
+import { TaskButton } from '@/features/platform/components/TaskButton';
+import { reconcileRefundsTask } from '../refundActions';
 import { WebhookRecoveryPanel } from '../components/WebhookRecoveryPanel';
 import { RecoverPaymentCreationForm } from '../components/RecoverPaymentCreationForm';
 import { RecoverRevisedAuthorizationForm } from '../components/RecoverRevisedAuthorizationForm';
@@ -59,7 +61,7 @@ export async function PaymentsPage({ searchParams }: { searchParams?: Promise<Pl
       title="Payments & refunds"
       breadcrumb="Payments"
       description="Payments, refunds and anything that needs attention."
-      actions={<PlatformLinkButton href="/dashboard/platform/reports" icon={FileBarChart}>Financial close</PlatformLinkButton>}
+      actions={<><TaskButton label="Check refund status" pendingLabel="Checking…" successLabel="Refund status checked" onRun={reconcileRefundsTask} /><PlatformLinkButton href="/dashboard/platform/reports" icon={FileBarChart}>Financial close</PlatformLinkButton></>}
     >
       {data ? <PlatformMetricGrid metrics={[
         { label: 'Captured', value: formatMoney(data.summary.capturedCents, currencyCode), note: `${data.summary.paymentCount} payments` },

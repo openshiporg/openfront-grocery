@@ -399,34 +399,6 @@ model ProductInformationVersion {
   @@index([actorId])
 }
 
-model CustomerMessage {
-  id                     String    @id @default(cuid())
-  store                  Store?    @relation("CustomerMessage_store", fields: [storeId], references: [id])
-  storeId                String?   @map("store")
-  eventKey               String    @unique @default("")
-  order                  Order?    @relation("CustomerMessage_order", fields: [orderId], references: [id])
-  orderId                String?   @map("order")
-  user                   User?     @relation("CustomerMessage_user", fields: [userId], references: [id])
-  userId                 String?   @map("user")
-  recipient              String    @default("")
-  subject                String    @default("")
-  body                   String    @default("")
-  channel                String    @default("email")
-  status                 String    @default("pending")
-  attempts               Int?      @default(0)
-  providerEvidence       Json?
-  failureMessage         String    @default("")
-  sentAt                 DateTime?
-  deliveryToken          String    @default("")
-  deliveryLeaseExpiresAt DateTime?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @default(now()) @updatedAt
-
-  @@index([storeId])
-  @@index([orderId])
-  @@index([userId])
-}
-
 model ContactMessage {
   id          String   @id @default(cuid())
   store       Store    @relation("ContactMessage_store", fields: [storeId], references: [id])
@@ -838,34 +810,6 @@ model FavoriteProduct {
   @@index([productRefId])
 }
 
-model GroceryOutboxEvent {
-  id            String    @id @default(cuid())
-  store         Store     @relation("GroceryOutboxEvent_store", fields: [storeId], references: [id])
-  storeId       String    @map("store")
-  eventKey      String    @unique @default("")
-  eventType     String    @default("")
-  aggregateType String    @default("")
-  aggregateId   String    @default("")
-  schemaVersion Int       @default(1)
-  payload       Json?
-  payloadHash   String    @default("")
-  occurredAt    DateTime
-  status        String    @default("pending")
-  attempts      Int?      @default(0)
-  claimToken    String    @default("")
-  claimedAt     DateTime?
-  deliveredAt   DateTime?
-  nextAttemptAt DateTime?
-  lastError     String    @default("")
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @default(now()) @updatedAt
-
-  @@index([storeId])
-  @@index([aggregateId])
-  @@index([occurredAt])
-  @@index([status])
-}
-
 model InventoryLot {
   id                                          String                         @id @default(cuid())
   lotNumber                                   String                         @unique @default("")
@@ -1040,7 +984,6 @@ model Order {
   from_OrderLineRefund_order    OrderLineRefund[]                @relation("OrderLineRefund_order")
   from_LoyaltyRedemption_order  LoyaltyRedemption[]              @relation("LoyaltyRedemption_order")
   from_SubscriptionRun_order    SubscriptionRun[]                @relation("SubscriptionRun_order")
-  from_CustomerMessage_order    CustomerMessage[]                @relation("CustomerMessage_order")
   from_InventoryMovement_order  InventoryMovement[]              @relation("InventoryMovement_order")
   from_OrderSettlement_order    OrderSettlement[]                @relation("OrderSettlement_order")
   from_LoyaltyTransaction_order LoyaltyTransaction[]             @relation("LoyaltyTransaction_order")
@@ -1627,7 +1570,6 @@ model Store {
   payments                             Payment[]                      @relation("Payment_store")
   orderLineInventoryAllocations        OrderLineInventoryAllocation[] @relation("OrderLineInventoryAllocation_store")
   paymentWebhookEvents                 PaymentWebhookEvent[]          @relation("PaymentWebhookEvent_store")
-  outboxEvents                         GroceryOutboxEvent[]           @relation("GroceryOutboxEvent_store")
   createdAt                            DateTime                       @default(now())
   updatedAt                            DateTime                       @default(now()) @updatedAt
   from_InventoryConversion_store       InventoryConversion[]          @relation("InventoryConversion_store")
@@ -1643,7 +1585,6 @@ model Store {
   from_SupplierCredit_store            SupplierCredit[]               @relation("SupplierCredit_store")
   from_SupplierInvoice_store           SupplierInvoice[]              @relation("SupplierInvoice_store")
   from_ProductInformationVersion_store ProductInformationVersion[]    @relation("ProductInformationVersion_store")
-  from_CustomerMessage_store           CustomerMessage[]              @relation("CustomerMessage_store")
   from_ContactMessage_store            ContactMessage[]               @relation("ContactMessage_store")
   from_PurchaseReceipt_store           PurchaseReceipt[]              @relation("PurchaseReceipt_store")
   from_InventoryCount_store            InventoryCount[]               @relation("InventoryCount_store")
@@ -1735,7 +1676,6 @@ model User {
   from_SettlementMatch_recordedBy        SettlementMatch[]           @relation("SettlementMatch_recordedBy")
   from_FinancialClose_recordedBy         FinancialClose[]            @relation("FinancialClose_recordedBy")
   from_ProductInformationVersion_actor   ProductInformationVersion[] @relation("ProductInformationVersion_actor")
-  from_CustomerMessage_user              CustomerMessage[]           @relation("CustomerMessage_user")
   from_ContactMessage_customer           ContactMessage[]            @relation("ContactMessage_customer")
   from_OrderSettlement_finalizedBy       OrderSettlement[]           @relation("OrderSettlement_finalizedBy")
   from_OrderLineFulfillment_recordedBy   OrderLineFulfillment[]      @relation("OrderLineFulfillment_recordedBy")

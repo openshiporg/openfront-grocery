@@ -11,7 +11,6 @@ import { FinancialClose } from "./FinancialClose";
 import { SupplierCredit } from "./SupplierCredit";
 import { SupplierInvoice } from "./SupplierInvoice";
 import { ProductInformationVersion } from "./ProductInformationVersion";
-import { CustomerMessage } from "./CustomerMessage";
 import { ContactMessage } from "./ContactMessage";
 import { PurchaseReceipt } from "./PurchaseReceipt";
 import { InventoryCount } from "./InventoryCount";
@@ -29,7 +28,6 @@ import { Department } from "./Department";
 import { DeliveryRoute } from "./DeliveryRoute";
 import { DeliverySlot } from "./DeliverySlot";
 import { FavoriteProduct } from "./FavoriteProduct";
-import { GroceryOutboxEvent } from './GroceryOutboxEvent';
 import { InventoryLot } from "./InventoryLot";
 import { InventoryAdjustment } from './InventoryAdjustment';
 import { LoyaltyProgram } from "./LoyaltyProgram";
@@ -79,7 +77,6 @@ export const models = {
   SupplierCredit,
   SupplierInvoice,
   ProductInformationVersion,
-  CustomerMessage,
   ContactMessage,
   PurchaseReceipt,
   InventoryCount,
@@ -97,7 +94,6 @@ export const models = {
   DeliveryRoute,
   DeliverySlot,
   FavoriteProduct,
-  GroceryOutboxEvent,
   InventoryLot,
   InventoryAdjustment,
   LoyaltyProgram,

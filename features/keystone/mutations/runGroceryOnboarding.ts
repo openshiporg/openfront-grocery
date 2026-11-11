@@ -15,7 +15,6 @@ import { normalizeTaxRateBps } from '../lib/storeMoney';
 import { assertValidTimeZone, zonedDateKeyOffset, zonedStartOfDateKey } from '../lib/storeTime';
 import { deriveProductSkuIdentity, normalizeProductSku } from '../lib/productSkuIdentity';
 import { normalizeDeliveryPolicy } from '../lib/deliveryPolicy';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { appendInventoryMovement } from '../lib/inventoryMovements';
 import { assessStoreReadiness } from '../lib/storeReadiness';
 import { canAdministerPaymentProviders } from '../lib/providerAuthority';
@@ -85,17 +84,6 @@ function publicProviderMetadata(metadata: GroceryOnboardingSeed['paymentProvider
   return { provider: metadata.provider, configuration: metadata.configuration };
 }
 
-/** Durable, once-per-Store record that setup was verified complete (and how). */
-async function recordInitializationReceipt(tx: any, storeId: string, actorId: string, basis: 'seeded' | 'verified_existing', counts: Record<string, number>) {
-  // The first verified completion is the receipt; later replays keep it as is.
-  if (await tx.groceryOutboxEvent.findUnique({ where: { eventKey: `store.initialized:${storeId}:v1` }, select: { id: true } })) return;
-  await enqueueGroceryOutboxEvent(tx, {
-    storeId, eventKey: `store.initialized:${storeId}:v1`, eventType: 'store.initialized',
-    aggregateType: 'Store', aggregateId: storeId, occurredAt: new Date().toISOString(),
-    payload: { version: 1, basis, actorId, counts },
-  });
-}
-
 export async function runGroceryOnboardingTransaction(
   input: unknown,
   context: Context,
@@ -150,7 +138,6 @@ export async function runGroceryOnboardingTransaction(
       if (readiness.ready && actor.onboardingStatus !== 'completed') {
         await tx.user.update({ where: { id: userId }, data: { onboardingStatus: 'completed' } });
       }
-      if (readiness.ready) await recordInitializationReceipt(tx, store.id, userId, 'verified_existing', readiness.counts);
       const [departments, suppliers, products, inventoryLots, deliverySlots, pickupSlots, parkingSpots, paymentProviders, coupons] = await Promise.all([
         tx.department.count({ where: { storeId: store.id } }),
         tx.supplier.count({ where: { storeId: store.id } }),
@@ -180,13 +167,6 @@ export async function runGroceryOnboardingTransaction(
       update: storeSettingsData,
       create: { ...storeSettingsData, storeId: store.id },
     });
-    // Same audit event the delivery settings screen records for a service-area change.
-    await enqueueGroceryOutboxEvent(tx, {
-      storeId: store.id, eventKey: `delivery.policy:onboarding:${store.id}`, eventType: 'delivery.policy.updated',
-      aggregateType: 'Store', aggregateId: store.id, occurredAt: new Date().toISOString(),
-      payload: { before: null, after: storeSettingsData.deliveryPolicy, actorId: userId },
-    });
-
     const departmentIds = new Map<string, string>();
     for (const department of seed.departments) {
       const conflict = await tx.department.findFirst({ where: { handle: department.handle }, select: { id: true, storeId: true } });
@@ -419,7 +399,6 @@ export async function runGroceryOnboardingTransaction(
     const readiness = await assessStoreReadiness(tx, store.id);
     if (readiness.ready) {
       await tx.user.update({ where: { id: userId }, data: { onboardingStatus: 'completed' } });
-      await recordInitializationReceipt(tx, store.id, userId, 'seeded', readiness.counts);
     }
     return { completed: readiness.ready, reused: false, missing: readiness.missing, counts: launchCounts };
   }, { timeout: 120_000, isolationLevel: 'Serializable' as any });

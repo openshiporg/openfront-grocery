@@ -3,7 +3,7 @@ import { revalidatePath } from 'next/cache';
 import { keystoneClient } from '@/features/platform/lib/platformClient';
 export async function staffOperation(operation: 'invite' | 'access' | 'revoke' | 'privacy', input: Record<string, unknown>) {
   const documents = {
-    invite: `mutation Invite($name:String!,$email:String!,$capabilities:JSON!,$delivery:String){inviteGroceryStaff(name:$name,email:$email,capabilities:$capabilities,delivery:$delivery)}`,
+    invite: `mutation Invite($name:String!,$email:String!,$capabilities:JSON!){inviteGroceryStaff(name:$name,email:$email,capabilities:$capabilities)}`,
     access: `mutation Access($userId:ID!,$capabilities:JSON!,$reason:String!){updateGroceryStaffAccess(userId:$userId,capabilities:$capabilities,reason:$reason)}`,
     revoke: `mutation Revoke($invitationId:ID!,$reason:String!){revokeGroceryStaffInvitation(invitationId:$invitationId,reason:$reason)}`,
     privacy: `mutation Review($requestId:ID!,$approve:Boolean!,$reason:String!){reviewGroceryCustomerErasure(requestId:$requestId,approve:$approve,reason:$reason)}`,

@@ -6,7 +6,7 @@ import { cancelPayment, getPaymentStatus } from '../utils/paymentProviderAdapter
 import { refundPaymentForOrder } from './managePaymentRefund';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { noChargeOrderPaymentState } from '../lib/checkoutIdentity';
-import { groceryOutboxPayloadHash } from '../lib/groceryOutbox';
+import { payloadHash } from '../lib/payloadHash';
 
 type VoidArgs = { paymentId: string; reason: string; idempotencyKey: string };
 const LEASE_MS = 30_000;
@@ -106,7 +106,7 @@ export async function voidGroceryPaymentAuthorizationForStore(args: VoidArgs, co
       && current.providerPaymentId === claim.payment.providerPaymentId
       && current.providerData.checkoutFingerprint === claim.payment.providerData.checkoutFingerprint
       && current.providerData.cartFingerprint === claim.payment.providerData.cartFingerprint
-      && groceryOutboxPayloadHash(current.providerData.noCharge) === groceryOutboxPayloadHash(claim.payment.providerData.noCharge));
+      && payloadHash(current.providerData.noCharge) === payloadHash(claim.payment.providerData.noCharge));
     if ((claim.noCharge && !unchangedNoCharge) || (!['authorized', 'pending', 'cancelled', 'refunded'].includes(current.status) && !unchangedNoCharge)) throw publicError('Financial state changed before authorization void completion', 'VOID_REFUSED');
     const status = unchangedNoCharge ? 'succeeded' : result.status === 'refunded' ? 'refunded' : 'cancelled';
     if (claim.settlement) {

@@ -2,7 +2,6 @@ import { commercialAdjustmentsForRefund, reconcileOrderLineRefundRows } from '..
 import type { Context } from '.keystone/types';
 
 import { requireFreshCapability } from '../access';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
 import { refundPayment, getRefundStatus } from '../utils/paymentProviderAdapter';
 import { withSerializableRetry } from '../utils/serializableTransaction';
@@ -282,23 +281,6 @@ export async function refundPaymentForOrder(
       },
     });
 
-    await enqueueGroceryOutboxEvent(tx, {
-      storeId: claim.storeId,
-      eventKey: `payment-refund:${refund.id}:completed:v1`,
-      eventType: 'payment.refunded',
-      aggregateType: 'payment',
-      aggregateId: claim.paymentId,
-      occurredAt: new Date(refund.processedAt || new Date()).toISOString(),
-      payload: {
-        paymentId: claim.paymentId,
-        refundId: refund.id,
-        amountCents: refund.amountCents,
-        cumulativeRefundedCents: refundedCents,
-        providerCode: claim.provider.code,
-        providerPaymentId: claim.providerPaymentId,
-        providerRefundId,
-      },
-    });
 
     return refundResult({ ...claim, providerRefundId }, 'succeeded', providerRefundId, claim.reused, 'Refund recorded.');
   }, { isolationLevel: 'Serializable' as any }));

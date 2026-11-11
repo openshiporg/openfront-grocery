@@ -3,7 +3,6 @@ import { reconcileVerifiedRefundEvents } from './handlePaymentProviderWebhook';
 import { randomUUID } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { requireSessionStore } from '../lib/storeScope';
 import { refundPayment, getRefundStatus } from '../utils/paymentProviderAdapter';
 import { withSerializableRetry } from '../utils/serializableTransaction';
@@ -183,7 +182,6 @@ async function completeClaim(context: Context, claim: RefundWorkerClaim, respons
       const payment = await tx.payment.findUnique({ where: { id: claim.paymentId }, select: { amountCents: true, status: true, providerData: true } });
       const paymentCents = Number(payment?.amountCents || 0);
       await tx.payment.update({ where: { id: claim.paymentId }, data: { status: refundedCents >= paymentCents ? 'refunded' : 'partially_refunded', providerRefundId: providerRefundId || undefined, providerData: { ...((payment?.providerData as Record<string, unknown> | null) || {}), lastRefundId: providerRefundId, refundedAmountCents: refundedCents } } });
-      await enqueueGroceryOutboxEvent(tx, { storeId: claim.storeId, eventKey: `payment-refund:${claim.id}:completed:v1`, eventType: 'payment.refunded', aggregateType: 'payment', aggregateId: claim.paymentId, occurredAt: new Date().toISOString(), payload: { paymentId: claim.paymentId, refundId: claim.id, amountCents: claim.amountCents, cumulativeRefundedCents: refundedCents, providerCode: claim.providerCode, providerPaymentId: claim.providerPaymentId, providerRefundId } });
     }
     return status;
   }, { isolationLevel: 'Serializable' as any }));

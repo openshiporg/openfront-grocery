@@ -46,7 +46,6 @@ export interface GroceryPlatformNavGroup {
 export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
   {title:'Staff & privacy',href:'/platform/staff',description:'Invite staff, review capabilities and customer privacy requests.',icon:Users,group:'customers',capability:'canManageUsers'},
   {title:'Customer inbox',href:'/platform/messages',description:'Read and follow up on messages shoppers send from the Help page.',icon:Inbox,group:'standalone',capability:'canManageOrders'},
-  {title:'Communications',href:'/platform/communications',description:'Inspect customer messages and event retries.',icon:ClipboardList,group:'standalone',capability:'canManageOnboarding'},
   { title: 'Reports', href: '/platform/reports', description: 'Close trading periods and reconcile supplier and payment statements.', icon: ClipboardList, group: 'standalone', capability: 'canManagePayments' },
   { title: 'Recurring baskets & rewards', href: '/platform/subscriptions', description: 'Prepare scheduled baskets and manage rewards.', icon: BadgePercent, group: 'customers', capability: 'canManageOrders' },
   {

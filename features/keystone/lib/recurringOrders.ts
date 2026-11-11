@@ -1,4 +1,3 @@
-import { enqueueGroceryOutboxEvent } from './groceryOutbox';
 import { isInventoryLotEligible } from './inventorySafety';
 import { quantityMilli } from './inventoryMovements';
 
@@ -76,7 +75,6 @@ export async function prepareSubscriptionRun(tx: any, subscriptionId: string, st
     const cartItem = await tx.cartItem.create({ data: { cartId: cart.id, productId: product.id, quantity: subscription.quantity, subtotalCents, subtotal: subtotalCents / 100, substitutionPreference: 'contact' } });
     await tx.cart.update({ where: { id: cart.id }, data: { itemCount: subscription.quantity, subtotalCents, subtotal: subtotalCents / 100 } });
     run = await tx.subscriptionRun.update({ where: { id: run.id }, data: { cartId: cart.id, cartItemId: cartItem.id } });
-    await enqueueGroceryOutboxEvent(tx, { storeId, eventKey: `subscription.cart_ready:${run.id}`, eventType: 'subscription.cart_ready', aggregateType: 'SubscriptionRun', aggregateId: run.id, occurredAt: now.toISOString(), payload: { subscriptionId, runId: run.id, userId: user.id, email: user.email, cartId: cart.id, productTitle: product.title, quantity: subscription.quantity, checkoutPath: '/checkout', requiresCustomerApproval: true } });
   }
   return run;
 }

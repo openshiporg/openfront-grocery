@@ -1,4 +1,3 @@
-import { deliverOrderConfirmationNow } from '../lib/orderConfirmationDelivery';
 import { normalizeDeliveryTipCents } from '../lib/deliveryTip';
 import { checkoutRequestFingerprint, checkoutCartFingerprint, assertCheckoutAttemptIdentity, noChargeCheckoutState } from '../lib/checkoutIdentity';
 import {requireSessionStore} from "../lib/storeScope";
@@ -13,7 +12,6 @@ import type { Context } from '.keystone/types';
 import { createGuestOrderToken } from '../utils/guestOrderToken';
 import { getPaymentStatus, getRefundStatus, refundPayment, cancelPayment } from '../utils/paymentProviderAdapter';
 import { assertRefundCreationWindow, normalizeProviderRefund } from '../lib/refundRecovery';
-import { enqueueGroceryOutboxEvent } from '../lib/groceryOutbox';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { calculateCouponDiscount } from '../lib/couponPricing';
 import { evaluateFulfillmentWindow } from '../lib/rollingFulfillment';
@@ -231,15 +229,6 @@ export async function compensateFailedCheckout({
       expected: finalizationLease,
     });
     if (!claimed) return null;
-    await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-      storeId: claimed.storeId,
-      eventKey: `checkout.compensation:${claimed.paymentSessionId}:requested`,
-      eventType: 'checkout.compensation.requested',
-      aggregateType: 'CheckoutAttempt',
-      aggregateId: claimed.id,
-      occurredAt: new Date().toISOString(),
-      payload: { paymentSessionId: claimed.paymentSessionId, cartId: claimed.cartId, providerPaymentId: claimed.providerPaymentId, amountCents: claimed.amountCents },
-    });
     return claimed;
   });
   if (!claim) return { claimed: false, status: 'not_claimed' };
@@ -334,15 +323,6 @@ export async function compensateFailedCheckout({
       compensationAt: new Date().toISOString(),
     };
     await transactionContext.prisma.paymentSession.update({ where: { id: claim.paymentSessionId }, data: { data } });
-    await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-      storeId: claim.storeId,
-      eventKey: `${eventKey}:recorded:${compensation.status}:${compensation.providerRefundId || 'none'}:${claim.fencingToken}`,
-      eventType: 'checkout.compensation.recorded',
-      aggregateType: 'PaymentSession',
-      aggregateId: claim.paymentSessionId,
-      occurredAt: new Date().toISOString(),
-      payload: { cartId: claim.cartId, providerPaymentId: claim.providerPaymentId, amountCents: fullRefund ? null : claim.amountCents, fullRefund, compensation },
-    });
     return true;
   });
   return { claimed: recorded, status: recorded ? (compensation.status === 'refunded' ? 'compensated' : 'compensation_required') : 'fenced' };
@@ -793,7 +773,6 @@ export async function commitGroceryOrder(
       throw new Error('Checkout attempt finalization requires an exclusive reconciliation lease');
     }
 
-    await enqueueGroceryOutboxEvent(tx, {storeId,eventKey:`order.confirmed:${order.id}`,eventType:'order.confirmed',aggregateType:'Order',aggregateId:order.id,occurredAt:new Date().toISOString(),payload:{orderId:order.id}});
 
     return {
       orderId: order.id,
@@ -886,8 +865,6 @@ export default async function submitGroceryOrder(
     await compensateFailedCheckout({ context, attemptId: attempt.id, provider: paymentProvider as any, cause: error, finalizationLease });
     throw new Error('Checkout could not be finalized; payment compensation was recorded');
   }
-  // The order is committed. Send its confirmation in process (never throws, never touches other events).
-  await deliverOrderConfirmationNow(context.sudo(), committed.orderId);
   return {
     success: true,
     ...committed,

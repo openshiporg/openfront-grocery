@@ -2,7 +2,7 @@ import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import { traceAffectedOrders } from '../lib/inventorySafety';
-import { enqueueGroceryOutboxEvent, canonicalGroceryOutboxPayload } from '../lib/groceryOutbox';
+import { canonicalPayload } from '../lib/payloadHash';
 import { requirePrismaSuccess, withSerializableRetry } from '../utils/serializableTransaction';
 import { expandConvertedLotScope, lockInventoryConversionScope } from '../lib/inventoryConversion';
 
@@ -24,7 +24,7 @@ export async function manageInventorySafety(_root: unknown, args: SafetyArgs, co
       : null;
     if (recall && recall.storeId !== storeId) throw new Error('Recall not found in active store');
     const events = recall?.events || [];
-    const scopeFingerprint = canonicalGroceryOutboxPayload({ action: args.action, productId: args.productId || null, inventoryLotIds: [...new Set(args.inventoryLotIds || [])].sort(), reason: args.reason.trim(), evidence: args.evidence || null });
+    const scopeFingerprint = canonicalPayload({ action: args.action, productId: args.productId || null, inventoryLotIds: [...new Set(args.inventoryLotIds || [])].sort(), reason: args.reason.trim(), evidence: args.evidence || null });
     const event = { action: args.action, idempotencyKey: args.idempotencyKey, reason: args.reason.trim(), evidence: args.evidence || null, scopeFingerprint, actorId: context.session!.itemId, at: new Date().toISOString() };
     const replay = events.find((value: any) => value.idempotencyKey === args.idempotencyKey);
     if (replay) {
@@ -124,7 +124,6 @@ export async function manageInventorySafety(_root: unknown, args: SafetyArgs, co
       });
       const created = requirePrismaSuccess(await tx.inventoryRecall.create({ data: { storeId, idempotencyKey: args.idempotencyKey, reason: args.reason.trim(), status: 'open', openedBy: context.session!.itemId, scope: { productId: args.productId || null, conversionIds: conversionScope.conversions.map(record => record.id), lots: scopeLots }, affectedOrders, events: [event] } }), 'recall record creation');
       recallId = created.id;
-      for(const order of affectedOrders) await enqueueGroceryOutboxEvent(tx,{storeId,eventKey:`recall:${created.id}:notice:${order.orderId}`,eventType:'inventory.recall.notice',aggregateType:'Order',aggregateId:order.orderId,occurredAt:new Date().toISOString(),payload:{orderId:order.orderId,recallId:created.id,reason:args.reason.trim()}});
     }
     for (const initial of lots) {
       const lot = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: initial.id } }), 'safety lot lookup');
