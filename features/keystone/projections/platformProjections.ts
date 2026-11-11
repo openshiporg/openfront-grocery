@@ -708,7 +708,7 @@ export async function groceryPlatformCustomers(_root: unknown, args: ProjectionP
   const store = await requireSessionStore(context), pagination = pageArgs(args);
   // Customers are accounts with no staff role and no staff history (a revoked employee is still staff).
   const base: any = { storeId: store.id, roleId: null, staffAccessEvents: { none: {} } };
-  const customerViews: Record<string, any> = { with_orders: { orders: { some: { storeId: store.id } } }, without_orders: { orders: { none: { storeId: store.id } } } };
+  const customerViews: Record<string, any> = { with_orders: { from_Order_user: { some: { storeId: store.id } } }, without_orders: { from_Order_user: { none: { storeId: store.id } } } };
   const where: any = { ...base, AND: [searchFields(pagination.search, ['name', 'email']), customerViews[args.view || ''] || {}] };
   const customerOrder: any[] = args.sort === 'name' ? [{ name: 'asc' }, { id: 'asc' }] : args.sort === 'oldest' ? [{ createdAt: 'asc' }, { id: 'asc' }] : [{ createdAt: 'desc' }, { id: 'asc' }];
   const [users, totalCustomers, savedCarts, customersWithOrders, allCustomers] = await Promise.all([
