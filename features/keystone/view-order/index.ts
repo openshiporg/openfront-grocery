@@ -22,7 +22,7 @@ export const VIEW_ORDER = [
   "multiselect",
   "json",
   "json",
-  "document",
   "virtual",
+  "document",
   "password"
 ];
