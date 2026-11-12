@@ -78,7 +78,7 @@ export function UrbanBreadcrumb({ items }: { items: Array<{ label: string; href?
           <li key={`${item.label}-${index}`} className="flex min-w-0 items-center">
             {index > 0 ? <ChevronRight className="mx-1 h-3.5 w-3.5 shrink-0 text-[var(--sf-rule-strong)]" aria-hidden="true" /> : null}
             {item.href ? (
-              <Link prefetch={false} href={item.href} className="inline-flex min-h-8 items-center font-medium transition-colors hover:text-[var(--sf-ink)]">
+              <Link prefetch={false} href={item.href} className="inline-flex min-h-11 items-center font-medium transition-colors hover:text-[var(--sf-ink)]">
                 {item.label}
               </Link>
             ) : (
@@ -117,7 +117,7 @@ export function UrbanSectionTitle({
         <Link
           prefetch={false}
           href={actionHref}
-          className="group inline-flex min-h-10 shrink-0 items-center gap-1.5 self-start whitespace-nowrap text-sm font-semibold text-[var(--sf-ink)] sm:self-auto"
+          className="group inline-flex min-h-11 shrink-0 items-center gap-1.5 self-start whitespace-nowrap text-sm font-semibold text-[var(--sf-ink)] sm:self-auto"
         >
           <span className="underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-[6px] transition-colors group-hover:decoration-[var(--sf-accent)]">{actionLabel}</span>
           <ArrowRight className="h-4 w-4 transition-transform duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] group-hover:translate-x-0.5" aria-hidden="true" />
@@ -192,7 +192,7 @@ const buttonVariants: Record<ButtonVariant, string> = {
 };
 
 const buttonSizes: Record<ButtonSize, string> = {
-  sm: 'min-h-10 px-3.5 text-[0.8125rem]',
+  sm: 'min-h-11 px-3.5 text-[0.8125rem]',
   md: 'min-h-11 px-5 text-sm',
   lg: 'min-h-13 px-6 text-[0.9375rem]',
 };

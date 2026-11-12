@@ -10,10 +10,10 @@ export default function MarketCouponCode({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
   return <div className="mt-4">
     <div className="flex flex-wrap items-center gap-2">
-      <code className="inline-flex min-h-10 items-center rounded-[var(--sf-radius-sm)] border-2 border-dashed border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-3 font-[family-name:var(--sf-font-mono)] text-sm font-semibold tracking-[0.06em]">{code}</code>
+      <code className="inline-flex min-h-11 items-center rounded-[var(--sf-radius-sm)] border-2 border-dashed border-[var(--sf-rule-strong)] bg-[var(--sf-paper)] px-3 font-[family-name:var(--sf-font-mono)] text-sm font-semibold tracking-[0.06em]">{code}</code>
       <button
         type="button"
-        className="inline-flex min-h-10 items-center gap-1.5 rounded-full px-3.5 text-[0.8125rem] font-semibold ring-1 ring-inset ring-[var(--sf-rule-strong)] transition-shadow hover:ring-[var(--sf-ink)]"
+        className="inline-flex min-h-11 items-center gap-1.5 rounded-full px-3.5 text-[0.8125rem] font-semibold ring-1 ring-inset ring-[var(--sf-rule-strong)] transition-shadow hover:ring-[var(--sf-ink)]"
         onClick={async () => {
           try { await navigator.clipboard.writeText(code); setCopied(true); setMessage('Coupon code copied.'); window.setTimeout(() => setCopied(false), 1800); }
           catch { setMessage('Copy is unavailable. Select the code above or use the checkout link.'); }
@@ -21,7 +21,7 @@ export default function MarketCouponCode({ code }: { code: string }) {
       >
         {copied ? <Check className="h-4 w-4 text-[var(--sf-sage)]" aria-hidden="true" /> : <Copy className="h-4 w-4" aria-hidden="true" />}{copied ? 'Copied' : 'Copy'}
       </button>
-      <Link href={`/checkout?coupon=${encodeURIComponent(code)}`} className="inline-flex min-h-10 items-center rounded-full px-2 text-[0.8125rem] font-semibold text-[var(--sf-accent)] underline decoration-2 underline-offset-4">Use at checkout</Link>
+      <Link href={`/checkout?coupon=${encodeURIComponent(code)}`} className="inline-flex min-h-11 items-center rounded-full px-2 text-[0.8125rem] font-semibold text-[var(--sf-accent)] underline decoration-2 underline-offset-4">Use at checkout</Link>
     </div>
     <p role="status" className="sr-only">{message}</p>
   </div>;

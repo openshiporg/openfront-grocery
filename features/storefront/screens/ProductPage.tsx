@@ -61,7 +61,7 @@ export async function ProductPage(props: Props) {
           </div>
         </div>
         <div className="min-w-0">
-          {product.department ? <Link prefetch={false} href={`/departments/${product.department.handle}`} className="sf-eyebrow inline-flex min-h-8 items-center hover:underline">{product.department.name}</Link> : null}
+          {product.department ? <Link prefetch={false} href={`/departments/${product.department.handle}`} className="sf-eyebrow inline-flex min-h-11 items-center hover:underline">{product.department.name}</Link> : null}
           <h1 className="sf-title mt-1">{product.name}</h1>
           {product.variantLabel ? <p className="mt-2 text-[0.9375rem] text-[var(--sf-ink-muted)]">{product.variantLabel}{product.variantOf ? <> · <Link prefetch={false} href={`/products/${product.variantOf.handle}`} className="font-semibold underline underline-offset-4">View {product.variantOf.title}</Link></> : null}</p> : null}
 
@@ -79,7 +79,7 @@ export async function ProductPage(props: Props) {
             <RigelModeToggle />
             <RigelSlotHeading />
             <RigelSlotList name="product-window" limit={2} compact />
-            <Link prefetch={false} href="/fulfillment" className="inline-flex min-h-9 items-center gap-1 text-[0.8125rem] text-[var(--sf-accent-hover)] underline underline-offset-2">All delivery &amp; pickup times <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /></Link>
+            <Link prefetch={false} href="/fulfillment" className="inline-flex min-h-11 items-center gap-1 text-[0.8125rem] text-[var(--sf-accent-hover)] underline underline-offset-2">All delivery &amp; pickup times <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /></Link>
           </div>
         </div>
       </section>

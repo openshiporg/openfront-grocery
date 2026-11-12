@@ -12,7 +12,7 @@ const groups = [
 export default async function UrbanFooter() {
   const [store, { departments }] = await Promise.all([getStore(), getDepartmentsList(0, 8).catch(() => ({ departments: [] }))]);
   const year = new Date().getFullYear();
-  const link = 'inline-flex min-h-9 items-center text-[var(--sf-header-ink-muted)] transition-colors hover:text-[var(--sf-header-ink)]';
+  const link = 'inline-flex min-h-11 items-center text-[var(--sf-header-ink-muted)] transition-colors hover:text-[var(--sf-header-ink)]';
 
   return (
     <footer className="sf-dark mt-auto">

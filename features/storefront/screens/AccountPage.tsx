@@ -53,7 +53,7 @@ function OrderRow({ order }: { order: GroceryOrder }) {
           <UrbanBadge tone={exception ? 'danger' : order.status === 'delivered' ? 'muted' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : orderStatusLabel(order.status)}</UrbanBadge>
         </div>
         <p className="mt-1 text-sm text-[var(--sf-ink-muted)]">{new Date(order.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · {order.items.length} product{order.items.length === 1 ? '' : 's'} · {pickup ? 'Pickup' : 'Delivery'}</p>
-        <Link href={`/order/${order.id}`} className="mt-2 inline-flex min-h-9 items-center gap-1 text-sm font-semibold underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-4 hover:decoration-[var(--sf-ink)]">View order & receipt</Link>
+        <Link href={`/order/${order.id}`} className="mt-2 inline-flex min-h-11 items-center gap-1 text-sm font-semibold underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-4 hover:decoration-[var(--sf-ink)]">View order & receipt</Link>
       </div>
     </div>
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--sf-rule)] pt-4 sm:block sm:space-y-2 sm:border-0 sm:pt-0 sm:text-right">
@@ -107,7 +107,7 @@ async function AccountContent({ searchParams, section }: Props & { section: 'ove
       <section aria-labelledby="account-orders-title">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 id="account-orders-title" className="sf-subtitle">{section === 'overview' ? 'Recent grocery runs' : 'Order history'}</h2>
-          {section === 'overview' ? <Link className="inline-flex min-h-10 items-center gap-1 text-sm font-semibold underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-[6px]" href="/account/orders">All orders <ArrowRight className="h-4 w-4" aria-hidden="true" /></Link> : history && !history.error ? <p className="text-sm text-[var(--sf-ink-muted)]">{history.total} order{history.total === 1 ? '' : 's'}</p> : null}
+          {section === 'overview' ? <Link className="inline-flex min-h-11 items-center gap-1 text-sm font-semibold underline decoration-[var(--sf-rule-strong)] decoration-2 underline-offset-[6px]" href="/account/orders">All orders <ArrowRight className="h-4 w-4" aria-hidden="true" /></Link> : history && !history.error ? <p className="text-sm text-[var(--sf-ink-muted)]">{history.total} order{history.total === 1 ? '' : 's'}</p> : null}
         </div>
         {history?.error ? <div className="sf-panel space-y-3 p-5" role="alert"><p>We couldn’t load your orders. {history.error}</p><UrbanButtonLink href={path} variant="ghost">Try again</UrbanButtonLink></div> : !history?.orders.length ? <UrbanEmptyState icon={Package} title={history?.page && history.page > 1 ? 'No orders on this page' : 'Your first grocery run awaits'} actionHref={history?.page && history.page > 1 ? '/account/orders' : '/products'} actionLabel={history?.page && history.page > 1 ? 'Back to first page' : 'Explore the shop'}>Your placed orders will appear here, with fulfillment details and a receipt.</UrbanEmptyState> : <ul className="grid gap-3">{history.orders.map((order) => <OrderRow key={order.id} order={order} />)}</ul>}
         {section === 'orders' && history && !history.error && pages > 1 ? <UrbanPager label="Order history pages" page={history.page} totalPages={pages} previousHref={`/account/orders?page=${history.page - 1}`} nextHref={`/account/orders?page=${history.page + 1}`} /> : null}

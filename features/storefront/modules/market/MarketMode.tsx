@@ -23,7 +23,7 @@ export function MarketModeLink({ tone = 'light' }: { tone?: 'light' | 'dark' }) 
     <Link
       prefetch={false}
       href="/fulfillment"
-      className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap font-medium ${tone === 'dark' ? 'text-[var(--sf-header-ink)] hover:underline hover:underline-offset-4' : 'rounded-full px-3 text-sm text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]'}`}
+      className={`inline-flex min-h-11 items-center gap-1.5 whitespace-nowrap font-medium ${tone === 'dark' ? 'text-[var(--sf-header-ink)] hover:underline hover:underline-offset-4' : 'rounded-full px-3 text-sm text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]'}`}
     >
       <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
       {mode ? `${mode === 'pickup' ? 'Pickup' : 'Delivery'} · see times` : 'Delivery or pickup times'}

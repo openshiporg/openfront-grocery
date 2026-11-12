@@ -28,8 +28,8 @@ export default async function UrbanNav() {
         <p className="min-w-0 truncate text-[var(--sf-header-ink-muted)]">{store.tagline || (store.address ? `Shopping at ${store.address}` : `Shopping at ${store.name}`)}</p>
         <nav aria-label="Store services" className="hidden shrink-0 items-center gap-5 font-medium md:flex">
           <MarketModeLink tone="dark" />
-          <Link prefetch={false} href="/order-access" className="inline-flex min-h-8 items-center hover:underline hover:underline-offset-4">Find an order</Link>
-          <Link prefetch={false} href="/support" className="inline-flex min-h-8 items-center hover:underline hover:underline-offset-4">Help</Link>
+          <Link prefetch={false} href="/order-access" className="inline-flex min-h-11 items-center hover:underline hover:underline-offset-4">Find an order</Link>
+          <Link prefetch={false} href="/support" className="inline-flex min-h-11 items-center hover:underline hover:underline-offset-4">Help</Link>
         </nav>
       </div>
     </div>

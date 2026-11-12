@@ -27,7 +27,7 @@ export default function UrbanProductCard({ product, eager = false }: { product: 
       <UrbanProductArtwork product={product} eager={eager} className="mix-blend-multiply transition-transform duration-[var(--sf-dur-slow)] ease-[var(--sf-ease-out)] group-hover:scale-[1.03]" />
     </Link>
     <div className="flex flex-1 flex-col px-2 pb-2 pt-1 sm:px-2.5 sm:pb-2.5">
-      <Link prefetch={false} href={`/products/${product.handle}`} className="after:absolute after:inset-0 after:rounded-[var(--sf-radius-lg)] after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[var(--sf-focus)] focus-visible:after:[outline-style:solid]">
+      <Link prefetch={false} href={`/products/${product.handle}`} className="flex min-h-11 items-center after:absolute after:inset-0 after:rounded-[var(--sf-radius-lg)] after:content-[''] focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-[var(--sf-focus)] focus-visible:after:[outline-style:solid]">
         <h3 className="line-clamp-2 text-[0.8125rem] font-normal leading-[1.125rem] tracking-normal text-[var(--sf-ink)] lg:text-[0.75rem] lg:leading-4">
           {product.name}{note ? <span className="text-[var(--sf-ink-muted)]"> ({note})</span> : null}
         </h3>

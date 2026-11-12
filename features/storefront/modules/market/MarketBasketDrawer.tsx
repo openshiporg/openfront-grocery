@@ -74,8 +74,8 @@ export function BasketDrawer({ open, onClose }: { open: boolean; onClose: () => 
             <p className="font-semibold">Items from your earlier cart haven’t been added to your account yet.</p>
             <p className="mt-1">{mergeError}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button type="button" onClick={retryMerge} className="inline-flex min-h-10 items-center rounded-full bg-[var(--sf-ink)] px-4 text-sm font-semibold text-[var(--sf-paper)]">Try again</button>
-              <button type="button" onClick={keepAccountBasket} className="inline-flex min-h-10 items-center rounded-full px-4 text-sm font-semibold ring-1 ring-inset ring-[var(--sf-rule-strong)]">Keep my account cart only</button>
+              <button type="button" onClick={retryMerge} className="inline-flex min-h-11 items-center rounded-full bg-[var(--sf-ink)] px-4 text-sm font-semibold text-[var(--sf-paper)]">Try again</button>
+              <button type="button" onClick={keepAccountBasket} className="inline-flex min-h-11 items-center rounded-full px-4 text-sm font-semibold ring-1 ring-inset ring-[var(--sf-rule-strong)]">Keep my account cart only</button>
             </div>
           </div>
         ) : null}

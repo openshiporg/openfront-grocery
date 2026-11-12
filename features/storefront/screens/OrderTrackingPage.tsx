@@ -77,7 +77,7 @@ export async function OrderTrackingPage(props: Props) {
   const totalTitle = order.receiptStage === 'final' ? 'Final total' : settlementPending ? 'Picked total · pending' : order.receiptStage === 'proposed' ? 'Proposed total' : 'Order estimate';
   const placed = new Date(order.createdAt);
   return <UrbanPageShell><UrbanContainer className="space-y-6 py-7 sm:py-10">
-    <Link href="/account/orders" className="inline-flex min-h-10 items-center gap-1.5 text-sm font-semibold text-[var(--sf-ink-muted)] hover:text-[var(--sf-ink)]"><ArrowLeft className="h-4 w-4" aria-hidden="true" />Your orders</Link>
+    <Link href="/account/orders" className="inline-flex min-h-11 items-center gap-1.5 text-sm font-semibold text-[var(--sf-ink-muted)] hover:text-[var(--sf-ink)]"><ArrowLeft className="h-4 w-4" aria-hidden="true" />Your orders</Link>
     <header className="flex flex-wrap items-end justify-between gap-4">
       <div><p className="sf-eyebrow">{pickup ? 'Pickup' : 'Delivery'} order · placed {placed.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p><h1 className="sf-title mt-1">Order #{order.orderNumber}</h1></div>
       <UrbanBadge tone={exception ? 'danger' : 'primary'}>{pickup && order.status === 'delivered' ? 'Picked up' : orderStatusLabel(order.status)}</UrbanBadge>

@@ -409,7 +409,7 @@ export default function UrbanCheckout({ cart: initialCart, user, savedAddresses 
       <div className="sf-panel overflow-hidden">
         <div className="flex items-center justify-between gap-3 border-b border-[var(--sf-rule)] px-5 py-4">
           <h2 className="text-lg font-bold tracking-[-0.02em]">{active ? 'Review & confirm' : 'Order estimate'}</h2>
-          <Link href="/cart" className="inline-flex min-h-9 items-center text-sm font-semibold underline underline-offset-4">Edit cart</Link>
+          <Link href="/cart" className="inline-flex min-h-11 items-center text-sm font-semibold underline underline-offset-4">Edit cart</Link>
         </div>
         <ul className="max-h-64 space-y-3 overflow-y-auto px-5 py-4" aria-label="Cart items">{cart.items.map((item) => <li key={item.id} className="grid grid-cols-[2.75rem_minmax(0,1fr)_auto] items-center gap-3 text-sm"><div className="relative h-11 overflow-hidden rounded-[var(--sf-radius-sm)] bg-[var(--sf-paper-3)]"><UrbanProductArtwork product={item.product} /><span className="absolute -right-0.5 -top-0.5 grid h-5 min-w-5 place-items-center rounded-full bg-[var(--sf-ink)] px-1 text-xs font-bold text-[var(--sf-paper)]">{item.quantity}</span></div><span className="line-clamp-2 leading-5">{item.product.name}</span><span className="font-semibold tabular-nums">{formatMoney(item.subtotal)}</span></li>)}</ul>
         <div className="border-t border-[var(--sf-rule)] px-5 py-4">

@@ -98,7 +98,7 @@ export function RigelSidebar({ departments }: { departments: Array<{ id: string;
   return (
     <div className="flex min-h-full flex-col gap-6 px-4 pb-6 pt-5">
       {address ? (
-        <Link prefetch={false} href={mode === 'pickup' || !shopperAddress ? '/fulfillment' : '/account/addresses'} className="flex min-h-9 items-start gap-2 text-[0.8125rem] font-medium leading-5 hover:underline hover:underline-offset-4">
+        <Link prefetch={false} href={mode === 'pickup' || !shopperAddress ? '/fulfillment' : '/account/addresses'} className="flex min-h-11 items-start gap-2 text-[0.8125rem] font-medium leading-5 hover:underline hover:underline-offset-4">
           <MapPin className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0"><span className="sr-only">{mode === 'pickup' ? 'Pickup from ' : shopperAddress ? 'Delivering to ' : 'Shopping at '}</span>{address}</span>
         </Link>
@@ -112,7 +112,7 @@ export function RigelSidebar({ departments }: { departments: Array<{ id: string;
             const current = pathname === href;
             return (
               <li key={department.id}>
-                <Link prefetch={false} href={href} aria-current={current ? 'page' : undefined} className={`relative mr-3 flex min-h-8 items-center gap-2.5 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.8125rem] transition-colors ${current ? 'bg-[var(--sf-accent-soft)] font-semibold text-[var(--sf-accent-hover)] before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-[var(--sf-accent)]' : 'text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]'}`}>
+                <Link prefetch={false} href={href} aria-current={current ? 'page' : undefined} className={`relative mr-3 flex min-h-11 items-center gap-2.5 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.8125rem] transition-colors ${current ? 'bg-[var(--sf-accent-soft)] font-semibold text-[var(--sf-accent-hover)] before:absolute before:inset-y-0 before:left-0 before:w-1 before:bg-[var(--sf-accent)]' : 'text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]'}`}>
                   <DepartmentIcon department={department} className={`h-4 w-4 shrink-0 ${current ? '' : 'text-[var(--sf-ink-muted)]'}`} />
                   <span className="truncate">{department.name}</span>
                 </Link>
@@ -120,7 +120,7 @@ export function RigelSidebar({ departments }: { departments: Array<{ id: string;
             );
           })}
           <li>
-            <Link prefetch={false} href="/deals" aria-current={pathname === '/deals' ? 'page' : undefined} className="mr-3 flex min-h-8 items-center gap-2.5 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.8125rem] text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]">
+            <Link prefetch={false} href="/deals" aria-current={pathname === '/deals' ? 'page' : undefined} className="mr-3 flex min-h-11 items-center gap-2.5 rounded-r-[var(--sf-radius-md)] pl-6 pr-3 text-[0.8125rem] text-[var(--sf-ink)] hover:bg-[var(--sf-paper-2)]">
               <Leaf className="h-4 w-4 shrink-0 text-[var(--sf-ink-muted)]" aria-hidden="true" />Specials
             </Link>
           </li>
@@ -205,8 +205,8 @@ export function RigelCartRail() {
       <div className="flex items-center justify-between gap-3 px-5 pb-3 pt-5">
         <h2 id="rail-title" className="text-[1.375rem] font-medium">Cart</h2>
         <div className="flex items-center gap-1">
-          {items.length ? <button type="button" disabled={busy} onClick={() => { setError(''); void runExclusive(async () => { if (!(await clearCart({ preserveSession: true }))) throw new Error('Your cart could not be cleared.'); }).catch((cause) => setError(cause instanceof Error ? cause.message : 'Your cart could not be cleared.')); }} className="inline-flex min-h-9 items-center px-2 text-[0.875rem] text-[var(--sf-accent-hover)] underline underline-offset-4 disabled:opacity-50">Clear</button> : null}
-          <button type="button" onClick={() => setRailOpen(false)} aria-label="Hide cart" className="grid h-9 w-9 place-items-center rounded-full hover:bg-[var(--sf-paper-2)]"><X className="h-5 w-5" aria-hidden="true" /></button>
+          {items.length ? <button type="button" disabled={busy} onClick={() => { setError(''); void runExclusive(async () => { if (!(await clearCart({ preserveSession: true }))) throw new Error('Your cart could not be cleared.'); }).catch((cause) => setError(cause instanceof Error ? cause.message : 'Your cart could not be cleared.')); }} className="inline-flex min-h-11 items-center px-2 text-[0.875rem] text-[var(--sf-accent-hover)] underline underline-offset-4 disabled:opacity-50">Clear</button> : null}
+          <button type="button" onClick={() => setRailOpen(false)} aria-label="Hide cart" className="grid h-11 w-11 place-items-center rounded-full hover:bg-[var(--sf-paper-2)]"><X className="h-5 w-5" aria-hidden="true" /></button>
         </div>
       </div>
       <div className="flex-1 overflow-y-auto px-5" aria-busy={busy}>

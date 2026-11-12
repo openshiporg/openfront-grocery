@@ -69,7 +69,7 @@ function CartLine({
             <span aria-live="polite">{item.quantity}</span>
             <button type="button" aria-label={`Increase ${item.product.name} quantity`} onClick={() => updateQuantity(item.quantity + 1)} disabled={disabled || item.quantity >= item.product.stockQuantity}><Plus className="h-3.5 w-3.5" aria-hidden="true" /></button>
           </div>
-          <button type="button" aria-label={`Remove ${item.product.name} from cart`} onClick={() => void commit(() => removeFromCart(item.id))} disabled={disabled} className="inline-flex min-h-9 items-center gap-1.5 rounded-full px-2 text-[0.8125rem] font-semibold text-[var(--sf-ink-muted)] transition-colors hover:text-[var(--sf-danger)] disabled:opacity-50">
+          <button type="button" aria-label={`Remove ${item.product.name} from cart`} onClick={() => void commit(() => removeFromCart(item.id))} disabled={disabled} className="inline-flex min-h-11 items-center gap-1.5 rounded-full px-2 text-[0.8125rem] font-semibold text-[var(--sf-ink-muted)] transition-colors hover:text-[var(--sf-danger)] disabled:opacity-50">
             <Trash2 className="h-4 w-4" aria-hidden="true" /> Remove
           </button>
         </div>

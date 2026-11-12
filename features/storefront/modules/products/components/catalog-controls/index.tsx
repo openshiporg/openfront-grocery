@@ -86,7 +86,7 @@ export default function CatalogControls({ departments, activeDepartment, search 
           {activeAisle ? <button type="button" disabled={pending} onClick={() => update('department', '')} aria-label={`Remove aisle filter ${activeAisle.name}`} className="sf-chip bg-[var(--sf-paper-2)]">{activeAisle.name}<X className="h-3.5 w-3.5" aria-hidden="true" /></button> : null}
           {availability !== 'in-stock' ? <button type="button" disabled={pending} onClick={() => update('availability', 'in-stock')} aria-label="Show in-stock products only" className="sf-chip bg-[var(--sf-paper-2)]">{availabilities.find(([value]) => value === availability)?.[1] || availability}<X className="h-3.5 w-3.5" aria-hidden="true" /></button> : null}
           {organic ? <button type="button" disabled={pending} onClick={() => update('organic', false)} aria-label="Remove organic filter" className="sf-chip bg-[var(--sf-paper-2)]">Organic<X className="h-3.5 w-3.5" aria-hidden="true" /></button> : null}
-          <Link prefetch={false} href={pathname || '/products'} className="ml-1 inline-flex min-h-10 items-center text-sm font-semibold underline underline-offset-4">Clear all</Link>
+          <Link prefetch={false} href={pathname || '/products'} className="ml-1 inline-flex min-h-11 items-center text-sm font-semibold underline underline-offset-4">Clear all</Link>
         </div>
       ) : null}
 

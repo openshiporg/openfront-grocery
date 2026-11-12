@@ -36,7 +36,7 @@ async function requireFreshCapability(context, capability) {
   if (!session?.itemId) throw new Error("Authentication required");
   const sudoContext = context.sudo();
   if (!context.prisma?.$queryRaw || !sudoContext?.query?.User?.findOne) {
-    return { user: session.data, storeId: session.data.store?.id };
+    throw new Error("Current capability context is unavailable");
   }
   const user = await sudoContext.query.User.findOne({
     where: { id: session.itemId },
@@ -47,6 +47,14 @@ async function requireFreshCapability(context, capability) {
 }
 function isSignedIn({ session }) {
   return Boolean(session);
+}
+async function isCurrentAccount({ session, context }) {
+  if (!session?.itemId || !context?.prisma?.user?.findUnique) return false;
+  const user = await context.prisma.user.findUnique({
+    where: { id: session.itemId },
+    select: { privacyErasedAt: true, store: { select: { isActive: true } } }
+  });
+  return Boolean(user && !user.privacyErasedAt && user.store?.isActive);
 }
 function currentPermission(capability) {
   return async ({ session, context }) => {
@@ -76,6 +84,18 @@ var init_access = __esm({
   }
 });
 
+// features/keystone/lib/publicError.ts
+function publicError(message, code = "BAD_USER_INPUT") {
+  return new import_graphql2.GraphQLError(message, { extensions: { code } });
+}
+var import_graphql2;
+var init_publicError = __esm({
+  "features/keystone/lib/publicError.ts"() {
+    "use strict";
+    import_graphql2 = require("graphql");
+  }
+});
+
 // features/keystone/lib/storeScope.ts
 async function requireSessionStore(context) {
   if (!context.session?.itemId) throw new Error("Store-scoped operation requires authentication");
@@ -93,11 +113,151 @@ async function publicStore(context) {
   if (!store) throw new Error("No active grocery store is configured");
   return store;
 }
+async function lockCurrentCustomer(transactionContext) {
+  const userId = transactionContext.session?.itemId;
+  if (!userId) throw new Error("Store-scoped operation requires authentication");
+  const rows = await transactionContext.prisma.$queryRawUnsafe(
+    'SELECT "store" AS "storeId", "privacyErasedAt" FROM "User" WHERE "id" = $1 FOR SHARE',
+    userId
+  );
+  const user = rows[0];
+  if (!user) throw new Error("Store-scoped operation requires authentication");
+  if (user.privacyErasedAt) throw new Error("This account has completed an erasure request");
+  const store = user.storeId ? await transactionContext.prisma.store.findUnique({ where: { id: user.storeId }, select: { id: true, isActive: true } }) : null;
+  if (!store?.isActive) throw new Error("Active store scope is required");
+  return store;
+}
 var JUNIPER_STORE_ID;
 var init_storeScope = __esm({
   "features/keystone/lib/storeScope.ts"() {
     "use strict";
     JUNIPER_STORE_ID = "store_juniper";
+  }
+});
+
+// features/keystone/lib/keystonePrismaErrors.ts
+function isKeystonePrismaError(value) {
+  return value instanceof Error && value.extensions?.code === "KS_PRISMA_ERROR";
+}
+function rethrowKeystonePrismaError(value) {
+  if (!isKeystonePrismaError(value)) return value;
+  const prisma = value.extensions.prisma ?? {};
+  throw Object.assign(value, { code: prisma.code, meta: prisma.meta, clientVersion: prisma.clientVersion });
+}
+function throwing(result) {
+  if (!result || typeof result.then !== "function") return rethrowKeystonePrismaError(result);
+  const settled = () => result.then(rethrowKeystonePrismaError);
+  return new Proxy(result, {
+    get(target, key2) {
+      if (key2 === "then") return (ok, fail) => settled().then(ok, fail);
+      if (key2 === "catch") return (fail) => settled().catch(fail);
+      if (key2 === "finally") return (done) => settled().finally(done);
+      const value = Reflect.get(target, key2, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+function throwingDelegate(delegate) {
+  const cached = delegates.get(delegate);
+  if (cached) return cached;
+  const wrapped = new Proxy(delegate, {
+    get(target, key2) {
+      const value = Reflect.get(target, key2, target);
+      return typeof value === "function" ? (...args) => throwing(value.apply(target, args)) : value;
+    }
+  });
+  delegates.set(delegate, wrapped);
+  return wrapped;
+}
+function throwKeystonePrismaErrors(client) {
+  const cached = clients.get(client);
+  if (cached) return cached;
+  const wrapped = new Proxy(client, {
+    get(target, key2) {
+      const value = Reflect.get(target, key2, target);
+      if (key2 === "$transaction" && typeof value === "function") {
+        return (work, ...options) => {
+          if (typeof work === "function") return value.call(target, (tx) => work(throwKeystonePrismaErrors(tx)), ...options);
+          return Promise.resolve(value.call(target, work, ...options)).then((results) => Array.isArray(results) ? results.map(rethrowKeystonePrismaError) : results);
+        };
+      }
+      if (key2 === "$extends" && typeof value === "function") return (...args) => throwKeystonePrismaErrors(value.apply(target, args));
+      if (typeof key2 === "string" && RAW_METHOD.test(key2) && typeof value === "function") return (...args) => throwing(value.apply(target, args));
+      if (typeof value === "function") return value.bind(target);
+      if (typeof key2 === "string" && !key2.startsWith("$") && value && typeof value === "object" && typeof value.findFirst === "function") return throwingDelegate(value);
+      return value;
+    }
+  });
+  clients.set(client, wrapped);
+  return wrapped;
+}
+var RAW_METHOD, clients, delegates;
+var init_keystonePrismaErrors = __esm({
+  "features/keystone/lib/keystonePrismaErrors.ts"() {
+    "use strict";
+    RAW_METHOD = /^\$(queryRaw|executeRaw|queryRawUnsafe|executeRawUnsafe|queryRawTyped|runCommandRaw)$/;
+    clients = /* @__PURE__ */ new WeakMap();
+    delegates = /* @__PURE__ */ new WeakMap();
+  }
+});
+
+// features/keystone/utils/serializableTransaction.ts
+function requirePrismaSuccess(value, operation = "database operation") {
+  const extensions = value?.extensions;
+  if (extensions?.code !== "KS_PRISMA_ERROR") return value;
+  const prismaCode = extensions.prisma?.code;
+  const sqlState = extensions.prisma?.meta?.code;
+  const error = new Error(`Keystone Prisma ${operation} failed`);
+  if (prismaCode) error.code = prismaCode;
+  if (typeof sqlState === "string" && /^[0-9A-Z]{5}$/.test(sqlState)) error.sqlState = sqlState;
+  throw error;
+}
+function withInteractiveTransactionDefaults(prisma, defaults4 = INTERACTIVE_TRANSACTION_DEFAULTS) {
+  return new Proxy(prisma, {
+    get(target, key2, receiver) {
+      if (key2 === "$transaction") {
+        const transaction = Reflect.get(target, key2, receiver);
+        return (arg, options) => typeof arg === "function" ? transaction.call(target, arg, { ...defaults4, ...options }) : transaction.call(target, arg, options);
+      }
+      return Reflect.get(target, key2, receiver);
+    }
+  });
+}
+function extendPrismaClientWithErrorNormalization(prisma) {
+  return withInteractiveTransactionDefaults(throwKeystonePrismaErrors(prisma.$extends({
+    query: {
+      async $allOperations({ model, operation, args, query }) {
+        const label = [model, operation].filter((part) => typeof part === "string" && part).join(".") || "database operation";
+        return requirePrismaSuccess(await query(args), label);
+      }
+    }
+  })));
+}
+function isSerializableConflict(error) {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error;
+  const sqlState = candidate.sqlState || candidate.meta?.code;
+  return candidate.code === "P2034" || candidate.code === "P2002" || sqlState === "40001" || sqlState === "40P01" || /serialization|write conflict|deadlock|unique constraint/i.test(candidate.message || "");
+}
+async function withSerializableRetry(operation, maxAttempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return requirePrismaSuccess(await operation(), "transaction");
+    } catch (error) {
+      lastError = error;
+      if (!isSerializableConflict(error) || attempt === maxAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 10));
+    }
+  }
+  throw lastError;
+}
+var INTERACTIVE_TRANSACTION_DEFAULTS;
+var init_serializableTransaction = __esm({
+  "features/keystone/utils/serializableTransaction.ts"() {
+    "use strict";
+    init_keystonePrismaErrors();
+    INTERACTIVE_TRANSACTION_DEFAULTS = { timeout: 2e4, maxWait: 1e4 };
   }
 });
 
@@ -122,7 +282,7 @@ async function appendInventoryMovement(tx, input) {
   const productBefore = quantityMilli(input.productStockBefore), productAfter = quantityMilli(input.productStockAfter);
   if (Math.min(before, after, productBefore, productAfter) < 0) throw new Error("Inventory movement cannot have negative balances");
   const data = { ...input, reason: input.reason.trim(), quantityBefore: before / 1e3, quantityAfter: after / 1e3, quantityDelta: (after - before) / 1e3, productStockBefore: productBefore / 1e3, productStockAfter: productAfter / 1e3 };
-  const existing = await tx.inventoryMovement.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
+  const existing = requirePrismaSuccess(await tx.inventoryMovement.findUnique({ where: { idempotencyKey: input.idempotencyKey } }), "inventory movement lookup");
   if (existing) {
     for (const field of ["storeId", "productId", "inventoryLotId", "orderId", "sourceType", "sourceId", "reason", "actorId"]) {
       if ((existing[field] || null) !== (data[field] || null)) throw new Error("Inventory movement replay conflicts with original evidence");
@@ -133,95 +293,38 @@ async function appendInventoryMovement(tx, input) {
     if (JSON.stringify(canonicalEvidence(existing.metadata || null)) !== JSON.stringify(canonicalEvidence(input.metadata || null))) throw new Error("Inventory movement replay conflicts with original source evidence");
     return existing;
   }
-  const previous = await tx.inventoryMovement.findFirst({ where: { storeId: input.storeId, inventoryLotId: input.inventoryLotId || null, productId: input.productId }, orderBy: { sequence: "desc" } });
+  const previous = requirePrismaSuccess(await tx.inventoryMovement.findFirst({ where: { storeId: input.storeId, inventoryLotId: input.inventoryLotId || null, productId: input.productId }, orderBy: { sequence: "desc" } }), "inventory journal lookup");
   if (previous && quantityMilli(previous.quantityAfter) !== before) throw new Error("Inventory movement does not continue the lot journal balance");
-  return tx.inventoryMovement.create({ data: { ...data, sequence: Number(previous?.sequence || 0) + 1 } });
+  return requirePrismaSuccess(await tx.inventoryMovement.create({ data: { ...data, sequence: Number(previous?.sequence || 0) + 1 } }), "inventory movement append");
 }
 var init_inventoryMovements = __esm({
   "features/keystone/lib/inventoryMovements.ts"() {
     "use strict";
+    init_serializableTransaction();
   }
 });
 
-// features/keystone/utils/serializableTransaction.ts
-function isSerializableConflict(error) {
-  if (typeof error !== "object" || error === null) return false;
-  const candidate = error;
-  return candidate.code === "P2034" || candidate.code === "P2002" || /serialization|write conflict|deadlock|unique constraint/i.test(candidate.message || "");
+// features/integrations/payment/stripeEnabled.ts
+function isPaymentProviderInstalled(provider) {
+  return Boolean(provider?.isInstalled || provider?.code === "pp_stripe_default" && process.env.STRIPE_USE_ENVIRONMENT_PROVIDER === "true" && process.env.STRIPE_ALLOW_TEST_MODE === "true" && stripeCheckoutActivated() && process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.startsWith("pk_test_") && process.env.STRIPE_WEBHOOK_SECRET);
 }
-async function withSerializableRetry(operation, maxAttempts = 3) {
-  let lastError;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (!isSerializableConflict(error) || attempt === maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, attempt * 10));
-    }
+function stripeCheckoutActivated() {
+  return process.env.STRIPE_ENABLED?.trim().toLowerCase() === "true";
+}
+function stripeConfigurationProblem() {
+  if (!stripeCheckoutActivated()) return "Stripe checkout is disabled for new payments unless STRIPE_ENABLED=true";
+  const secretKey = process.env.STRIPE_SECRET_KEY?.trim() || "";
+  const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim() || "";
+  if (!secretKey || !publishableKey || !process.env.STRIPE_WEBHOOK_SECRET?.trim()) return "Stripe checkout is not fully configured";
+  if (process.env.NODE_ENV === "production") {
+    const mode = process.env.STRIPE_ALLOW_TEST_MODE === "true" ? "test" : "live";
+    if (!secretKey.startsWith(`sk_${mode}_`) || !publishableKey.startsWith(`pk_${mode}_`)) return `Stripe checkout requires ${mode}-mode keys`;
   }
-  throw lastError;
+  return null;
 }
-var init_serializableTransaction = __esm({
-  "features/keystone/utils/serializableTransaction.ts"() {
+var init_stripeEnabled = __esm({
+  "features/integrations/payment/stripeEnabled.ts"() {
     "use strict";
-  }
-});
-
-// features/keystone/lib/groceryOutbox.ts
-function canonicalValue(value) {
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key2, entry]) => [key2, canonicalValue(entry)])
-    );
-  }
-  return value;
-}
-function canonicalGroceryOutboxPayload(payload) {
-  return JSON.stringify(canonicalValue(payload));
-}
-function groceryOutboxPayloadHash(payload) {
-  return (0, import_node_crypto2.createHash)("sha256").update(canonicalGroceryOutboxPayload(payload)).digest("hex");
-}
-async function enqueueGroceryOutboxEvent(tx, envelope) {
-  const payloadHash = groceryOutboxPayloadHash(envelope.payload);
-  await tx.$queryRawUnsafe(
-    `SELECT 1 AS "locked" FROM pg_advisory_xact_lock(hashtext('grocery-outbox'), hashtext($1))`,
-    envelope.eventKey
-  );
-  const existing = await tx.groceryOutboxEvent.findUnique({ where: { eventKey: envelope.eventKey } });
-  if (existing) {
-    const matches = existing.storeId === envelope.storeId && existing.eventType === envelope.eventType && existing.aggregateType === envelope.aggregateType && existing.aggregateId === envelope.aggregateId && existing.payloadHash === payloadHash;
-    if (!matches) throw new Error("Outbox event key was reused with a different immutable snapshot");
-    return { event: existing, created: false };
-  }
-  const event = await tx.groceryOutboxEvent.create({
-    data: {
-      storeId: envelope.storeId,
-      eventKey: envelope.eventKey,
-      eventType: envelope.eventType,
-      aggregateType: envelope.aggregateType,
-      aggregateId: envelope.aggregateId,
-      schemaVersion: envelope.schemaVersion || 1,
-      occurredAt: new Date(envelope.occurredAt),
-      payload: envelope.payload,
-      payloadHash,
-      status: "pending",
-      attempts: 0
-    }
-  });
-  return { event, created: true };
-}
-function newGroceryOutboxClaimToken(workerId) {
-  return `${workerId}:${(0, import_node_crypto2.randomUUID)()}`;
-}
-var import_node_crypto2;
-var init_groceryOutbox = __esm({
-  "features/keystone/lib/groceryOutbox.ts"() {
-    "use strict";
-    import_node_crypto2 = require("node:crypto");
   }
 });
 
@@ -238,14 +341,23 @@ __export(stripe_exports, {
   refundPaymentFunction: () => refundPaymentFunction,
   stripeCheckoutMetadata: () => stripeCheckoutMetadata
 });
-function stripeCheckoutMetadata(cart) {
-  return { cartId: cart?.id || "", sessionId: cart?.sessionId || "", ...cart?.checkoutPaymentSessionId ? {
-    paymentSessionId: cart.checkoutPaymentSessionId,
-    checkoutFingerprint: cart.checkoutFingerprint || "",
-    cartFingerprint: cart.cartFingerprint || ""
+function stripeCheckoutMetadata(cart, order) {
+  const revised = order?.revisedAuthorization;
+  if (revised) return {
+    source: "openfront-grocery",
+    kind: "revised_authorization",
+    orderId: String(order.id || ""),
+    storeId: String(revised.storeId || ""),
+    settlementId: String(revised.settlementId || ""),
+    fingerprint: String(revised.fingerprint || "")
+  };
+  return { source: "openfront-grocery", cartId: String(cart?.id || ""), sessionId: String(cart?.sessionId || ""), ...cart?.checkoutPaymentSessionId ? {
+    paymentSessionId: String(cart.checkoutPaymentSessionId),
+    checkoutFingerprint: String(cart.checkoutFingerprint || ""),
+    cartFingerprint: String(cart.cartFingerprint || "")
   } : {} };
 }
-async function createPaymentFunction({ cart, amount, currency, idempotencyKey, captureMethod = "automatic" }) {
+async function createPaymentFunction({ cart, order, amount, currency, idempotencyKey, captureMethod = "automatic" }) {
   const stripe = getStripeClient();
   const paymentIntent = await stripe.paymentIntents.create({
     amount,
@@ -254,7 +366,7 @@ async function createPaymentFunction({ cart, amount, currency, idempotencyKey, c
     automatic_payment_methods: {
       enabled: true
     },
-    metadata: stripeCheckoutMetadata(cart)
+    metadata: stripeCheckoutMetadata(cart, order)
   }, idempotencyKey ? { idempotencyKey } : void 0);
   return {
     clientSecret: paymentIntent.client_secret,
@@ -265,7 +377,7 @@ async function capturePaymentFunction({ paymentId, amount, amountCents, idempote
   const stripe = getStripeClient();
   const paymentIntent = await stripe.paymentIntents.capture(paymentId, {
     amount_to_capture: amountCents ?? amount
-  }, idempotencyKey ? { idempotencyKey } : void 0);
+  }, { idempotencyKey });
   return {
     status: paymentIntent.status,
     amount: paymentIntent.amount_received,
@@ -274,7 +386,7 @@ async function capturePaymentFunction({ paymentId, amount, amountCents, idempote
     data: paymentIntent
   };
 }
-async function refundPaymentFunction({ paymentId, amount, idempotencyKey }) {
+async function refundPaymentFunction({ paymentId, amount, idempotencyKey, timeoutMs }) {
   const stripe = getStripeClient();
   const refund = await stripe.refunds.create(
     {
@@ -282,7 +394,7 @@ async function refundPaymentFunction({ paymentId, amount, idempotencyKey }) {
       amount,
       metadata: idempotencyKey ? { groceryRefundKey: idempotencyKey } : void 0
     },
-    idempotencyKey ? { idempotencyKey } : void 0
+    { ...idempotencyKey ? { idempotencyKey } : {}, ...timeoutMs ? { timeout: timeoutMs } : {} }
   );
   return {
     status: refund.status,
@@ -307,8 +419,8 @@ async function getPaymentStatusFunction({ paymentId }) {
     data: paymentIntent
   };
 }
-async function getRefundStatusFunction({ refundId }) {
-  const refund = await getStripeClient().refunds.retrieve(refundId);
+async function getRefundStatusFunction({ refundId, timeoutMs }) {
+  const refund = await getStripeClient().refunds.retrieve(refundId, {}, timeoutMs ? { timeout: timeoutMs } : void 0);
   return {
     id: refund.id,
     status: refund.status,
@@ -387,7 +499,7 @@ function secret() {
   return value;
 }
 function signature(rawBody) {
-  return (0, import_node_crypto3.createHmac)("sha256", secret()).update(rawBody).digest("hex");
+  return (0, import_node_crypto4.createHmac)("sha256", secret()).update(rawBody).digest("hex");
 }
 async function createPaymentFunction2({ amount, currency, idempotencyKey, captureMethod = "automatic" }) {
   secret();
@@ -459,7 +571,7 @@ async function generatePaymentLinkFunction2({ paymentId }) {
 async function handleWebhookFunction2({ rawBody, headers }) {
   const expected = signature(rawBody);
   const received = headers["x-grocery-test-signature"];
-  if (!received || received.length !== expected.length || !(0, import_node_crypto3.timingSafeEqual)(Buffer.from(received), Buffer.from(expected))) {
+  if (!received || received.length !== expected.length || !(0, import_node_crypto4.timingSafeEqual)(Buffer.from(received), Buffer.from(expected))) {
     throw new Error("Test payment webhook signature verification failed");
   }
   let payload;
@@ -480,11 +592,11 @@ async function handleWebhookFunction2({ rawBody, headers }) {
 function createTestPaymentWebhookSignature(rawBody) {
   return signature(rawBody);
 }
-var import_node_crypto3, TEST_PROVIDER_SECRET_ENV, paymentStates, refundStates;
+var import_node_crypto4, TEST_PROVIDER_SECRET_ENV, paymentStates, refundStates;
 var init_test = __esm({
   "features/integrations/payment/test.ts"() {
     "use strict";
-    import_node_crypto3 = require("node:crypto");
+    import_node_crypto4 = require("node:crypto");
     TEST_PROVIDER_SECRET_ENV = "GROCERY_PAYMENT_TEST_SECRET";
     paymentStates = /* @__PURE__ */ new Map();
     refundStates = /* @__PURE__ */ new Map();
@@ -497,102 +609,334 @@ function getPaymentProviderDefinition(providerCode) {
   if (!definition) throw new Error(`Unsupported payment provider: ${providerCode}`);
   return definition;
 }
-function getPaymentProviderAdapter(providerCode) {
-  const adapter = paymentProviderAdapters[providerCode];
-  if (!adapter) throw new Error(`Unsupported payment provider: ${providerCode}`);
-  return adapter;
+function configuredSelector(provider, operation) {
+  const definition = paymentProviderDefinitions[provider.code];
+  const selector = provider[operation] || definition?.adapterKey;
+  if (typeof selector !== "string" || !selector.trim() || selector === "manual") {
+    throw new Error(`Payment provider operation ${operation} is not configured`);
+  }
+  if (definition && selector !== definition.adapterKey) {
+    throw new Error(`Built-in payment provider ${provider.code} cannot change its server-owned adapter`);
+  }
+  if (selector === "test" && process.env.NODE_ENV === "production") {
+    throw new Error("The local test payment adapter is not available in production");
+  }
+  if (LOCAL_ADAPTER_CODES.has(selector)) return selector;
+  let url;
+  try {
+    url = new URL(selector);
+  } catch {
+    throw new Error("Unknown registered payment adapter");
+  }
+  const allowedOrigins = (process.env.PAYMENT_ADAPTER_ALLOWED_ORIGINS || "").split(",").map((value) => value.trim()).filter(Boolean);
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !allowedOrigins.includes(url.origin)) {
+    throw new Error("External payment adapter requires an explicitly allowed HTTPS origin");
+  }
+  return url.toString();
 }
-function assertPublicPaymentProvider(providerCode) {
-  const definition = getPaymentProviderDefinition(providerCode);
-  if (!definition.publicCheckout && !(providerCode === TEST_PROVIDER_CODE && process.env.NODE_ENV !== "production" && process.env.GROCERY_PAYMENT_TEST_SECRET)) {
-    throw new Error(`Payment provider ${providerCode} is not enabled for public checkout`);
+function getConfiguredPaymentAdapterSelector(provider, operation) {
+  return configuredSelector(provider, operation);
+}
+async function getLocalPaymentProviderAdapter(selector) {
+  if (selector === "stripe" || selector === "test") return paymentProviderAdapters[selector]();
+  throw new Error("Unknown registered payment adapter");
+}
+function projectRemoteProviderCredentials(provider) {
+  const metadata = provider.metadata && typeof provider.metadata === "object" && !Array.isArray(provider.metadata) ? provider.metadata : {};
+  const credentials = provider.credentials && typeof provider.credentials === "object" && !Array.isArray(provider.credentials) ? provider.credentials : {};
+  const selected = metadata.remoteCredentialKeys;
+  if (selected === void 0) throw new Error("External payment credential selection must be explicit");
+  if (!Array.isArray(selected) || selected.length > 20) throw new Error("External payment credential selection is invalid");
+  const output = {};
+  for (const candidate of selected) {
+    if (typeof candidate !== "string" || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(candidate) || Object.hasOwn(output, candidate)) {
+      throw new Error("External payment credential selection is invalid");
+    }
+    const value = Object.hasOwn(credentials, candidate) ? credentials[candidate] : void 0;
+    if (typeof value !== "string" || !value.trim() || value.length > 4096) {
+      throw new Error(`External payment provider is missing selected credential ${candidate}`);
+    }
+    output[candidate] = value;
+  }
+  return output;
+}
+function assertProviderCredentials(providerOrCode, operation) {
+  const provider = typeof providerOrCode === "string" ? null : providerOrCode;
+  const definition = typeof providerOrCode === "string" ? getPaymentProviderDefinition(providerOrCode) : paymentProviderDefinitions[providerOrCode.code];
+  if (!provider && !definition) throw new Error(`Unsupported payment provider: ${providerOrCode}`);
+  const selector = provider ? configuredSelector(provider, operation) : definition.adapterKey;
+  if (selector === "stripe") {
+    const required2 = definition?.credentialEnv || ["STRIPE_SECRET_KEY", ...operation === "handleWebhookFunction" ? ["STRIPE_WEBHOOK_SECRET"] : []];
+    const missing = required2.filter((name) => !process.env[name]);
+    if (missing.length) throw new Error(`Payment provider ${provider?.code || providerOrCode} is not configured for ${operation}: missing ${missing.join(", ")}`);
+    return;
+  }
+  if (selector === "test") {
+    if (!process.env.GROCERY_PAYMENT_TEST_SECRET || process.env.NODE_ENV === "production") {
+      throw new Error(`Payment provider ${provider?.code || providerOrCode} is not configured for ${operation}`);
+    }
+    return;
+  }
+  if (!provider || !isPaymentProviderInstalled(provider)) throw new Error("External payment provider is not installed");
+  const credentials = provider.credentials;
+  if (credentials !== void 0 && credentials !== null && (typeof credentials !== "object" || Array.isArray(credentials))) {
+    throw new Error("External payment credentials must be a JSON object");
+  }
+  projectRemoteProviderCredentials(provider);
+}
+function isPaymentProviderConfigured(provider) {
+  if (!isPaymentProviderInstalled(provider)) return false;
+  try {
+    for (const operation of PAYMENT_OPERATIONS) assertProviderCredentials(provider, operation);
+    return true;
+  } catch {
+    return false;
   }
 }
-var STRIPE_PROVIDER_CODE, TEST_PROVIDER_CODE, paymentProviderAdapters, paymentProviderDefinitions;
+function assertIdempotentCaptureProvider(providerOrCode) {
+  const provider = typeof providerOrCode === "string" ? null : providerOrCode;
+  const definition = typeof providerOrCode === "string" ? getPaymentProviderDefinition(providerOrCode) : paymentProviderDefinitions[providerOrCode.code];
+  const supported = definition?.supportsIdempotentCapture || !definition && provider?.supportsIdempotentCapture === true;
+  if (!supported) {
+    const code = provider?.code || providerOrCode;
+    throw new Error(`Payment provider ${code} does not provide idempotent capture required for final-sale settlement`);
+  }
+  if (provider && !definition) {
+    const evidence = provider.captureIdempotencyEvidence || "";
+    let url;
+    try {
+      url = new URL(evidence);
+    } catch {
+      throw new Error("Custom idempotent capture requires HTTPS provider-contract evidence");
+    }
+    if (url.protocol !== "https:" || url.username || url.password) throw new Error("Custom idempotent capture requires HTTPS provider-contract evidence");
+    configuredSelector(provider, "capturePaymentFunction");
+  }
+}
+function createsStripePayments(provider, code) {
+  if (code === STRIPE_PROVIDER_CODE) return true;
+  if (!provider) return false;
+  try {
+    return configuredSelector(provider, "createPaymentFunction") === "stripe";
+  } catch {
+    return false;
+  }
+}
+function isPublicPaymentProviderEnabled(providerOrCode) {
+  const provider = typeof providerOrCode === "string" ? null : providerOrCode;
+  const definition = typeof providerOrCode === "string" ? getPaymentProviderDefinition(providerOrCode) : paymentProviderDefinitions[providerOrCode.code];
+  const code = provider?.code || String(providerOrCode);
+  const persistedOptIn = provider ? provider.publicCheckout === true : definition?.publicCheckout === true;
+  return persistedOptIn && (!createsStripePayments(provider, code) || stripeConfigurationProblem() === null);
+}
+function assertPublicPaymentProvider(providerOrCode) {
+  const provider = typeof providerOrCode === "string" ? null : providerOrCode;
+  const definition = typeof providerOrCode === "string" ? getPaymentProviderDefinition(providerOrCode) : paymentProviderDefinitions[providerOrCode.code];
+  const code = provider?.code || String(providerOrCode);
+  const stripeProblem = createsStripePayments(provider, code) ? stripeConfigurationProblem() : null;
+  if (stripeProblem) throw new Error(stripeProblem);
+  if (!isPublicPaymentProviderEnabled(providerOrCode)) {
+    throw new Error(`Payment provider ${code} is not enabled for public checkout`);
+  }
+  if (!provider && !definition) throw new Error(`Unsupported payment provider: ${code}`);
+  if (provider) {
+    if (!isPaymentProviderInstalled(provider) || !isPaymentProviderConfigured(provider)) throw new Error(`Payment provider ${code} is not configured for public checkout`);
+    assertIdempotentCaptureProvider(provider);
+  }
+}
+var STRIPE_PROVIDER_CODE, TEST_PROVIDER_CODE, paymentProviderAdapters, paymentProviderDefinitions, PAYMENT_OPERATIONS, LOCAL_ADAPTER_CODES;
 var init_payment = __esm({
   "features/integrations/payment/index.ts"() {
     "use strict";
-    init_stripe();
-    init_test();
+    init_stripeEnabled();
+    init_stripeEnabled();
     STRIPE_PROVIDER_CODE = "pp_stripe_default";
     TEST_PROVIDER_CODE = "pp_test_default";
     paymentProviderAdapters = {
-      [STRIPE_PROVIDER_CODE]: stripe_exports,
-      [TEST_PROVIDER_CODE]: test_exports
+      stripe: () => Promise.resolve().then(() => (init_stripe(), stripe_exports)),
+      test: () => Promise.resolve().then(() => (init_test(), test_exports))
     };
     paymentProviderDefinitions = {
       [STRIPE_PROVIDER_CODE]: {
-        adapter: paymentProviderAdapters[STRIPE_PROVIDER_CODE],
+        adapterKey: "stripe",
         publicCheckout: true,
-        credentialEnv: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
+        supportsIdempotentCapture: true,
+        credentialEnv: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"]
       },
       [TEST_PROVIDER_CODE]: {
-        adapter: paymentProviderAdapters[TEST_PROVIDER_CODE],
+        adapterKey: "test",
         publicCheckout: false,
+        supportsIdempotentCapture: false,
         credentialEnv: ["GROCERY_PAYMENT_TEST_SECRET"]
       }
     };
+    PAYMENT_OPERATIONS = [
+      "createPaymentFunction",
+      "capturePaymentFunction",
+      "refundPaymentFunction",
+      "getPaymentStatusFunction",
+      "getRefundStatusFunction",
+      "cancelPaymentFunction",
+      "generatePaymentLinkFunction",
+      "handleWebhookFunction"
+    ];
+    LOCAL_ADAPTER_CODES = /* @__PURE__ */ new Set(["stripe", "test"]);
   }
 });
 
 // features/keystone/utils/paymentProviderAdapter.ts
+function providerMetadata(provider) {
+  return provider.metadata && typeof provider.metadata === "object" && !Array.isArray(provider.metadata) ? provider.metadata : {};
+}
+function safeProviderCredentials(provider) {
+  return projectRemoteProviderCredentials(provider);
+}
+function safeWebhookHeaders(provider, headers) {
+  const configured = providerMetadata(provider).remoteWebhookHeaders;
+  const allowed = new Set(SAFE_WEBHOOK_HEADERS);
+  if (Array.isArray(configured)) {
+    for (const candidate of configured.slice(0, 20)) {
+      if (typeof candidate !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(candidate)) continue;
+      const name = candidate.toLowerCase();
+      if (!FORBIDDEN_HEADERS.test(name)) allowed.add(name);
+    }
+  }
+  return Object.fromEntries(Object.entries(headers || {}).filter(([key2, value]) => {
+    const name = key2.toLowerCase();
+    return allowed.has(name) && !FORBIDDEN_HEADERS.test(name) && typeof value === "string" && value.length <= 8192;
+  }));
+}
+function paymentAdapterPayload(provider, operation, args) {
+  const input = {};
+  for (const key2 of ["currency", "idempotencyKey", "paymentId", "refundId", "captureMethod", "rawBody"]) {
+    const value = args?.[key2];
+    if (typeof value === "string" && value.length <= (key2 === "rawBody" ? 1e6 : 500)) input[key2] = value;
+  }
+  let amountCents = args?.amountCents;
+  if (amountCents === void 0 && Number.isSafeInteger(args?.amount)) amountCents = args.amount;
+  if (Number.isSafeInteger(amountCents) && amountCents >= 0) input.amountCents = amountCents;
+  if (args?.cart && typeof args.cart === "object") {
+    input.cart = Object.fromEntries(["id"].filter((key2) => typeof args.cart[key2] === "string").map((key2) => [key2, args.cart[key2]]));
+  }
+  if (args?.order && typeof args.order === "object") {
+    input.order = Object.fromEntries(["id", "displayId", "currencyCode"].filter((key2) => args.order[key2] !== void 0).map((key2) => [key2, args.order[key2]]));
+  }
+  if (operation === "handleWebhookFunction") input.headers = safeWebhookHeaders(provider, args?.headers || {});
+  return {
+    provider: { id: provider.id, code: provider.code, credentials: safeProviderCredentials(provider) },
+    operation,
+    args: input
+  };
+}
+async function readBoundedJson(response) {
+  const body = response.body;
+  if (!body) {
+    const text63 = await response.text();
+    if (new TextEncoder().encode(text63).byteLength > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Payment adapter response exceeds the size limit");
+    return JSON.parse(text63);
+  }
+  const reader = body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > MAX_REMOTE_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw new Error("Payment adapter response exceeds the size limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const payload = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    payload.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(payload));
+}
+async function invokeRemoteAdapter(provider, operation, endpoint2, args, timeoutMs = DEFAULT_ADAPTER_TIMEOUT_MS) {
+  try {
+    const body = JSON.stringify(paymentAdapterPayload(provider, operation, args));
+    if (new TextEncoder().encode(body).byteLength > MAX_REMOTE_RESPONSE_BYTES) throw new Error("Payment adapter request exceeds the size limit");
+    const response = await fetch(endpoint2, {
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body
+    });
+    if (!response.ok) throw new Error("Remote payment adapter rejected request");
+    return await readBoundedJson(response);
+  } catch {
+    throw new Error(`External payment adapter ${operation} failed; reconcile the original attempt before retrying`);
+  }
+}
 async function executeAdapterFunction({
   provider,
   functionName,
-  args
+  args,
+  timeoutMs
 }) {
-  if (!provider?.isInstalled) {
-    throw new Error(`Payment provider ${provider?.code || "unknown"} is not installed`);
+  if (!isPaymentProviderInstalled(provider)) throw new Error(`Payment provider ${provider?.code || "unknown"} is not installed`);
+  const selector = getConfiguredPaymentAdapterSelector(provider, functionName);
+  if (selector.startsWith("https://")) {
+    assertProviderCredentials(provider, functionName);
+    return invokeRemoteAdapter(provider, functionName, selector, args, timeoutMs);
   }
-  const adapter = getPaymentProviderAdapter(provider.code);
-  return adapter[functionName](args);
+  const adapter = await getLocalPaymentProviderAdapter(selector);
+  const fn = adapter[functionName];
+  if (typeof fn !== "function") throw new Error(`Payment adapter operation ${functionName} is unavailable`);
+  return fn(timeoutMs ? { ...args, timeoutMs } : args);
 }
 async function createPayment({ provider, cart, order, amount, currency, idempotencyKey, captureMethod }) {
-  return executeAdapterFunction({
-    provider,
-    functionName: "createPaymentFunction",
-    args: { cart, order, amount, currency, idempotencyKey, captureMethod }
-  });
+  return executeAdapterFunction({ provider, functionName: "createPaymentFunction", args: { cart, order, amount, amountCents: amount, currency, idempotencyKey, captureMethod } });
 }
 async function capturePayment({ provider, paymentId, amount, amountCents, idempotencyKey }) {
-  return executeAdapterFunction({
-    provider,
-    functionName: "capturePaymentFunction",
-    args: { paymentId, amount, amountCents, idempotencyKey }
-  });
+  return executeAdapterFunction({ provider, functionName: "capturePaymentFunction", args: { paymentId, amount, amountCents, idempotencyKey } });
 }
-async function refundPayment({ provider, paymentId, amount, idempotencyKey }) {
-  return executeAdapterFunction({
-    provider,
-    functionName: "refundPaymentFunction",
-    args: { paymentId, amount, idempotencyKey }
-  });
+async function refundPayment({ provider, paymentId, amount, idempotencyKey, timeoutMs }) {
+  return executeAdapterFunction({ provider, functionName: "refundPaymentFunction", args: { paymentId, amount, amountCents: amount, idempotencyKey }, timeoutMs });
 }
 async function getPaymentStatus({ provider, paymentId }) {
-  return executeAdapterFunction({
-    provider,
-    functionName: "getPaymentStatusFunction",
-    args: { paymentId }
-  });
+  return executeAdapterFunction({ provider, functionName: "getPaymentStatusFunction", args: { paymentId } });
 }
-async function getRefundStatus({ provider, refundId }) {
-  return executeAdapterFunction({ provider, functionName: "getRefundStatusFunction", args: { refundId } });
+async function getRefundStatus({ provider, refundId, timeoutMs }) {
+  return executeAdapterFunction({ provider, functionName: "getRefundStatusFunction", args: { refundId }, timeoutMs });
 }
 async function cancelPayment({ provider, paymentId, idempotencyKey }) {
   return executeAdapterFunction({ provider, functionName: "cancelPaymentFunction", args: { paymentId, idempotencyKey } });
 }
-async function verifyPaymentWebhook({
-  providerCode,
-  rawBody,
-  headers
-}) {
-  const adapter = getPaymentProviderAdapter(providerCode);
-  return adapter.handleWebhookFunction({ rawBody, headers });
+async function verifyPaymentWebhook({ provider, rawBody, headers }) {
+  const verified = await executeAdapterFunction({ provider, functionName: "handleWebhookFunction", args: { rawBody, headers } });
+  if (!verified || verified.isValid !== true || typeof verified.eventId !== "string" || !verified.eventId || typeof verified.type !== "string" || !verified.type || typeof verified.event?.id !== "string" || verified.event.id !== verified.eventId || typeof verified.event?.type !== "string" || verified.event.type !== verified.type) {
+    throw new Error("Payment webhook adapter did not return a valid verified event");
+  }
+  return verified;
 }
+var MAX_REMOTE_RESPONSE_BYTES, SAFE_WEBHOOK_HEADERS, FORBIDDEN_HEADERS, DEFAULT_ADAPTER_TIMEOUT_MS;
 var init_paymentProviderAdapter = __esm({
   "features/keystone/utils/paymentProviderAdapter.ts"() {
     "use strict";
     init_payment();
+    init_stripeEnabled();
+    MAX_REMOTE_RESPONSE_BYTES = 1048576;
+    SAFE_WEBHOOK_HEADERS = /* @__PURE__ */ new Set([
+      "stripe-signature",
+      "paypal-transmission-id",
+      "paypal-transmission-time",
+      "paypal-cert-url",
+      "paypal-auth-algo",
+      "paypal-transmission-sig",
+      "x-grocery-test-signature"
+    ]);
+    FORBIDDEN_HEADERS = /^(cookie|set-cookie|authorization|proxy-authorization|host|content-length|connection|x-forwarded-|forwarded$)/i;
+    DEFAULT_ADAPTER_TIMEOUT_MS = 3e4;
   }
 });
 
@@ -601,34 +945,34 @@ function cumulativeShare(total, quantity, basis) {
   return Number((BigInt(total) * BigInt(quantity) + BigInt(Math.floor(basis / 2))) / BigInt(basis));
 }
 function allocateFinalSaleRefund(finalSale, requested, prior) {
-  if (finalSale?.status !== "finalized" || !finalSale.settlementId || !Array.isArray(finalSale.lines) || !Array.isArray(finalSale.actuals)) throw new Error("Line refunds require an immutable finalized sale snapshot");
-  if (!requested.length || requested.length > 500 || new Set(requested.map((line) => line.lineItemId)).size !== requested.length) throw new Error("Refund requires distinct final-sale line identities");
+  if (finalSale?.status !== "finalized" || !finalSale.settlementId || !Array.isArray(finalSale.lines) || !Array.isArray(finalSale.actuals)) throw publicError("Line refunds require an immutable finalized sale snapshot");
+  if (!requested.length || requested.length > 500 || new Set(requested.map((line) => line.lineItemId)).size !== requested.length) throw publicError("Refund requires distinct final-sale line identities");
   return [...requested].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map((input) => {
     const commercial = finalSale.lines.find((line) => line.id === input.lineItemId);
     const actual = finalSale.actuals.find((line) => line.lineItemId === input.lineItemId);
-    if (!commercial || !actual) throw new Error("Refund line does not belong to the finalized sale");
-    const fulfilledQuantityMilli = integer41(actual.quantityMilli, "Final fulfilled quantity");
-    const refundQuantityMilli = integer41(input.quantityMilli, "Refund quantity");
-    if (refundQuantityMilli < 1 || fulfilledQuantityMilli < 1) throw new Error("Refund quantity must be positive for a fulfilled line");
-    if (!["refund_only", "return_to_stock", "waste", "quarantine"].includes(input.disposition)) throw new Error("Explicit refund disposition required");
-    if (input.disposition !== "refund_only" && !input.conditionNote?.trim()) throw new Error("Returned goods require condition or custody evidence");
+    if (!commercial || !actual) throw publicError("Refund line does not belong to the finalized sale");
+    const fulfilledQuantityMilli = integer39(actual.quantityMilli, "Final fulfilled quantity");
+    const refundQuantityMilli = integer39(input.quantityMilli, "Refund quantity");
+    if (refundQuantityMilli < 1 || fulfilledQuantityMilli < 1) throw publicError("Refund quantity must be positive for a fulfilled line");
+    if (!["refund_only", "return_to_stock", "waste", "quarantine"].includes(input.disposition)) throw publicError("Explicit refund disposition required");
+    if (input.disposition !== "refund_only" && !input.conditionNote?.trim()) throw publicError("Returned goods require condition or custody evidence");
     const existing = prior.filter((row) => (row.lineItemId || row.lineItem?.id) === input.lineItemId);
-    const quantityBefore = existing.reduce((total, row) => total + integer41(row.quantityMilli, "Prior refund quantity"), 0);
+    const quantityBefore = existing.reduce((total, row) => total + integer39(row.quantityMilli, "Prior refund quantity"), 0);
     const quantityAfter = quantityBefore + refundQuantityMilli;
-    if (quantityAfter > fulfilledQuantityMilli) throw new Error("Cumulative refunded quantity exceeds the final fulfilled quantity");
-    const subtotal = integer41(commercial.subtotalCents, "Line subtotal"), discount = integer41(commercial.discountCents, "Line discount"), tax = integer41(commercial.taxCents, "Line tax");
-    if (discount > subtotal) throw new Error("Final sale discount exceeds line subtotal");
+    if (quantityAfter > fulfilledQuantityMilli) throw publicError("Cumulative refunded quantity exceeds the final fulfilled quantity");
+    const subtotal = integer39(commercial.subtotalCents, "Line subtotal"), discount = integer39(commercial.discountCents, "Line discount"), tax = integer39(commercial.taxCents, "Line tax");
+    if (discount > subtotal) throw publicError("Final sale discount exceeds line subtotal");
     const share = (amount) => cumulativeShare(amount, quantityAfter, fulfilledQuantityMilli) - cumulativeShare(amount, quantityBefore, fulfilledQuantityMilli);
     const netGoodsCents = share(subtotal - discount), discountCents = share(discount), taxCents = share(tax);
     const returnedLots = input.returnedLots || [];
-    if (new Set(returnedLots.map((lot) => lot.lotId)).size !== returnedLots.length) throw new Error("Return lot identities must be distinct");
-    if (input.disposition === "refund_only" && returnedLots.length) throw new Error("Refund-only requests cannot include physical returns");
+    if (new Set(returnedLots.map((lot) => lot.lotId)).size !== returnedLots.length) throw publicError("Return lot identities must be distinct");
+    if (input.disposition === "refund_only" && returnedLots.length) throw publicError("Refund-only requests cannot include physical returns");
     if (input.disposition !== "refund_only") {
-      if (returnedLots.reduce((sum, lot) => sum + integer41(lot.quantityMilli, "Returned lot quantity"), 0) !== refundQuantityMilli) throw new Error("Returned lot quantities must equal the refunded physical quantity");
+      if (returnedLots.reduce((sum, lot) => sum + integer39(lot.quantityMilli, "Returned lot quantity"), 0) !== refundQuantityMilli) throw publicError("Returned lot quantities must equal the refunded physical quantity");
       for (const returned of returnedLots) {
         const allocated = (actual.allocations || []).filter((lot) => (lot.lotId || lot.inventoryLotId) === returned.lotId).reduce((sum, lot) => sum + quantityMilli(lot.quantity), 0);
         const previous = existing.flatMap((row) => row.returnedLots || []).filter((lot) => lot.lotId === returned.lotId).reduce((sum, lot) => sum + Number(lot.quantityMilli), 0);
-        if (returned.quantityMilli <= 0 || returned.quantityMilli + previous > allocated) throw new Error("Return lot quantity exceeds its original actual allocation");
+        if (returned.quantityMilli <= 0 || returned.quantityMilli + previous > allocated) throw publicError("Return lot quantity exceeds its original actual allocation");
       }
     }
     return { lineItemId: input.lineItemId, finalSettlementId: finalSale.settlementId, finalFulfillmentId: actual.id || "", productId: actual.productId || actual.product?.id, productTitle: actual.productTitle || commercial.id, unitOfMeasure: actual.unitOfMeasure || "each", quantityMilli: refundQuantityMilli, quantityBefore, quantityAfter, fulfilledQuantityMilli, subtotalCents: netGoodsCents + discountCents, discountCents, netGoodsCents, taxCents, totalCents: netGoodsCents + taxCents, taxRateBasisPoints: commercial.taxRateBasisPoints, disposition: input.disposition, conditionNote: input.conditionNote?.trim() || "", returnedLots };
@@ -666,14 +1010,15 @@ async function unlinkedLineRefundReservedCents(tx, paymentId, excludedProviderRe
   const alreadyCounted = new Set(active.map((refund) => refund.idempotencyKey));
   return rows.filter((row) => !alreadyCounted.has(row.providerRefundKey)).reduce((sum, row) => sum + Number(row.totalCents), 0);
 }
-var integer41;
+var integer39;
 var init_refundAllocations = __esm({
   "features/keystone/lib/refundAllocations.ts"() {
     "use strict";
+    init_publicError();
     init_inventoryMovements();
-    integer41 = (value, label) => {
+    integer39 = (value, label) => {
       const amount = Number(value);
-      if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw new Error(`${label} must be non-negative integer minor units`);
+      if (!Number.isSafeInteger(amount) || amount < 0 || amount > 2147483647) throw publicError(`${label} must be zero or more, in whole cents`);
       return amount;
     };
   }
@@ -687,10 +1032,10 @@ function normalizeProviderRefund(response, expected) {
   const currency = response?.currency ?? resource?.currency;
   const payment = response?.paymentId || resource?.payment_intent || resource?.paymentId;
   const paymentId = typeof payment === "string" ? payment : payment?.id;
-  if (!id || expected.providerRefundId && expected.providerRefundId !== id) throw new Error("Provider refund identity does not match");
-  if (!Number.isSafeInteger(amount) || amount !== expected.amountCents) throw new Error("Provider refund amount does not match");
-  if (typeof currency !== "string" || currency.toLowerCase() !== expected.currencyCode.toLowerCase()) throw new Error("Provider refund currency does not match");
-  if (paymentId !== expected.providerPaymentId) throw new Error("Provider refund payment does not match");
+  if (!id || expected.providerRefundId && expected.providerRefundId !== id) throw publicError("Provider refund identity does not match", "REFUND_REFUSED");
+  if (!Number.isSafeInteger(amount) || amount !== expected.amountCents) throw publicError("Provider refund amount does not match", "REFUND_REFUSED");
+  if (typeof currency !== "string" || currency.toLowerCase() !== expected.currencyCode.toLowerCase()) throw publicError("Provider refund currency does not match", "REFUND_REFUSED");
+  if (paymentId !== expected.providerPaymentId) throw publicError("Provider refund payment does not match", "REFUND_REFUSED");
   const rawStatus = String(response?.status ?? resource?.status ?? "").toLowerCase();
   const status = rawStatus === "succeeded" || rawStatus === "paid" ? "succeeded" : rawStatus === "failed" ? "failed" : rawStatus === "canceled" || rawStatus === "cancelled" ? "canceled" : "processing";
   return { id: String(id), status, rawStatus, resource };
@@ -699,11 +1044,11 @@ async function assertRefundBudget(tx, paymentId, paymentCents, amountCents, refu
   const reserved = await tx.paymentRefund.aggregate({ where: { paymentId, status: { in: ["processing", "succeeded"] }, ...refundId ? { id: { not: refundId } } : {} }, _sum: { amountCents: true } });
   const lineReservedCents = await unlinkedLineRefundReservedCents(tx, paymentId, providerRefundKey);
   if (!Number.isSafeInteger(paymentCents) || !Number.isSafeInteger(amountCents) || amountCents < 1 || Number(reserved._sum.amountCents || 0) + lineReservedCents + amountCents > paymentCents) {
-    throw new Error("Cumulative refund amount cannot exceed the settled payment");
+    throw publicError("Cumulative refund amount cannot exceed the settled payment", "REFUND_REFUSED");
   }
 }
 function assertRefundCreationWindow(requestedAt, providerRefundId, now = Date.now()) {
-  if (!providerRefundId && now - new Date(requestedAt).getTime() >= 23 * 60 * 60 * 1e3) throw new Error("Unknown refund outcome requires provider evidence; automatic creation replay window expired");
+  if (!providerRefundId && now - new Date(requestedAt).getTime() >= 23 * 60 * 60 * 1e3) throw publicError("Unknown refund outcome requires provider evidence; automatic creation replay window expired", "REFUND_REFUSED");
 }
 function refundProviderData(previous, resource) {
   return JSON.parse(JSON.stringify({ ...previous && typeof previous === "object" && !Array.isArray(previous) ? previous : {}, providerResponse: resource }));
@@ -712,6 +1057,7 @@ var init_refundRecovery = __esm({
   "features/keystone/lib/refundRecovery.ts"() {
     "use strict";
     init_refundAllocations();
+    init_publicError();
   }
 });
 
@@ -726,10 +1072,10 @@ function normalizeRefundRequest(args) {
   const idempotencyKey = args.idempotencyKey.trim();
   const amountCents = Number(args.amountCents);
   const reason = args.reason.trim();
-  if (!paymentId) throw new Error("Payment is required");
-  if (!Number.isInteger(amountCents) || amountCents < 1) throw new Error("Refund amount must be a positive integer number of cents");
-  if (reason.length < 3 || reason.length > 500) throw new Error("A refund reason between 3 and 500 characters is required");
-  if (idempotencyKey.length < 12 || idempotencyKey.length > 200) throw new Error("A valid refund idempotency key is required");
+  if (!paymentId) throw publicError("Payment is required", "REFUND_REFUSED");
+  if (!Number.isInteger(amountCents) || amountCents < 1) throw publicError("Refund amount must be a positive integer number of cents", "REFUND_REFUSED");
+  if (reason.length < 3 || reason.length > 500) throw publicError("A refund reason between 3 and 500 characters is required", "REFUND_REFUSED");
+  if (idempotencyKey.length < 12 || idempotencyKey.length > 200) throw publicError("A valid refund idempotency key is required", "REFUND_REFUSED");
   return { paymentId, amountCents, reason, idempotencyKey };
 }
 function centsToDollars(cents3) {
@@ -764,24 +1110,41 @@ async function refundPaymentForOrder(_root, rawArgs, context) {
         storeId: true,
         providerPaymentId: true,
         providerData: true,
-        paymentProvider: { select: { id: true, code: true, isInstalled: true } }
+        paymentProvider: { select: {
+          id: true,
+          code: true,
+          isInstalled: true,
+          publicCheckout: true,
+          supportsIdempotentCapture: true,
+          captureIdempotencyEvidence: true,
+          credentials: true,
+          metadata: true,
+          createPaymentFunction: true,
+          capturePaymentFunction: true,
+          refundPaymentFunction: true,
+          getPaymentStatusFunction: true,
+          getRefundStatusFunction: true,
+          cancelPaymentFunction: true,
+          generatePaymentLinkFunction: true,
+          handleWebhookFunction: true
+        } }
       }
     });
-    if (!payment || payment.storeId !== store.id) throw new Error("Payment not found in active store");
+    if (!payment || payment.storeId !== store.id) throw publicError("Payment not found in active store", "REFUND_REFUSED");
     const authorizationVoid = payment.providerData?.authorizationVoid;
-    if (authorizationVoid && ["processing", "unknown"].includes(authorizationVoid.status) && args.idempotencyKey !== `${authorizationVoid.key}:original-refund`) throw new Error("An authorization abandonment is unresolved; finish it before another refund");
-    if (!payment.providerPaymentId || !payment.paymentProvider?.isInstalled) throw new Error("Payment provider settlement is unavailable");
+    if (authorizationVoid && ["processing", "unknown"].includes(authorizationVoid.status) && args.idempotencyKey !== `${authorizationVoid.key}:original-refund`) throw publicError("An authorization abandonment is unresolved; finish it before another refund", "REFUND_REFUSED");
+    if (!payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw publicError("Payment provider settlement is unavailable", "REFUND_REFUSED");
     if (!["succeeded", "partially_refunded", "refunded"].includes(payment.status)) {
-      throw new Error(`Only settled payments can be refunded: ${payment.status}`);
+      throw publicError(`Only settled payments can be refunded: ${payment.status}`, "REFUND_REFUSED");
     }
     const paymentCents = Number(payment.amountCents || Math.round(Number(payment.amount) * 100));
     let existing = await tx.paymentRefund.findUnique({ where: { idempotencyKey: args.idempotencyKey } });
     if (existing) {
       await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentRefund" WHERE "id" = $1 FOR UPDATE', existing.id);
       existing = await tx.paymentRefund.findUnique({ where: { id: existing.id } });
-      if (!existing) throw new Error("Refund evidence disappeared during claim");
+      if (!existing) throw publicError("Refund evidence disappeared during claim", "REFUND_REFUSED");
       if (existing.paymentId !== payment.id || existing.amountCents !== args.amountCents || existing.providerData?.requestReason !== args.reason) {
-        throw new Error("Refund idempotency key was reused with different payment, amount, or reason");
+        throw publicError("Refund idempotency key was reused with different payment, amount, or reason", "REFUND_REFUSED");
       }
       if (existing.status === "succeeded") {
         return {
@@ -901,7 +1264,7 @@ async function refundPaymentForOrder(_root, rawArgs, context) {
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', claim.paymentId);
     const refund = await tx.paymentRefund.findUnique({ where: { id: claim.refundId } });
-    if (!refund) throw new Error("Refund evidence disappeared during provider processing");
+    if (!refund) throw publicError("Refund evidence disappeared during provider processing", "REFUND_REFUSED");
     if (refund.status !== "processing") {
       return refundResult({ ...claim, providerRefundId: refund.providerRefundId || null }, refund.status, refund.providerRefundId || null, true, "Refund state was finalized by another provider event.");
     }
@@ -943,23 +1306,6 @@ async function refundPaymentForOrder(_root, rawArgs, context) {
         }
       }
     });
-    await enqueueGroceryOutboxEvent(tx, {
-      storeId: claim.storeId,
-      eventKey: `payment-refund:${refund.id}:completed:v1`,
-      eventType: "payment.refunded",
-      aggregateType: "payment",
-      aggregateId: claim.paymentId,
-      occurredAt: new Date(refund.processedAt || /* @__PURE__ */ new Date()).toISOString(),
-      payload: {
-        paymentId: claim.paymentId,
-        refundId: refund.id,
-        amountCents: refund.amountCents,
-        cumulativeRefundedCents: refundedCents,
-        providerCode: claim.provider.code,
-        providerPaymentId: claim.providerPaymentId,
-        providerRefundId
-      }
-    });
     return refundResult({ ...claim, providerRefundId }, "succeeded", providerRefundId, claim.reused, "Refund recorded.");
   }, { isolationLevel: "Serializable" }));
 }
@@ -968,11 +1314,12 @@ var init_managePaymentRefund = __esm({
     "use strict";
     init_refundAllocations();
     init_access();
-    init_groceryOutbox();
     init_storeScope();
     init_paymentProviderAdapter();
     init_serializableTransaction();
     init_refundRecovery();
+    init_stripeEnabled();
+    init_publicError();
   }
 });
 
@@ -983,9 +1330,19 @@ __export(keystone_exports, {
 });
 module.exports = __toCommonJS(keystone_exports);
 
+// features/keystone/lib/s3-storage.ts
+function s3ForcePathStyle(endpoint2) {
+  let hostname = "";
+  try {
+    hostname = endpoint2 ? new URL(endpoint2).hostname : "";
+  } catch {
+  }
+  return !(hostname === "storageapi.dev" || hostname.endsWith(".storageapi.dev"));
+}
+
 // features/keystone/index.ts
 var import_auth = require("@keystone-6/auth");
-var import_core65 = require("@keystone-6/core");
+var import_core66 = require("@keystone-6/core");
 var import_config = require("dotenv/config");
 
 // features/keystone/models/InventoryConversion.ts
@@ -994,30 +1351,41 @@ var import_fields2 = require("@keystone-6/core/fields");
 init_access();
 
 // features/keystone/lib/storeAccess.ts
-function sessionStoreId(session) {
-  return session?.data.store?.id || null;
-}
-function currentStoreScopedFilter({ session }) {
-  const storeId = sessionStoreId(session);
+async function currentStoreScopedFilter(args) {
+  const storeId = await currentMembershipStoreId(args);
   return storeId ? { id: { equals: storeId } } : false;
 }
 function publicStoreScopedFilter() {
   const storeId = process.env.PUBLIC_STORE_ID || "store_juniper";
   return { store: { id: { equals: storeId } } };
 }
-function storeScopedFilter({ session }) {
-  const storeId = sessionStoreId(session);
-  return storeId ? { store: { id: { equals: storeId } } } : false;
+function storeScopedFilter(args) {
+  return currentMembershipStoreScopedFilter(args);
 }
 function relatedStoreScopedFilter(relation) {
-  return ({ session }) => {
-    const storeId = sessionStoreId(session);
+  return currentMembershipRelatedStoreScopedFilter(relation);
+}
+async function currentMembershipStoreId({ session, context }) {
+  if (!session?.itemId || !context?.prisma?.user?.findUnique) return null;
+  const user = await context.prisma.user.findUnique({
+    where: { id: session.itemId },
+    select: { privacyErasedAt: true, store: { select: { id: true, isActive: true } } }
+  });
+  return !user?.privacyErasedAt && user?.store?.isActive && user.store.id ? user.store.id : null;
+}
+async function currentMembershipStoreScopedFilter(args) {
+  const storeId = await currentMembershipStoreId(args);
+  return storeId ? { store: { id: { equals: storeId } } } : false;
+}
+function currentMembershipRelatedStoreScopedFilter(relation) {
+  return async (args) => {
+    const storeId = await currentMembershipStoreId(args);
     return storeId ? { [relation]: { store: { id: { equals: storeId } } } } : false;
   };
 }
 function nestedRelatedStoreScopedFilter(...relations) {
-  return ({ session }) => {
-    const storeId = sessionStoreId(session);
+  return async (args) => {
+    const storeId = await currentMembershipStoreId(args);
     if (!storeId) return false;
     return relations.reduceRight(
       (value, relation) => ({ [relation]: value }),
@@ -1026,13 +1394,17 @@ function nestedRelatedStoreScopedFilter(...relations) {
   };
 }
 function ownerStoreScopedFilter(ownerField = "user") {
-  return ({ session }) => {
-    const storeId = sessionStoreId(session);
+  return async (args) => {
+    const storeId = await currentMembershipStoreId(args);
     return storeId ? { [ownerField]: { store: { id: { equals: storeId } } } } : false;
   };
 }
 function ownerScopedFilter(ownerField = "user") {
-  return ({ session }) => session?.itemId ? { [ownerField]: { id: { equals: session.itemId } } } : false;
+  return async (args) => {
+    const storeId = await currentMembershipStoreId(args);
+    if (!storeId || !args.session?.itemId) return false;
+    return { [ownerField]: { id: { equals: args.session.itemId }, store: { id: { equals: storeId } } } };
+  };
 }
 
 // features/keystone/models/relationshipConfig.ts
@@ -1222,11 +1594,16 @@ var import_core7 = require("@keystone-6/core");
 var import_fields8 = require("@keystone-6/core/fields");
 init_access();
 var LoyaltyRedemption = (0, import_core7.list)({
-  access: { operation: { query: isSignedIn, create: () => false, update: () => false, delete: () => false }, filter: { query: async ({ session, context }) => {
-    const store = storeScopedFilter({ session });
-    if (!store) return false;
-    return await permissions.canManageOrders({ session, context }) ? store : { AND: [store, { user: { id: { equals: session.itemId } } }] };
-  } } },
+  access: {
+    operation: { query: isSignedIn, create: () => false, update: () => false, delete: () => false },
+    filter: {
+      query: async ({ session, context }) => {
+        const store = await storeScopedFilter({ session, context });
+        if (store === false) return false;
+        return await permissions.canManageOrders({ session, context }) ? store : { AND: [store, { user: { id: { equals: session.itemId } } }] };
+      }
+    }
+  },
   ui: { isHidden: true },
   fields: {
     idempotencyKey: (0, import_fields8.text)({ isIndexed: "unique", validation: { isRequired: true } }),
@@ -1249,11 +1626,16 @@ var import_core8 = require("@keystone-6/core");
 var import_fields9 = require("@keystone-6/core/fields");
 init_access();
 var SubscriptionRun = (0, import_core8.list)({
-  access: { operation: { query: isSignedIn, create: () => false, update: () => false, delete: () => false }, filter: { query: async ({ session, context }) => {
-    const store = storeScopedFilter({ session });
-    if (!store) return false;
-    return await permissions.canManageOrders({ session, context }) ? store : { AND: [store, { user: { id: { equals: session.itemId } } }] };
-  } } },
+  access: {
+    operation: { query: isSignedIn, create: () => false, update: () => false, delete: () => false },
+    filter: {
+      query: async ({ session, context }) => {
+        const store = await storeScopedFilter({ session, context });
+        if (store === false) return false;
+        return await permissions.canManageOrders({ session, context }) ? store : { AND: [store, { user: { id: { equals: session.itemId } } }] };
+      }
+    }
+  },
   ui: { isHidden: true },
   fields: {
     idempotencyKey: (0, import_fields9.text)({ isIndexed: "unique", validation: { isRequired: true } }),
@@ -1402,28 +1784,93 @@ var import_fields14 = require("@keystone-6/core/fields");
 init_access();
 var ProductInformationVersion = (0, import_core13.list)({ access: { operation: { query: permissions.canManageProducts, create: () => false, update: () => false, delete: () => false }, filter: { query: storeScopedFilter } }, fields: { store: (0, import_fields14.relationship)({ ref: "Store" }), product: (0, import_fields14.relationship)({ ref: "Product" }), actor: (0, import_fields14.relationship)({ ref: "User" }), idempotencyKey: (0, import_fields14.text)({ isIndexed: "unique" }), sourceReference: (0, import_fields14.text)(), effectiveAt: (0, import_fields14.timestamp)(), snapshot: (0, import_fields14.json)(), ...trackingFields } });
 
-// features/keystone/models/CustomerMessage.ts
+// features/keystone/models/ContactMessage.ts
 var import_core14 = require("@keystone-6/core");
 var import_fields15 = require("@keystone-6/core/fields");
 init_access();
-var CustomerMessage = (0, import_core14.list)({ access: { operation: { query: permissions.canManageOrders, create: () => false, update: () => false, delete: () => false }, filter: { query: storeScopedFilter } }, fields: {
-  store: (0, import_fields15.relationship)({ ref: "Store" }),
-  eventKey: (0, import_fields15.text)({ isIndexed: "unique", validation: { isRequired: true } }),
-  order: (0, import_fields15.relationship)({ ref: "Order" }),
-  user: (0, import_fields15.relationship)({ ref: "User" }),
-  recipient: (0, import_fields15.text)(),
-  subject: (0, import_fields15.text)(),
-  body: (0, import_fields15.text)(),
-  channel: (0, import_fields15.text)({ defaultValue: "email" }),
-  status: (0, import_fields15.text)({ defaultValue: "pending" }),
-  attempts: (0, import_fields15.integer)({ defaultValue: 0 }),
-  providerEvidence: (0, import_fields15.json)(),
-  failureMessage: (0, import_fields15.text)(),
-  sentAt: (0, import_fields15.timestamp)(),
-  deliveryToken: (0, import_fields15.text)({ access: { read: () => false } }),
-  deliveryLeaseExpiresAt: (0, import_fields15.timestamp)({ db: { isNullable: true } }),
-  ...trackingFields
-} });
+
+// features/keystone/lib/stateMachines.ts
+var import_graphql = require("graphql");
+var ORDER_TRANSITIONS = {
+  pending: ["picking", "cancelled"],
+  picking: ["packed", "cancelled"],
+  packed: ["out_for_delivery", "delivered", "cancelled"],
+  out_for_delivery: ["delivered", "delivery_failed", "delivery_refused", "returned"],
+  delivery_failed: ["out_for_delivery", "returned"],
+  delivery_refused: ["out_for_delivery", "returned"],
+  returned: ["packed", "cancelled"],
+  delivered: [],
+  cancelled: []
+};
+var CONTACT_MESSAGE_TRANSITIONS = {
+  new: ["in_progress", "replied", "closed"],
+  in_progress: ["replied", "closed"],
+  replied: ["in_progress", "closed"],
+  closed: ["in_progress"]
+};
+function canTransition(map, from, to) {
+  return from === to || Boolean(map[from]?.includes(to));
+}
+function assertTransition(map, label, from, to) {
+  if (!canTransition(map, from, to)) {
+    throw new import_graphql.GraphQLError(`${label} cannot move from ${from} to ${to}`, { extensions: { code: "TRANSITION_REFUSED" } });
+  }
+}
+function fulfillmentStage(order) {
+  const meta = order.metadata && typeof order.metadata === "object" ? order.metadata : {};
+  if (order.status === "packed" && meta.fulfillmentMethod === "pickup" && meta.readyForPickup === true) return "ready_for_pickup";
+  return order.status || "";
+}
+
+// features/keystone/models/ContactMessage.ts
+var readOnly = { create: () => false, update: () => false };
+var ContactMessage = (0, import_core14.list)({
+  access: {
+    operation: { query: permissions.canManageOrders, create: () => false, update: permissions.canManageOrders, delete: () => false },
+    filter: { query: storeScopedFilter, update: storeScopedFilter }
+  },
+  hooks: {
+    validate: {
+      update: ({ item, resolvedData, addValidationError }) => {
+        const next = resolvedData?.status;
+        if (next && !canTransition(CONTACT_MESSAGE_TRANSITIONS, String(item.status), String(next))) {
+          addValidationError(`Message cannot move from ${item.status} to ${next}`);
+        }
+      }
+    }
+  },
+  ui: {
+    labelField: "subject",
+    listView: { initialColumns: ["subject", "email", "topic", "status", "createdAt"], initialSort: { field: "createdAt", direction: "DESC" } }
+  },
+  fields: {
+    store: (0, import_fields15.relationship)({ ref: "Store", access: readOnly, db: { extendPrismaSchema: requiredRelationshipPrisma }, graphql: { isNonNull: { read: true } } }),
+    customer: (0, import_fields15.relationship)({ ref: "User", access: readOnly, ui: { description: "Signed-in shopper who sent the message, if any" } }),
+    reference: (0, import_fields15.text)({ access: readOnly, isIndexed: "unique", validation: { isRequired: true } }),
+    subject: (0, import_fields15.text)({ access: readOnly }),
+    name: (0, import_fields15.text)({ access: readOnly, validation: { isRequired: true } }),
+    email: (0, import_fields15.text)({ access: readOnly, validation: { isRequired: true } }),
+    phone: (0, import_fields15.text)({ access: readOnly }),
+    topic: (0, import_fields15.text)({ access: readOnly }),
+    orderNumber: (0, import_fields15.text)({ access: readOnly, ui: { description: "Order number the shopper referred to, as typed" } }),
+    message: (0, import_fields15.text)({ access: readOnly, validation: { isRequired: true }, ui: { displayMode: "textarea" } }),
+    sourcePath: (0, import_fields15.text)({ access: readOnly, ui: { description: "Storefront page the message was sent from" } }),
+    status: (0, import_fields15.select)({
+      type: "string",
+      options: [
+        { label: "New", value: "new" },
+        { label: "In progress", value: "in_progress" },
+        { label: "Replied", value: "replied" },
+        { label: "Closed", value: "closed" }
+      ],
+      defaultValue: "new",
+      validation: { isRequired: true },
+      ui: { displayMode: "segmented-control" }
+    }),
+    staffNotes: (0, import_fields15.text)({ ui: { displayMode: "textarea", description: "Internal notes; never shown to the sender" } }),
+    ...trackingFields
+  }
+});
 
 // features/keystone/models/PurchaseReceipt.ts
 var import_core15 = require("@keystone-6/core");
@@ -1535,16 +1982,19 @@ var import_core19 = require("@keystone-6/core");
 var import_fields20 = require("@keystone-6/core/fields");
 init_access();
 var OrderSettlement = (0, import_core19.list)({
-  access: { operation: { query: permissions.canManagePayments, create: () => false, update: () => false, delete: () => false }, filter: { query: relatedStoreScopedFilter("order") } },
+  access: { operation: { query: permissions.canManagePayments, create: () => false, update: () => false, delete: () => false }, filter: { query: currentMembershipRelatedStoreScopedFilter("order") } },
   fields: {
     order: (0, import_fields20.relationship)({ ref: "Order" }),
     idempotencyKey: (0, import_fields20.text)({ isIndexed: "unique", validation: { isRequired: true } }),
     actualsHash: (0, import_fields20.text)({ validation: { isRequired: true } }),
     status: (0, import_fields20.select)({ options: ["processing", "requires_customer_authorization", "finalized", "abandoned"], defaultValue: "processing" }),
     totalCents: (0, import_fields20.integer)({ validation: { isRequired: true, min: 0 } }),
-    snapshot: (0, import_fields20.json)(),
-    providerEvidence: (0, import_fields20.json)(),
-    failureMessage: (0, import_fields20.text)(),
+    // Contains private consent and lot evidence; require order capability beyond the list's payment gate.
+    snapshot: (0, import_fields20.json)({ access: { read: permissions.canManageOrders } }),
+    // Contains provider client secrets and internal lease tokens; keep off generic GraphQL reads.
+    providerEvidence: (0, import_fields20.json)({ access: { read: () => false } }),
+    // Failure messages preserve caught provider/operation errors; require order capability beyond the payment list gate.
+    failureMessage: (0, import_fields20.text)({ access: { read: permissions.canManageOrders } }),
     finalizedBy: (0, import_fields20.relationship)({ ref: "User" }),
     ...trackingFields
   }
@@ -1589,24 +2039,33 @@ var Address = (0, import_core21.list)({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = ownerStoreScopedFilter("user")({ session });
+        const store = await ownerStoreScopedFilter("user")({ session, context });
         if (store === false) return false;
         if (await permissions.canManageUsers({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
         return false;
       },
-      update: ownerScopedFilter("user"),
-      delete: ownerScopedFilter("user")
+      // Customers manage their saved address book; addresses written by checkout
+      // stay attached to their order evidence.
+      update: async (args) => {
+        const owner = await ownerScopedFilter("user")(args);
+        return owner === false ? false : { AND: [owner, { isSaved: { equals: true } }] };
+      },
+      delete: async (args) => {
+        const owner = await ownerScopedFilter("user")(args);
+        return owner === false ? false : { AND: [owner, { isSaved: { equals: true } }] };
+      }
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== "create") return resolvedData;
       if (!context.session?.itemId) return resolvedData;
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     }
@@ -1647,6 +2106,12 @@ var Address = (0, import_core21.list)({
     phone: (0, import_fields22.text)({
       label: "Phone"
     }),
+    // Address-book entries the customer saved. Addresses written by checkout
+    // belong to their order and are not offered for reuse.
+    isSaved: (0, import_fields22.checkbox)({
+      defaultValue: false,
+      label: "Saved to address book"
+    }),
     // Relationships
     user: (0, import_fields22.relationship)({
       access: { create: () => false, update: () => false },
@@ -1665,9 +2130,9 @@ var BackInStockAlert = (0, import_core22.list)({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount
     },
     filter: {
       query: ownerScopedFilter("user"),
@@ -1676,7 +2141,8 @@ var BackInStockAlert = (0, import_core22.list)({
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== "create") return resolvedData;
       if (!context.session?.itemId) throw new Error("An authenticated owner is required");
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     }
@@ -1752,7 +2218,8 @@ var Cart = (0, import_core23.list)({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      const storeId = context.session?.data.store?.id || process.env.PUBLIC_STORE_ID || "store_juniper";
+      const storeId = context.session?.itemId ? await currentMembershipStoreId({ session: context.session, context }) : process.env.PUBLIC_STORE_ID || "store_juniper";
+      if (!storeId) throw new Error("An active store is required");
       const store = await context.prisma.store.findUnique({ where: { id: storeId }, select: { id: true, isActive: true } });
       if (!store?.isActive) throw new Error("An active store is required");
       return { ...resolvedData, store: { connect: { id: store.id } } };
@@ -1973,6 +2440,50 @@ var CartItem = (0, import_core25.list)({
 var import_core26 = require("@keystone-6/core");
 var import_fields27 = require("@keystone-6/core/fields");
 init_access();
+
+// features/keystone/lib/couponLookup.ts
+init_publicError();
+function normalizeCouponCode(code) {
+  return code.trim().toUpperCase();
+}
+async function findStoreCouponByCode(sudoContext, code, storeId, query) {
+  const normalized = normalizeCouponCode(code).slice(0, 40);
+  if (!normalized || !storeId) return null;
+  const matches = await sudoContext.query.Coupon.findMany({
+    where: { code: { equals: normalized, mode: "insensitive" }, store: { id: { equals: storeId } } },
+    take: 2,
+    query
+  });
+  if (matches.length > 1) throw publicError(`Coupon ${normalized} matches more than one offer. Contact the store to use it.`, "COUPON_INVALID");
+  return matches[0] || null;
+}
+
+// features/keystone/models/Coupon.ts
+function isStringList(value) {
+  return value === null || value === void 0 || Array.isArray(value) && value.length <= 500 && value.every((item) => typeof item === "string" && item.length <= 200);
+}
+function validateCouponInput(resolvedData, item, addValidationError) {
+  if (resolvedData.code !== void 0 && !/^[A-Z0-9_-]{2,40}$/.test(String(resolvedData.code))) {
+    addValidationError("Coupon codes use 2\u201340 letters, numbers, hyphens or underscores.");
+  }
+  if (!isStringList(resolvedData.productCategories)) addValidationError("Departments must be a list of department handles.");
+  if (!isStringList(resolvedData.excludedProducts)) addValidationError("Excluded products must be a list of product IDs.");
+  const discountType = resolvedData.discountType ?? item?.discountType ?? "percentage";
+  const discountValue = resolvedData.discountValue !== void 0 ? resolvedData.discountValue : item?.discountValue;
+  if (discountType === "percentage" && Number(discountValue || 0) > 100) {
+    addValidationError("A percentage discount cannot be more than 100%.");
+  }
+  const validFrom = resolvedData.validFrom !== void 0 ? resolvedData.validFrom : item?.validFrom;
+  const validTo = resolvedData.validTo !== void 0 ? resolvedData.validTo : item?.validTo;
+  if (validFrom && validTo && new Date(validTo).getTime() <= new Date(validFrom).getTime()) {
+    addValidationError('The coupon must end after it starts. Choose a "valid to" date later than "valid from".');
+  }
+  const maxUses = resolvedData.maxUses ?? item?.maxUses ?? 0;
+  const currentUses = item?.currentUses ?? 0;
+  if (Number(maxUses) > 0 && Number(maxUses) < Number(currentUses)) {
+    addValidationError(`Maximum uses cannot be lower than the ${currentUses} redemptions already made.`);
+  }
+}
 var Coupon = (0, import_core26.list)({
   access: {
     operation: {
@@ -1989,13 +2500,20 @@ var Coupon = (0, import_core26.list)({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error("An active store is required");
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error("An active store is required");
       return {
         ...resolvedData,
+        // One coupon identity: trimmed upper-case, the form checkout looks up.
+        ...typeof resolvedData.code === "string" ? { code: normalizeCouponCode(resolvedData.code) } : {},
         discountValueCents: resolvedData.discountValue !== void 0 ? Math.round(Number(resolvedData.discountValue) * 100) : resolvedData.discountValueCents,
         minPurchaseCents: resolvedData.minPurchase !== void 0 ? Math.round(Number(resolvedData.minPurchase || 0) * 100) : resolvedData.minPurchaseCents,
-        store: { connect: { id: context.session.data.store.id } }
+        store: { connect: { id: storeId } }
       };
+    },
+    validate: {
+      create: async ({ resolvedData, addValidationError }) => validateCouponInput(resolvedData, null, addValidationError),
+      update: async ({ resolvedData, item, addValidationError }) => validateCouponInput(resolvedData, item, addValidationError)
     }
   },
   ui: {
@@ -2028,22 +2546,24 @@ var Coupon = (0, import_core26.list)({
       }
     }),
     discountValue: (0, import_fields27.float)({
-      label: "Discount Value",
+      label: "Discount",
       ui: {
-        description: "Percentage (0-100) or fixed dollar amount"
+        description: "Percent off (0\u2013100) for a percentage coupon, or dollars off for a fixed-amount coupon."
       },
       validation: { min: 0 }
     }),
-    discountValueCents: (0, import_fields27.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative fixed discount (minor units)" }),
+    // Checkout and order finalisation charge from the cents copies; resolveInput derives them from the
+    // dollar fields above, so the form shows dollars only.
+    discountValueCents: (0, import_fields27.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Fixed discount", ui: { createView: { fieldMode: "hidden" }, itemView: { fieldMode: "hidden" } } }),
     minPurchase: (0, import_fields27.float)({
-      label: "Legacy display minimum purchase",
+      label: "Minimum order",
       ui: {
-        description: "Minimum order amount required to use this coupon"
+        description: "Order subtotal in dollars needed to use this coupon. 0 means no minimum."
       },
       validation: { min: 0 },
       defaultValue: 0
     }),
-    minPurchaseCents: (0, import_fields27.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative minimum purchase (minor units)" }),
+    minPurchaseCents: (0, import_fields27.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Minimum order", ui: { createView: { fieldMode: "hidden" }, itemView: { fieldMode: "hidden" } } }),
     maxUses: (0, import_fields27.integer)({
       label: "Maximum Uses",
       ui: {
@@ -2055,8 +2575,12 @@ var Coupon = (0, import_core26.list)({
     currentUses: (0, import_fields27.integer)({
       label: "Current Uses",
       ui: {
-        description: "Number of times this coupon has been used"
+        description: "Number of times this coupon has been redeemed. Counted by checkout and cancellations only.",
+        itemView: { fieldMode: "read" }
       },
+      // Redemption counts are domain-owned (checkout consumption and cancellation
+      // release); merchandising edits cannot reset or advance them.
+      access: { create: () => false, update: () => false },
       validation: { min: 0 },
       defaultValue: 0
     }),
@@ -2073,15 +2597,29 @@ var Coupon = (0, import_core26.list)({
       }
     }),
     productCategories: (0, import_fields27.json)({
-      label: "Product Categories",
+      label: "Departments",
       ui: {
-        description: "JSON array of department/category slugs this coupon applies to (empty = all)"
+        description: "Departments this coupon applies to. Leave empty for every department."
       }
     }),
+    // Which department identity productCategories names. Offers created before
+    // aisles became Store departments keep their original (legacy department)
+    // meaning; new offers use the department handles shoppers browse.
+    categoryTaxonomy: (0, import_fields27.select)({
+      type: "string",
+      options: [
+        { label: "Store departments", value: "department_handle" },
+        { label: "Product's own department (older coupons)", value: "legacy_department" }
+      ],
+      defaultValue: "department_handle",
+      validation: { isRequired: true },
+      label: "Department matching",
+      access: { update: () => false }
+    }),
     excludedProducts: (0, import_fields27.json)({
-      label: "Excluded Products",
+      label: "Excluded products",
       ui: {
-        description: "JSON array of product IDs excluded from this coupon"
+        description: "Products this coupon never discounts."
       }
     }),
     isActive: (0, import_fields27.checkbox)({
@@ -2124,15 +2662,17 @@ var Department = (0, import_core27.list)({
       delete: permissions.canManageProducts
     },
     filter: {
-      query: async ({ session, context }) => await permissions.canManageProducts({ session, context }) ? storeScopedFilter({ session }) : publicStoreScopedFilter(),
+      // Shoppers see only active (published) aisles; product managers also see hidden ones.
+      query: async ({ session, context }) => await permissions.canManageProducts({ session, context }) ? storeScopedFilter({ session, context }) : { AND: [publicStoreScopedFilter(), { isActive: { equals: true } }] },
       update: storeScopedFilter,
       delete: storeScopedFilter
     }
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error("An active store is required");
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error("An active store is required");
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     }
   },
   ui: {
@@ -2162,10 +2702,17 @@ var Department = (0, import_core27.list)({
         description: "Brief description shown on storefront"
       }
     }),
+    image: (0, import_fields28.image)({
+      storage: "my_images",
+      label: "Aisle photo",
+      ui: {
+        description: "Shown on the aisle tile and chip. Takes precedence over Image URL."
+      }
+    }),
     imageUrl: (0, import_fields28.text)({
       label: "Image URL",
       ui: {
-        description: "URL of the department image"
+        description: "Fallback image address, used when no aisle photo is uploaded"
       }
     }),
     sortOrder: (0, import_fields28.integer)({
@@ -2331,6 +2878,17 @@ var DeliveryRoute = (0, import_core28.list)({
 var import_core29 = require("@keystone-6/core");
 var import_fields30 = require("@keystone-6/core/fields");
 init_access();
+
+// features/keystone/lib/slotWindow.ts
+var HH_MM = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+function slotWindowError(startTime, endTime) {
+  if (typeof startTime !== "string" || !HH_MM.test(startTime)) return "Start time must be a 24-hour time such as 09:00.";
+  if (typeof endTime !== "string" || !HH_MM.test(endTime)) return "End time must be a 24-hour time such as 11:00.";
+  if (endTime <= startTime) return `The window must end after it starts (${startTime}\u2013${endTime}).`;
+  return null;
+}
+
+// features/keystone/models/DeliverySlot.ts
 var DeliverySlot = (0, import_core29.list)({
   access: {
     operation: {
@@ -2347,12 +2905,26 @@ var DeliverySlot = (0, import_core29.list)({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) return resolvedData;
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      if (!context.session?.itemId) return resolvedData;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error("An active store is required");
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
-    validate: { delete: async ({ item, addValidationError }) => {
-      if (Number(item.currentBookings || 0) > 0) addValidationError("Booked delivery slots cannot be deleted");
-    } }
+    validate: {
+      create: async ({ resolvedData, context, addValidationError }) => {
+        const windowError = slotWindowError(resolvedData.startTime, resolvedData.endTime);
+        if (windowError) addValidationError(windowError);
+        const storeId = resolvedData.store?.connect?.id;
+        if (!windowError && storeId && resolvedData.date) {
+          const duplicate = await context.prisma.deliverySlot.findFirst({ where: { storeId, date: new Date(resolvedData.date), startTime: resolvedData.startTime, endTime: resolvedData.endTime }, select: { id: true } });
+          if (duplicate) addValidationError(`There is already a delivery slot for ${resolvedData.startTime}\u2013${resolvedData.endTime} on that day.`);
+        }
+        if (resolvedData.capacity !== void 0 && Number(resolvedData.capacity) < 1) addValidationError("A slot needs room for at least one order.");
+      },
+      delete: async ({ item, addValidationError }) => {
+        if (Number(item.currentBookings || 0) > 0) addValidationError("Booked delivery slots cannot be deleted");
+      }
+    }
   },
   ui: {
     listView: {
@@ -2446,9 +3018,9 @@ var FavoriteProduct = (0, import_core30.list)({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount
     },
     filter: {
       query: ownerScopedFilter("user"),
@@ -2457,7 +3029,8 @@ var FavoriteProduct = (0, import_core30.list)({
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== "create") return resolvedData;
       if (!context.session?.itemId) throw new Error("An authenticated owner is required");
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     }
@@ -2507,75 +3080,11 @@ var FavoriteProduct = (0, import_core30.list)({
   }
 });
 
-// features/keystone/models/GroceryOutboxEvent.ts
+// features/keystone/models/InventoryLot.ts
 var import_core31 = require("@keystone-6/core");
 var import_fields32 = require("@keystone-6/core/fields");
 init_access();
-var DELIVERY_FIELDS = /* @__PURE__ */ new Set([
-  "status",
-  "attempts",
-  "claimToken",
-  "claimedAt",
-  "deliveredAt",
-  "lastError",
-  "nextAttemptAt"
-]);
-var GroceryOutboxEvent = (0, import_core31.list)({
-  access: {
-    operation: {
-      query: permissions.canManageOnboarding,
-      create: () => false,
-      update: () => false,
-      delete: () => false
-    },
-    filter: { query: storeScopedFilter, update: storeScopedFilter, delete: storeScopedFilter }
-  },
-  hooks: {
-    validate: {
-      update: async ({ resolvedData, addValidationError }) => {
-        const invalid = Object.keys(resolvedData).filter((key2) => !DELIVERY_FIELDS.has(key2));
-        if (invalid.length) addValidationError("Outbox event identity and payload are immutable");
-      },
-      delete: async ({ addValidationError }) => {
-        addValidationError("Outbox event evidence cannot be deleted");
-      }
-    }
-  },
-  ui: {
-    labelField: "eventKey",
-    listView: { initialColumns: ["eventType", "aggregateType", "aggregateId", "status", "attempts", "occurredAt"] }
-  },
-  fields: {
-    store: (0, import_fields32.relationship)({
-      ref: "Store.outboxEvents",
-      db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
-      access: { update: () => false }
-    }),
-    eventKey: (0, import_fields32.text)({ isIndexed: "unique", validation: { isRequired: true }, access: { update: () => false } }),
-    eventType: (0, import_fields32.text)({ validation: { isRequired: true }, access: { update: () => false } }),
-    aggregateType: (0, import_fields32.text)({ validation: { isRequired: true }, access: { update: () => false } }),
-    aggregateId: (0, import_fields32.text)({ validation: { isRequired: true }, isIndexed: true, access: { update: () => false } }),
-    schemaVersion: (0, import_fields32.integer)({ defaultValue: 1, validation: { isRequired: true, min: 1 }, access: { update: () => false } }),
-    payload: (0, import_fields32.json)({ access: { update: () => false } }),
-    payloadHash: (0, import_fields32.text)({ validation: { isRequired: true }, access: { update: () => false } }),
-    occurredAt: (0, import_fields32.timestamp)({ validation: { isRequired: true }, isIndexed: true, access: { update: () => false } }),
-    status: (0, import_fields32.text)({ defaultValue: "pending", isIndexed: true }),
-    attempts: (0, import_fields32.integer)({ defaultValue: 0, validation: { min: 0 } }),
-    claimToken: (0, import_fields32.text)(),
-    claimedAt: (0, import_fields32.timestamp)(),
-    deliveredAt: (0, import_fields32.timestamp)(),
-    nextAttemptAt: (0, import_fields32.timestamp)(),
-    lastError: (0, import_fields32.text)({ ui: { displayMode: "textarea" } }),
-    ...trackingFields
-  }
-});
-
-// features/keystone/models/InventoryLot.ts
-var import_core32 = require("@keystone-6/core");
-var import_fields33 = require("@keystone-6/core/fields");
-init_access();
-var InventoryLot = (0, import_core32.list)({
+var InventoryLot = (0, import_core31.list)({
   access: {
     operation: {
       query: permissions.canManageInventory,
@@ -2592,7 +3101,7 @@ var InventoryLot = (0, import_core32.list)({
     }
   },
   fields: {
-    lotNumber: (0, import_fields33.text)({
+    lotNumber: (0, import_fields32.text)({
       validation: { isRequired: true },
       isIndexed: "unique",
       label: "Lot Number",
@@ -2600,18 +3109,18 @@ var InventoryLot = (0, import_core32.list)({
         description: "Unique identifier for this inventory lot"
       }
     }),
-    supplierLotNumber: (0, import_fields33.text)({ isIndexed: true, label: "Supplier batch number" }),
-    safetyStatus: (0, import_fields33.select)({ options: ["available", "held", "quarantined", "recalled"], defaultValue: "available", validation: { isRequired: true } }),
-    conditionStatus: (0, import_fields33.select)({ options: ["accepted", "inspection_pending", "rejected"], defaultValue: "accepted", validation: { isRequired: true } }),
-    safetyReason: (0, import_fields33.text)(),
-    expirationDate: (0, import_fields33.timestamp)({
+    supplierLotNumber: (0, import_fields32.text)({ isIndexed: true, label: "Supplier batch number" }),
+    safetyStatus: (0, import_fields32.select)({ options: ["available", "held", "quarantined", "recalled"], defaultValue: "available", validation: { isRequired: true } }),
+    conditionStatus: (0, import_fields32.select)({ options: ["accepted", "inspection_pending", "rejected"], defaultValue: "accepted", validation: { isRequired: true } }),
+    safetyReason: (0, import_fields32.text)(),
+    expirationDate: (0, import_fields32.timestamp)({
       validation: { isRequired: true },
       label: "Expiration Date",
       ui: {
         description: "Date when this lot expires"
       }
     }),
-    receivedDate: (0, import_fields33.timestamp)({
+    receivedDate: (0, import_fields32.timestamp)({
       validation: { isRequired: true },
       defaultValue: { kind: "now" },
       label: "Received Date",
@@ -2619,7 +3128,7 @@ var InventoryLot = (0, import_core32.list)({
         description: "Date this lot was received"
       }
     }),
-    quantity: (0, import_fields33.decimal)({
+    quantity: (0, import_fields32.decimal)({
       precision: 18,
       scale: 3,
       validation: { isRequired: true, min: "0" },
@@ -2628,7 +3137,7 @@ var InventoryLot = (0, import_core32.list)({
         description: "Total units received in this lot"
       }
     }),
-    quantityRemaining: (0, import_fields33.decimal)({
+    quantityRemaining: (0, import_fields32.decimal)({
       precision: 18,
       scale: 3,
       validation: { isRequired: true, min: "0" },
@@ -2637,39 +3146,39 @@ var InventoryLot = (0, import_core32.list)({
         description: "Units still available in this lot"
       }
     }),
-    costPerUnit: (0, import_fields33.float)({
+    costPerUnit: (0, import_fields32.float)({
       validation: { isRequired: true },
       label: "Cost Per Unit (legacy display)",
       ui: { description: "Legacy display value; costPerUnitCents is authoritative" }
     }),
-    costPerUnitCents: (0, import_fields33.integer)({
+    costPerUnitCents: (0, import_fields32.integer)({
       defaultValue: 0,
       validation: { isRequired: true, min: 0 },
       access: { create: () => false, update: () => false },
       label: "Cost Per Unit (minor units)"
     }),
-    location: (0, import_fields33.text)({
+    location: (0, import_fields32.text)({
       label: "Location",
       ui: {
         description: "Warehouse zone/bin location (e.g., A-1-3)"
       }
     }),
     // Relationships
-    store: (0, import_fields33.relationship)({
+    store: (0, import_fields32.relationship)({
       ref: "Store.inventoryLots",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false }
     }),
-    product: (0, import_fields33.relationship)({
+    product: (0, import_fields32.relationship)({
       ref: "Product.inventoryLots",
       label: "Product"
     }),
-    supplier: (0, import_fields33.relationship)({
+    supplier: (0, import_fields32.relationship)({
       ref: "Supplier.inventoryLots",
       label: "Supplier"
     }),
-    orderLineAllocations: (0, import_fields33.relationship)({
+    orderLineAllocations: (0, import_fields32.relationship)({
       ref: "OrderLineInventoryAllocation.inventoryLot",
       many: true,
       access: { update: () => false },
@@ -2680,10 +3189,10 @@ var InventoryLot = (0, import_core32.list)({
 });
 
 // features/keystone/models/InventoryAdjustment.ts
-var import_core33 = require("@keystone-6/core");
-var import_fields34 = require("@keystone-6/core/fields");
+var import_core32 = require("@keystone-6/core");
+var import_fields33 = require("@keystone-6/core/fields");
 init_access();
-var InventoryAdjustment = (0, import_core33.list)({
+var InventoryAdjustment = (0, import_core32.list)({
   access: {
     operation: {
       query: permissions.canManageInventory,
@@ -2695,8 +3204,8 @@ var InventoryAdjustment = (0, import_core33.list)({
   },
   ui: { isHidden: true },
   fields: {
-    idempotencyKey: (0, import_fields34.text)({ isIndexed: "unique", validation: { isRequired: true } }),
-    reason: (0, import_fields34.select)({
+    idempotencyKey: (0, import_fields33.text)({ isIndexed: "unique", validation: { isRequired: true } }),
+    reason: (0, import_fields33.select)({
       type: "enum",
       options: [
         { label: "Cycle count", value: "cycle_count" },
@@ -2706,29 +3215,29 @@ var InventoryAdjustment = (0, import_core33.list)({
       ],
       validation: { isRequired: true }
     }),
-    quantityBefore: (0, import_fields34.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
-    quantityAfter: (0, import_fields34.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
-    quantityDelta: (0, import_fields34.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
-    productStockBefore: (0, import_fields34.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
-    productStockAfter: (0, import_fields34.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
-    note: (0, import_fields34.text)(),
-    store: (0, import_fields34.relationship)({
+    quantityBefore: (0, import_fields33.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    quantityAfter: (0, import_fields33.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    quantityDelta: (0, import_fields33.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    productStockBefore: (0, import_fields33.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    productStockAfter: (0, import_fields33.decimal)({ precision: 18, scale: 3, validation: { isRequired: true } }),
+    note: (0, import_fields33.text)(),
+    store: (0, import_fields33.relationship)({
       ref: "Store.inventoryAdjustments",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false }
     }),
-    product: (0, import_fields34.relationship)({ ref: "Product" }),
-    inventoryLot: (0, import_fields34.relationship)({ ref: "InventoryLot" }),
-    adjustedBy: (0, import_fields34.relationship)({ ref: "User" }),
+    product: (0, import_fields33.relationship)({ ref: "Product" }),
+    inventoryLot: (0, import_fields33.relationship)({ ref: "InventoryLot" }),
+    adjustedBy: (0, import_fields33.relationship)({ ref: "User" }),
     ...trackingFields
   }
 });
 
 // features/keystone/models/LoyaltyProgram.ts
-var import_core34 = require("@keystone-6/core");
-var import_fields35 = require("@keystone-6/core/fields");
-var LoyaltyProgram = (0, import_core34.list)({
+var import_core33 = require("@keystone-6/core");
+var import_fields34 = require("@keystone-6/core/fields");
+var LoyaltyProgram = (0, import_core33.list)({
   access: {
     operation: {
       query: () => true,
@@ -2737,7 +3246,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       delete: () => false
     },
     filter: {
-      query: ({ session }) => session?.itemId ? storeScopedFilter({ session }) : publicStoreScopedFilter(),
+      query: async ({ session, context }) => session?.itemId ? storeScopedFilter({ session, context }) : publicStoreScopedFilter(),
       update: storeScopedFilter,
       delete: storeScopedFilter
     }
@@ -2745,7 +3254,7 @@ var LoyaltyProgram = (0, import_core34.list)({
   hooks: {
     resolveInput: async ({ operation, resolvedData, context }) => {
       if (operation !== "create") return resolvedData;
-      const storeId = context.session?.data.store?.id;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
       if (!storeId) throw new Error("An active store is required");
       return { ...resolvedData, store: { connect: { id: storeId } } };
     }
@@ -2757,11 +3266,11 @@ var LoyaltyProgram = (0, import_core34.list)({
     }
   },
   fields: {
-    earnPointsPer100Cents: (0, import_fields35.integer)({ defaultValue: 1, validation: { isRequired: true, min: 0 } }),
-    redeemPointsPer100Cents: (0, import_fields35.integer)({ defaultValue: 100, validation: { isRequired: true, min: 1 } }),
-    minimumRedemptionPoints: (0, import_fields35.integer)({ defaultValue: 100, validation: { isRequired: true, min: 1 } }),
-    refundDebtPolicy: (0, import_fields35.select)({ options: ["offset_future_earnings"], defaultValue: "offset_future_earnings", validation: { isRequired: true } }),
-    store: (0, import_fields35.relationship)({
+    earnPointsPer100Cents: (0, import_fields34.integer)({ defaultValue: 1, validation: { isRequired: true, min: 0 } }),
+    redeemPointsPer100Cents: (0, import_fields34.integer)({ defaultValue: 100, validation: { isRequired: true, min: 1 } }),
+    minimumRedemptionPoints: (0, import_fields34.integer)({ defaultValue: 100, validation: { isRequired: true, min: 1 } }),
+    refundDebtPolicy: (0, import_fields34.select)({ options: ["offset_future_earnings"], defaultValue: "offset_future_earnings", validation: { isRequired: true } }),
+    store: (0, import_fields34.relationship)({
       ref: "Store.loyaltyPrograms",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       // Public loyalty projections do not expose the authenticated Store row.
@@ -2769,7 +3278,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       access: { create: () => false, update: () => false }
     }),
     // Program name
-    name: (0, import_fields35.text)({
+    name: (0, import_fields34.text)({
       validation: { isRequired: true },
       label: "Program Name",
       ui: {
@@ -2777,7 +3286,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       }
     }),
     // Points earned per dollar spent
-    pointsPerDollar: (0, import_fields35.float)({
+    pointsPerDollar: (0, import_fields34.float)({
       validation: { isRequired: true, min: 0 },
       defaultValue: 1,
       label: "Points Per Dollar",
@@ -2786,7 +3295,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       }
     }),
     // Tier configuration and thresholds
-    tierConfiguration: (0, import_fields35.json)({
+    tierConfiguration: (0, import_fields34.json)({
       label: "Tier Configuration",
       ui: {
         description: 'JSON configuration for tier levels, thresholds, and benefits. Example: [{"name":"Bronze","threshold":0,"benefits":["1x points"]},{"name":"Silver","threshold":500,"benefits":["1.5x points","Free delivery over $50"]},{"name":"Gold","threshold":2000,"benefits":["2x points","Free delivery","Birthday rewards"]},{"name":"Platinum","threshold":5000,"benefits":["3x points","Free delivery","Exclusive deals","Early access"]}]',
@@ -2797,7 +3306,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       }
     }),
     // Point redemption rules
-    redemptionRules: (0, import_fields35.json)({
+    redemptionRules: (0, import_fields34.json)({
       label: "Redemption Rules",
       ui: {
         description: 'JSON configuration for point redemption rules. Example: {"pointsPerDollar":100,"minimumRedemption":100,"maximumRedemption":5000}',
@@ -2808,7 +3317,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       }
     }),
     // Points expiration configuration
-    expirationRules: (0, import_fields35.json)({
+    expirationRules: (0, import_fields34.json)({
       label: "Expiration Rules",
       ui: {
         description: 'JSON configuration for point expiration. Example: {"enabled":true,"expirationDays":365,"warningDays":30}',
@@ -2819,7 +3328,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       }
     }),
     // Additional benefits per tier
-    tierBenefits: (0, import_fields35.json)({
+    tierBenefits: (0, import_fields34.json)({
       label: "Tier Benefits",
       ui: {
         description: "Additional tier-specific benefits like free delivery thresholds, birthday rewards, etc.",
@@ -2830,7 +3339,7 @@ var LoyaltyProgram = (0, import_core34.list)({
       }
     }),
     // Whether the program is currently active
-    isActive: (0, import_fields35.checkbox)({
+    isActive: (0, import_fields34.checkbox)({
       defaultValue: true,
       label: "Is Active",
       ui: {
@@ -2842,10 +3351,10 @@ var LoyaltyProgram = (0, import_core34.list)({
 });
 
 // features/keystone/models/LoyaltyTransaction.ts
-var import_core35 = require("@keystone-6/core");
-var import_fields36 = require("@keystone-6/core/fields");
+var import_core34 = require("@keystone-6/core");
+var import_fields35 = require("@keystone-6/core/fields");
 init_access();
-var LoyaltyTransaction = (0, import_core35.list)({
+var LoyaltyTransaction = (0, import_core34.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -2855,7 +3364,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = ownerStoreScopedFilter("user")({ session });
+        const store = await ownerStoreScopedFilter("user")({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
@@ -2872,16 +3381,16 @@ var LoyaltyTransaction = (0, import_core35.list)({
     }
   },
   fields: {
-    idempotencyKey: (0, import_fields36.text)({ isIndexed: "unique", validation: { isRequired: true } }),
-    store: (0, import_fields36.relationship)({ ref: "Store" }),
-    program: (0, import_fields36.relationship)({ ref: "LoyaltyProgram" }),
-    sourceId: (0, import_fields36.text)(),
-    sourceType: (0, import_fields36.text)(),
-    actorId: (0, import_fields36.text)(),
-    balanceBefore: (0, import_fields36.integer)(),
-    metadata: (0, import_fields36.json)(),
+    idempotencyKey: (0, import_fields35.text)({ isIndexed: "unique", validation: { isRequired: true } }),
+    store: (0, import_fields35.relationship)({ ref: "Store" }),
+    program: (0, import_fields35.relationship)({ ref: "LoyaltyProgram" }),
+    sourceId: (0, import_fields35.text)(),
+    sourceType: (0, import_fields35.text)(),
+    actorId: (0, import_fields35.text)(),
+    balanceBefore: (0, import_fields35.integer)(),
+    metadata: (0, import_fields35.json)(),
     // User who owns this transaction
-    user: (0, import_fields36.relationship)({
+    user: (0, import_fields35.relationship)({
       ref: "User",
       label: "User",
       ui: {
@@ -2889,7 +3398,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // Points awarded or redeemed (positive for earned, negative for redeemed)
-    points: (0, import_fields36.integer)({
+    points: (0, import_fields35.integer)({
       validation: { isRequired: true },
       label: "Points",
       ui: {
@@ -2897,7 +3406,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // Transaction type
-    type: (0, import_fields36.select)({
+    type: (0, import_fields35.select)({
       type: "enum",
       options: [
         { label: "Earned - Purchase", value: "earned_purchase" },
@@ -2917,7 +3426,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // Description of the transaction
-    description: (0, import_fields36.text)({
+    description: (0, import_fields35.text)({
       validation: { isRequired: true },
       label: "Description",
       ui: {
@@ -2926,7 +3435,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // Related order (if applicable)
-    order: (0, import_fields36.relationship)({
+    order: (0, import_fields35.relationship)({
       ref: "Order",
       label: "Order",
       ui: {
@@ -2934,7 +3443,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // Balance after this transaction
-    balanceAfter: (0, import_fields36.integer)({
+    balanceAfter: (0, import_fields35.integer)({
       validation: { isRequired: true },
       label: "Balance After",
       ui: {
@@ -2942,7 +3451,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // When the transaction occurred
-    transactionDate: (0, import_fields36.timestamp)({
+    transactionDate: (0, import_fields35.timestamp)({
       defaultValue: { kind: "now" },
       validation: { isRequired: true },
       label: "Transaction Date",
@@ -2951,7 +3460,7 @@ var LoyaltyTransaction = (0, import_core35.list)({
       }
     }),
     // Expiration date (for earned points)
-    expiresAt: (0, import_fields36.timestamp)({
+    expiresAt: (0, import_fields35.timestamp)({
       label: "Expires At",
       ui: {
         description: "When these points expire (if applicable)"
@@ -2962,16 +3471,16 @@ var LoyaltyTransaction = (0, import_core35.list)({
 });
 
 // features/keystone/models/NotificationPreference.ts
-var import_core36 = require("@keystone-6/core");
-var import_fields37 = require("@keystone-6/core/fields");
+var import_core35 = require("@keystone-6/core");
+var import_fields36 = require("@keystone-6/core/fields");
 init_access();
-var NotificationPreference = (0, import_core36.list)({
+var NotificationPreference = (0, import_core35.list)({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount
     },
     filter: {
       query: ownerScopedFilter("user"),
@@ -2980,7 +3489,8 @@ var NotificationPreference = (0, import_core36.list)({
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== "create") return resolvedData;
       if (!context.session?.itemId) throw new Error("An authenticated owner is required");
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     }
@@ -2993,7 +3503,7 @@ var NotificationPreference = (0, import_core36.list)({
   },
   fields: {
     // User relationship
-    user: (0, import_fields37.relationship)({
+    user: (0, import_fields36.relationship)({
       access: { create: () => false, update: () => false },
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
@@ -3004,7 +3514,7 @@ var NotificationPreference = (0, import_core36.list)({
       }
     }),
     // Order updates notifications
-    orderUpdates: (0, import_fields37.checkbox)({
+    orderUpdates: (0, import_fields36.checkbox)({
       defaultValue: true,
       label: "Order Updates",
       ui: {
@@ -3012,7 +3522,7 @@ var NotificationPreference = (0, import_core36.list)({
       }
     }),
     // Delivery alerts
-    deliveryAlerts: (0, import_fields37.checkbox)({
+    deliveryAlerts: (0, import_fields36.checkbox)({
       defaultValue: true,
       label: "Delivery Alerts",
       ui: {
@@ -3020,7 +3530,7 @@ var NotificationPreference = (0, import_core36.list)({
       }
     }),
     // Price drop notifications
-    priceDrops: (0, import_fields37.checkbox)({
+    priceDrops: (0, import_fields36.checkbox)({
       defaultValue: false,
       label: "Price Drops",
       ui: {
@@ -3028,7 +3538,7 @@ var NotificationPreference = (0, import_core36.list)({
       }
     }),
     // Back in stock notifications
-    backInStock: (0, import_fields37.checkbox)({
+    backInStock: (0, import_fields36.checkbox)({
       defaultValue: false,
       label: "Back in Stock",
       ui: {
@@ -3036,7 +3546,7 @@ var NotificationPreference = (0, import_core36.list)({
       }
     }),
     // Weekly deals digest
-    weeklyDeals: (0, import_fields37.checkbox)({
+    weeklyDeals: (0, import_fields36.checkbox)({
       defaultValue: false,
       label: "Weekly Deals",
       ui: {
@@ -3044,7 +3554,7 @@ var NotificationPreference = (0, import_core36.list)({
       }
     }),
     // Notification channels (JSON array: email/sms/push)
-    channels: (0, import_fields37.json)({
+    channels: (0, import_fields36.json)({
       label: "Notification Channels",
       ui: {
         description: "JSON array of notification channels: ['email', 'sms', 'push']"
@@ -3056,8 +3566,9 @@ var NotificationPreference = (0, import_core36.list)({
 });
 
 // features/keystone/models/Order.ts
+var import_core36 = require("@keystone-6/core");
+var import_fields37 = require("@keystone-6/core/fields");
 var import_core37 = require("@keystone-6/core");
-var import_fields38 = require("@keystone-6/core/fields");
 init_access();
 function canUpdateUnroutedOrder({ item }) {
   return !item.deliveryRouteId;
@@ -3067,7 +3578,7 @@ function calendarDay(value) {
   const date2 = new Date(value);
   return Number.isFinite(date2.getTime()) ? date2.toISOString().slice(0, 10) : null;
 }
-var Order = (0, import_core37.list)({
+var Order = (0, import_core36.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -3077,7 +3588,7 @@ var Order = (0, import_core37.list)({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = storeScopedFilter({ session });
+        const store = await storeScopedFilter({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { user: { id: { equals: session.itemId } } }] };
@@ -3090,6 +3601,17 @@ var Order = (0, import_core37.list)({
   hooks: {
     validate: {
       update: async ({ item, resolvedData, context, addValidationError }) => {
+        const wanted = resolvedData?.status;
+        if (wanted && !canTransition(ORDER_TRANSITIONS, String(item.status), String(wanted))) {
+          addValidationError(`Order cannot move from ${item.status} to ${wanted}`);
+          return;
+        }
+        const nextMeta = resolvedData?.metadata ?? item.metadata ?? {};
+        const nextStatus0 = wanted ?? item.status;
+        if (nextMeta?.readyForPickup === true && nextStatus0 !== "packed" && nextStatus0 !== "delivered") {
+          addValidationError("An order marked ready for pickup must be packed (or already handed over)");
+          return;
+        }
         const current = item;
         if (!current.deliveryRouteId) return;
         const route = await context.sudo().query.DeliveryRoute.findOne({
@@ -3143,16 +3665,16 @@ var Order = (0, import_core37.list)({
     }
   },
   fields: {
-    displayId: (0, import_fields38.integer)({
+    displayId: (0, import_fields37.integer)({
       isIndexed: "unique",
       validation: { isRequired: true },
       label: "Order Number"
     }),
-    email: (0, import_fields38.text)({
+    email: (0, import_fields37.text)({
       validation: { isRequired: true },
       label: "Customer Email"
     }),
-    status: (0, import_fields38.select)({
+    status: (0, import_fields37.select)({
       access: { create: () => false, update: () => false },
       type: "enum",
       options: [
@@ -3170,26 +3692,33 @@ var Order = (0, import_core37.list)({
       validation: { isRequired: true },
       label: "Status"
     }),
-    taxRate: (0, import_fields38.float)({
+    fulfillmentStage: (0, import_fields37.virtual)({
+      field: import_core37.graphql.field({
+        type: import_core37.graphql.String,
+        resolve: (item) => fulfillmentStage(item)
+      }),
+      ui: { itemView: { fieldMode: "hidden" }, createView: { fieldMode: "hidden" } }
+    }),
+    taxRate: (0, import_fields37.float)({
       label: "Tax Rate"
     }),
-    currencyCode: (0, import_fields38.text)({ defaultValue: "USD", validation: { isRequired: true } }),
-    subtotalCents: (0, import_fields38.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
-    taxCents: (0, import_fields38.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
-    deliveryFeeCents: (0, import_fields38.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
-    discountCents: (0, import_fields38.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
-    totalCents: (0, import_fields38.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
-    canceledAt: (0, import_fields38.timestamp)({
+    currencyCode: (0, import_fields37.text)({ defaultValue: "USD", validation: { isRequired: true } }),
+    subtotalCents: (0, import_fields37.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
+    taxCents: (0, import_fields37.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
+    deliveryFeeCents: (0, import_fields37.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
+    discountCents: (0, import_fields37.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
+    totalCents: (0, import_fields37.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 } }),
+    canceledAt: (0, import_fields37.timestamp)({
       access: { create: () => false, update: () => false },
       label: "Cancelled At"
     }),
-    metadata: (0, import_fields38.json)({ access: { create: () => false, update: () => false } }),
-    noNotification: (0, import_fields38.checkbox)({
+    metadata: (0, import_fields37.json)({ access: { create: () => false, update: () => false } }),
+    noNotification: (0, import_fields37.checkbox)({
       defaultValue: false,
       label: "Suppress Notifications"
     }),
     // Delivery time window fields (grocery-specific)
-    deliveryDate: (0, import_fields38.timestamp)({
+    deliveryDate: (0, import_fields37.timestamp)({
       access: { update: canUpdateUnroutedOrder },
       validation: { isRequired: true },
       label: "Delivery Date",
@@ -3197,7 +3726,7 @@ var Order = (0, import_core37.list)({
         description: "Scheduled delivery date"
       }
     }),
-    deliveryTimeWindow: (0, import_fields38.select)({
+    deliveryTimeWindow: (0, import_fields37.select)({
       access: { update: canUpdateUnroutedOrder },
       type: "enum",
       options: [
@@ -3214,14 +3743,14 @@ var Order = (0, import_core37.list)({
         description: "Customer's selected delivery time slot"
       }
     }),
-    deliveryInstructions: (0, import_fields38.text)({
+    deliveryInstructions: (0, import_fields37.text)({
       ui: {
         displayMode: "textarea",
         description: "Special delivery instructions from customer"
       },
       label: "Delivery Instructions"
     }),
-    substitutionPreference: (0, import_fields38.select)({
+    substitutionPreference: (0, import_fields37.select)({
       type: "enum",
       options: [
         { label: "Call Me", value: "call_me" },
@@ -3235,39 +3764,39 @@ var Order = (0, import_core37.list)({
       }
     }),
     // Relationships
-    store: (0, import_fields38.relationship)({
+    store: (0, import_fields37.relationship)({
       ref: "Store.orders",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false }
     }),
-    user: (0, import_fields38.relationship)({
+    user: (0, import_fields37.relationship)({
       ref: "User",
       label: "Customer"
     }),
-    shippingAddress: (0, import_fields38.relationship)({
+    shippingAddress: (0, import_fields37.relationship)({
       ref: "Address",
       label: "Shipping Address"
     }),
-    billingAddress: (0, import_fields38.relationship)({
+    billingAddress: (0, import_fields37.relationship)({
       ref: "Address",
       label: "Billing Address"
     }),
-    checkoutAttempts: (0, import_fields38.relationship)({ ref: "CheckoutAttempt.order", many: true, access: { update: () => false }, ui: { itemView: { fieldMode: "read" } } }),
-    payments: (0, import_fields38.relationship)({
+    checkoutAttempts: (0, import_fields37.relationship)({ ref: "CheckoutAttempt.order", many: true, access: { update: () => false }, ui: { itemView: { fieldMode: "read" } } }),
+    payments: (0, import_fields37.relationship)({
       ref: "Payment.order",
       many: true,
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
-    lineItems: (0, import_fields38.relationship)({
+    lineItems: (0, import_fields37.relationship)({
       ref: "OrderLineItem.order",
       many: true,
       label: "Line Items"
     }),
-    deliverySlot: (0, import_fields38.relationship)({ ref: "DeliverySlot.orders", access: { update: () => false } }),
-    pickupSlot: (0, import_fields38.relationship)({ ref: "PickupSlot.orders", access: { update: () => false } }),
-    deliveryRoute: (0, import_fields38.relationship)({
+    deliverySlot: (0, import_fields37.relationship)({ ref: "DeliverySlot.orders", access: { update: () => false } }),
+    pickupSlot: (0, import_fields37.relationship)({ ref: "PickupSlot.orders", access: { update: () => false } }),
+    deliveryRoute: (0, import_fields37.relationship)({
       access: { update: () => false },
       ref: "DeliveryRoute.orders",
       label: "Delivery Route"
@@ -3278,7 +3807,7 @@ var Order = (0, import_core37.list)({
 
 // features/keystone/models/OrderItemSubstitution.ts
 var import_core38 = require("@keystone-6/core");
-var import_fields39 = require("@keystone-6/core/fields");
+var import_fields38 = require("@keystone-6/core/fields");
 init_access();
 function normalizeText(value) {
   return typeof value === "string" ? value.trim() : value;
@@ -3351,55 +3880,55 @@ var OrderItemSubstitution = (0, import_core38.list)({
     }
   },
   fields: {
-    idempotencyKey: (0, import_fields39.text)({
+    idempotencyKey: (0, import_fields38.text)({
       isIndexed: "unique",
       validation: { isRequired: true },
       access: { update: () => false }
     }),
-    orderItem: (0, import_fields39.text)({
+    orderItem: (0, import_fields38.text)({
       validation: { isRequired: true },
       access: { update: () => false },
       label: "Order Item ID Snapshot",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    lineItem: (0, import_fields39.relationship)({
+    lineItem: (0, import_fields38.relationship)({
       ref: "OrderLineItem.substitutions",
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
-    recordedBy: (0, import_fields39.relationship)({
+    recordedBy: (0, import_fields38.relationship)({
       ref: "User",
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
-    originalProduct: (0, import_fields39.text)({
+    originalProduct: (0, import_fields38.text)({
       validation: { isRequired: true },
       access: { update: () => false },
       label: "Original Product Snapshot",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    substitutedProduct: (0, import_fields39.text)({
+    substitutedProduct: (0, import_fields38.text)({
       validation: { isRequired: true },
       access: { update: () => false },
       label: "Substituted Product Snapshot"
     }),
-    reason: (0, import_fields39.text)({
+    reason: (0, import_fields38.text)({
       access: { update: () => false },
       ui: { displayMode: "textarea", itemView: { fieldMode: "read" } }
     }),
-    customerApproved: (0, import_fields39.checkbox)({
+    customerApproved: (0, import_fields38.checkbox)({
       access: { update: () => false },
       defaultValue: false,
       ui: { itemView: { fieldMode: "read" } }
     }),
-    approvedAt: (0, import_fields39.timestamp)({ access: { create: () => false, update: () => false } }),
+    approvedAt: (0, import_fields38.timestamp)({ access: { create: () => false, update: () => false } }),
     ...trackingFields
   }
 });
 
 // features/keystone/models/OrderLineItem.ts
 var import_core39 = require("@keystone-6/core");
-var import_fields40 = require("@keystone-6/core/fields");
+var import_fields39 = require("@keystone-6/core/fields");
 init_access();
 var OrderLineItem = (0, import_core39.list)({
   access: {
@@ -3411,7 +3940,7 @@ var OrderLineItem = (0, import_core39.list)({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = relatedStoreScopedFilter("order")({ session });
+        const store = await relatedStoreScopedFilter("order")({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { order: { user: { id: { equals: session.itemId } } } }] };
@@ -3427,42 +3956,42 @@ var OrderLineItem = (0, import_core39.list)({
     }
   },
   fields: {
-    fulfillment: (0, import_fields40.relationship)({ ref: "OrderLineFulfillment.lineItem", access: { create: () => false, update: () => false } }),
-    title: (0, import_fields40.text)({
+    fulfillment: (0, import_fields39.relationship)({ ref: "OrderLineFulfillment.lineItem", access: { create: () => false, update: () => false } }),
+    title: (0, import_fields39.text)({
       access: { update: () => false },
       validation: { isRequired: true },
       label: "Product Title",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    sku: (0, import_fields40.text)({
+    sku: (0, import_fields39.text)({
       access: { update: () => false },
       label: "SKU",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    quantity: (0, import_fields40.integer)({
+    quantity: (0, import_fields39.integer)({
       access: { update: () => false },
       validation: { isRequired: true, min: 1 },
       label: "Quantity",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    unitPrice: (0, import_fields40.float)({
+    unitPrice: (0, import_fields39.float)({
       access: { update: () => false },
       validation: { isRequired: true },
       label: "Legacy display unit price",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    unitPriceCents: (0, import_fields40.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative unit price (minor units)" }),
-    thumbnail: (0, import_fields40.text)({
+    unitPriceCents: (0, import_fields39.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative unit price (minor units)" }),
+    thumbnail: (0, import_fields39.text)({
       access: { update: () => false },
       label: "Thumbnail URL",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    metadata: (0, import_fields40.json)({
+    metadata: (0, import_fields39.json)({
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
     // Relationships
-    order: (0, import_fields40.relationship)({
+    order: (0, import_fields39.relationship)({
       access: { update: () => false },
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
@@ -3470,14 +3999,14 @@ var OrderLineItem = (0, import_core39.list)({
       label: "Order",
       ui: { itemView: { fieldMode: "read" } }
     }),
-    product: (0, import_fields40.relationship)({
+    product: (0, import_fields39.relationship)({
       access: { update: () => false },
       ref: "Product",
       label: "Product",
       ui: { itemView: { fieldMode: "read" } }
     }),
     // Track which inventory lot was used (for FEFO)
-    inventoryLot: (0, import_fields40.relationship)({
+    inventoryLot: (0, import_fields39.relationship)({
       access: { update: () => false },
       ref: "InventoryLot",
       label: "Inventory Lot",
@@ -3486,13 +4015,13 @@ var OrderLineItem = (0, import_core39.list)({
         itemView: { fieldMode: "read" }
       }
     }),
-    inventoryAllocations: (0, import_fields40.relationship)({
+    inventoryAllocations: (0, import_fields39.relationship)({
       ref: "OrderLineInventoryAllocation.lineItem",
       many: true,
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
-    substitutions: (0, import_fields40.relationship)({
+    substitutions: (0, import_fields39.relationship)({
       access: { update: () => false },
       ref: "OrderItemSubstitution.lineItem",
       many: true,
@@ -3505,7 +4034,7 @@ var OrderLineItem = (0, import_core39.list)({
 
 // features/keystone/models/OrderLineInventoryAllocation.ts
 var import_core40 = require("@keystone-6/core");
-var import_fields41 = require("@keystone-6/core/fields");
+var import_fields40 = require("@keystone-6/core/fields");
 init_access();
 var OrderLineInventoryAllocation = (0, import_core40.list)({
   access: {
@@ -3513,33 +4042,34 @@ var OrderLineInventoryAllocation = (0, import_core40.list)({
     filter: { query: nestedRelatedStoreScopedFilter("lineItem", "order") }
   },
   fields: {
-    lineItem: (0, import_fields41.relationship)({
+    lineItem: (0, import_fields40.relationship)({
       ref: "OrderLineItem.inventoryAllocations",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false }
     }),
-    inventoryLot: (0, import_fields41.relationship)({
+    inventoryLot: (0, import_fields40.relationship)({
       ref: "InventoryLot.orderLineAllocations",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
+      // Nullable on read: roles without InventoryLot access cannot resolve it.
+      graphql: { isNonNull: { create: true } },
       access: { create: () => false, update: () => false }
     }),
-    store: (0, import_fields41.relationship)({
+    store: (0, import_fields40.relationship)({
       ref: "Store.orderLineInventoryAllocations",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false }
     }),
-    quantity: (0, import_fields41.decimal)({ precision: 18, scale: 3, validation: { isRequired: true, min: "0.001" }, access: { create: () => false, update: () => false } }),
-    provenance: (0, import_fields41.json)({ access: { create: () => false, update: () => false } }),
+    quantity: (0, import_fields40.decimal)({ precision: 18, scale: 3, validation: { isRequired: true, min: "0.001" }, access: { create: () => false, update: () => false } }),
+    provenance: (0, import_fields40.json)({ access: { create: () => false, update: () => false } }),
     ...trackingFields
   }
 });
 
 // features/keystone/models/ParkingSpot.ts
 var import_core41 = require("@keystone-6/core");
-var import_fields42 = require("@keystone-6/core/fields");
+var import_fields41 = require("@keystone-6/core/fields");
 init_access();
 var ParkingSpot = (0, import_core41.list)({
   access: {
@@ -3557,8 +4087,9 @@ var ParkingSpot = (0, import_core41.list)({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error("An active store is required");
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error("An active store is required");
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     }
   },
   ui: {
@@ -3568,13 +4099,13 @@ var ParkingSpot = (0, import_core41.list)({
     }
   },
   fields: {
-    store: (0, import_fields42.relationship)({
+    store: (0, import_fields41.relationship)({
       ref: "Store.parkingSpots",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: permissions.canManageDelivery, update: () => false }
     }),
-    spotNumber: (0, import_fields42.text)({
+    spotNumber: (0, import_fields41.text)({
       validation: { isRequired: true },
       isIndexed: "unique",
       label: "Spot Number",
@@ -3582,21 +4113,21 @@ var ParkingSpot = (0, import_core41.list)({
         description: "Unique identifier for this parking spot (e.g., 'A1', 'B2')"
       }
     }),
-    description: (0, import_fields42.text)({
+    description: (0, import_fields41.text)({
       label: "Description",
       ui: {
         displayMode: "textarea",
         description: "Additional details about this spot location"
       }
     }),
-    isAccessible: (0, import_fields42.checkbox)({
+    isAccessible: (0, import_fields41.checkbox)({
       defaultValue: false,
       label: "Is Accessible",
       ui: {
         description: "Whether this spot is ADA accessible"
       }
     }),
-    isAvailable: (0, import_fields42.checkbox)({
+    isAvailable: (0, import_fields41.checkbox)({
       access: { update: () => false },
       defaultValue: true,
       label: "Is Available",
@@ -3610,7 +4141,7 @@ var ParkingSpot = (0, import_core41.list)({
 
 // features/keystone/models/Payment.ts
 var import_core42 = require("@keystone-6/core");
-var import_fields43 = require("@keystone-6/core/fields");
+var import_fields42 = require("@keystone-6/core/fields");
 init_access();
 var Payment = (0, import_core42.list)({
   access: {
@@ -3623,13 +4154,13 @@ var Payment = (0, import_core42.list)({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = storeScopedFilter({ session });
+        const store = await currentMembershipStoreScopedFilter({ session, context });
         if (store === false) return false;
         if (await permissions.canManageOrders({ session, context })) return store;
         if (session?.itemId) return { AND: [store, { order: { user: { id: { equals: session.itemId } } } }] };
         return false;
       },
-      update: storeScopedFilter,
+      update: currentMembershipStoreScopedFilter,
       delete: () => false
     }
   },
@@ -3649,19 +4180,19 @@ var Payment = (0, import_core42.list)({
     }
   },
   fields: {
-    amount: (0, import_fields43.decimal)({
+    amount: (0, import_fields42.decimal)({
       precision: 10,
       scale: 2,
       validation: { isRequired: true },
       ui: { description: "Legacy display amount; amountCents is authoritative" }
     }),
-    amountCents: (0, import_fields43.integer)({
+    amountCents: (0, import_fields42.integer)({
       validation: { isRequired: true, min: 0 },
       defaultValue: 0,
       access: { create: () => false, update: () => false },
       label: "Payment amount (minor units)"
     }),
-    status: (0, import_fields43.select)({
+    status: (0, import_fields42.select)({
       type: "string",
       options: [
         { label: "Pending", value: "pending" },
@@ -3676,7 +4207,7 @@ var Payment = (0, import_core42.list)({
       defaultValue: "pending",
       validation: { isRequired: true }
     }),
-    paymentMethod: (0, import_fields43.select)({
+    paymentMethod: (0, import_fields42.select)({
       type: "string",
       options: [
         { label: "Credit Card", value: "credit_card" },
@@ -3689,78 +4220,80 @@ var Payment = (0, import_core42.list)({
       ],
       defaultValue: "credit_card"
     }),
-    providerPaymentId: (0, import_fields43.text)({
+    providerPaymentId: (0, import_fields42.text)({
       isIndexed: "unique",
       ui: {
         description: "Provider payment identifier"
       }
     }),
-    providerChargeId: (0, import_fields43.text)({
+    providerChargeId: (0, import_fields42.text)({
       ui: {
         description: "Provider charge/capture identifier"
       }
     }),
-    providerRefundId: (0, import_fields43.text)({
+    providerRefundId: (0, import_fields42.text)({
       ui: {
         description: "Provider refund identifier"
       }
     }),
-    providerData: (0, import_fields43.json)({
+    // Raw provider and fencing diagnostics stay on trusted server-side paths.
+    providerData: (0, import_fields42.json)({
       defaultValue: {},
+      access: { read: () => false },
       ui: {
         description: "Normalized provider payload and metadata"
       }
     }),
     // Card details (last 4 digits for reference)
-    cardLast4: (0, import_fields43.text)({
+    cardLast4: (0, import_fields42.text)({
       ui: {
         description: "Last 4 digits of card"
       }
     }),
-    cardBrand: (0, import_fields43.text)({
+    cardBrand: (0, import_fields42.text)({
       ui: {
         description: "Card brand (visa, mastercard, etc.)"
       }
     }),
     // Delivery tip handling
-    deliveryTipAmount: (0, import_fields43.decimal)({
+    deliveryTipAmount: (0, import_fields42.decimal)({
       precision: 10,
       scale: 2,
       defaultValue: "0.00",
       ui: { description: "Legacy display tip; deliveryTipCents is authoritative" }
     }),
-    deliveryTipCents: (0, import_fields43.integer)({
+    deliveryTipCents: (0, import_fields42.integer)({
       validation: { isRequired: true, min: 0 },
       defaultValue: 0,
       access: { create: () => false, update: () => false },
       label: "Delivery tip (minor units)"
     }),
     // Timestamps
-    processedAt: (0, import_fields43.timestamp)({
+    processedAt: (0, import_fields42.timestamp)({
       ui: {
         description: "When payment was successfully processed"
       }
     }),
     // Metadata for errors or additional info
-    errorMessage: (0, import_fields43.text)({
+    errorMessage: (0, import_fields42.text)({
       ui: {
         description: "Error message if payment failed"
       }
     }),
-    notes: (0, import_fields43.text)({
+    notes: (0, import_fields42.text)({
       ui: {
         displayMode: "textarea",
         description: "Internal notes about this payment"
       }
     }),
     // Relationships
-    store: (0, import_fields43.relationship)({
+    store: (0, import_fields42.relationship)({
       ref: "Store.payments",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { update: () => false }
     }),
-    order: (0, import_fields43.relationship)({
+    order: (0, import_fields42.relationship)({
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       ref: "Order.payments",
@@ -3768,25 +4301,25 @@ var Payment = (0, import_core42.list)({
         displayMode: "select"
       }
     }),
-    paymentProvider: (0, import_fields43.relationship)({
+    paymentProvider: (0, import_fields42.relationship)({
       ref: "PaymentProvider.payments",
       ui: {
         displayMode: "select"
       }
     }),
-    refunds: (0, import_fields43.relationship)({
+    refunds: (0, import_fields42.relationship)({
       ref: "PaymentRefund.payment",
       many: true,
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
-    webhookEvents: (0, import_fields43.relationship)({
+    webhookEvents: (0, import_fields42.relationship)({
       ref: "PaymentWebhookEvent.payment",
       many: true,
       access: { update: () => false },
       ui: { itemView: { fieldMode: "read" } }
     }),
-    processedBy: (0, import_fields43.relationship)({
+    processedBy: (0, import_fields42.relationship)({
       ref: "User",
       ui: {
         displayMode: "select",
@@ -3799,25 +4332,51 @@ var Payment = (0, import_core42.list)({
 
 // features/keystone/models/PaymentProvider.ts
 var import_core43 = require("@keystone-6/core");
-var import_fields44 = require("@keystone-6/core/fields");
+var import_fields43 = require("@keystone-6/core/fields");
+
+// features/keystone/lib/providerAuthority.ts
+init_access();
+function deploymentProviderAdministrators() {
+  return new Set((process.env.PAYMENT_PROVIDER_ADMIN_USER_IDS || "").split(",").map((value) => value.trim()).filter(Boolean));
+}
+async function canAdministerPaymentProviders(args) {
+  const userId = args.session?.itemId;
+  if (!userId || !deploymentProviderAdministrators().has(String(userId))) return false;
+  return Boolean(await permissions.canManagePayments(args) && await permissions.canManageOnboarding(args));
+}
+async function canReadPaymentProviderConfiguration(args) {
+  return Boolean(await permissions.canManagePayments(args) && await permissions.canManageOnboarding(args));
+}
+
+// features/keystone/models/PaymentProvider.ts
+var canManageProviderConfiguration = canAdministerPaymentProviders;
+var adapterSelector = () => (0, import_fields43.text)({
+  defaultValue: "manual",
+  access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration },
+  ui: { description: "Use a registered local adapter key (stripe/test) or an HTTPS URL on PAYMENT_ADAPTER_ALLOWED_ORIGINS." }
+});
 var PaymentProvider = (0, import_core43.list)({
   access: {
-    // This is an immutable deployment-wide adapter registry populated only by
-    // onboarding/seed code. Tenant operators cannot alter another Store's
-    // checkout configuration through generic CRUD.
-    operation: { query: () => false, create: () => false, update: () => false, delete: () => false }
+    operation: {
+      query: canReadPaymentProviderConfiguration,
+      create: canManageProviderConfiguration,
+      update: canManageProviderConfiguration,
+      delete: () => false
+    }
   },
   ui: {
     listView: {
-      initialColumns: ["name", "code", "isInstalled"]
+      initialColumns: ["name", "code", "isInstalled", "publicCheckout", "supportsIdempotentCapture"]
     }
   },
   fields: {
-    name: (0, import_fields44.text)({
-      validation: { isRequired: true }
+    name: (0, import_fields43.text)({
+      validation: { isRequired: true },
+      access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration }
     }),
-    code: (0, import_fields44.text)({
+    code: (0, import_fields43.text)({
       isIndexed: "unique",
+      access: { create: canManageProviderConfiguration, update: () => false },
       validation: {
         isRequired: true,
         match: {
@@ -3826,22 +4385,52 @@ var PaymentProvider = (0, import_core43.list)({
         }
       }
     }),
-    isInstalled: (0, import_fields44.checkbox)({
-      defaultValue: true
+    isInstalled: (0, import_fields43.checkbox)({
+      defaultValue: false,
+      access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration }
     }),
-    metadata: (0, import_fields44.json)({
+    publicCheckout: (0, import_fields43.checkbox)({
+      defaultValue: false,
+      access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration }
+    }),
+    supportsIdempotentCapture: (0, import_fields43.checkbox)({
+      defaultValue: false,
+      access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration }
+    }),
+    captureIdempotencyEvidence: (0, import_fields43.text)({
+      defaultValue: "",
+      access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration },
+      ui: { description: "HTTPS provider-contract evidence required before custom idempotent capture is accepted; the deployment owner must review the provider retention contract." }
+    }),
+    credentials: (0, import_fields43.json)({
       defaultValue: {},
+      access: { read: () => false, create: canManageProviderConfiguration, update: canManageProviderConfiguration },
+      ui: { description: "Provider credentials are server-only and are never readable through GraphQL." }
+    }),
+    createPaymentFunction: adapterSelector(),
+    capturePaymentFunction: adapterSelector(),
+    refundPaymentFunction: adapterSelector(),
+    getPaymentStatusFunction: adapterSelector(),
+    getRefundStatusFunction: adapterSelector(),
+    cancelPaymentFunction: adapterSelector(),
+    generatePaymentLinkFunction: adapterSelector(),
+    handleWebhookFunction: adapterSelector(),
+    metadata: (0, import_fields43.json)({
+      defaultValue: {},
+      access: { create: canManageProviderConfiguration, update: canManageProviderConfiguration },
       ui: {
-        description: "Non-secret display metadata only. Adapter secrets are read from server environment variables."
+        description: "Non-secret provider display metadata. Remote adapters must explicitly set remoteCredentialKeys; an empty list means no credentials are sent. Every selected key must exist as a non-empty string. remoteWebhookHeaders controls signature-header projection. Configuration changes are deployment-wide."
       }
     }),
-    payments: (0, import_fields44.relationship)({
+    payments: (0, import_fields43.relationship)({
       ref: "Payment.paymentProvider",
-      many: true
+      many: true,
+      access: { create: () => false, update: () => false }
     }),
-    sessions: (0, import_fields44.relationship)({
+    sessions: (0, import_fields43.relationship)({
       ref: "PaymentSession.paymentProvider",
-      many: true
+      many: true,
+      access: { create: () => false, update: () => false }
     }),
     ...trackingFields
   }
@@ -3849,7 +4438,7 @@ var PaymentProvider = (0, import_core43.list)({
 
 // features/keystone/models/PaymentRefund.ts
 var import_core44 = require("@keystone-6/core");
-var import_fields45 = require("@keystone-6/core/fields");
+var import_fields44 = require("@keystone-6/core/fields");
 init_access();
 var PaymentRefund = (0, import_core44.list)({
   access: {
@@ -3859,7 +4448,7 @@ var PaymentRefund = (0, import_core44.list)({
       update: () => false,
       delete: () => false
     },
-    filter: { query: relatedStoreScopedFilter("payment"), update: relatedStoreScopedFilter("payment"), delete: relatedStoreScopedFilter("payment") }
+    filter: { query: currentMembershipRelatedStoreScopedFilter("payment"), update: currentMembershipRelatedStoreScopedFilter("payment"), delete: currentMembershipRelatedStoreScopedFilter("payment") }
   },
   hooks: {
     validate: {
@@ -3884,10 +4473,10 @@ var PaymentRefund = (0, import_core44.list)({
   },
   ui: { isHidden: true },
   fields: {
-    idempotencyKey: (0, import_fields45.text)({ isIndexed: "unique", validation: { isRequired: true }, access: { update: () => false } }),
-    amount: (0, import_fields45.decimal)({ precision: 10, scale: 2, validation: { isRequired: true }, access: { update: () => false } }),
-    amountCents: (0, import_fields45.integer)({ validation: { isRequired: true, min: 1 }, access: { update: () => false } }),
-    status: (0, import_fields45.select)({
+    idempotencyKey: (0, import_fields44.text)({ isIndexed: "unique", validation: { isRequired: true }, access: { update: () => false } }),
+    amount: (0, import_fields44.decimal)({ precision: 10, scale: 2, validation: { isRequired: true }, access: { update: () => false } }),
+    amountCents: (0, import_fields44.integer)({ validation: { isRequired: true, min: 1 }, access: { update: () => false } }),
+    status: (0, import_fields44.select)({
       type: "enum",
       options: [
         { label: "Processing", value: "processing" },
@@ -3898,31 +4487,31 @@ var PaymentRefund = (0, import_core44.list)({
       defaultValue: "processing",
       validation: { isRequired: true }
     }),
-    providerCode: (0, import_fields45.text)({ validation: { isRequired: true }, access: { update: () => false } }),
-    providerPaymentId: (0, import_fields45.text)({ validation: { isRequired: true }, access: { update: () => false } }),
-    providerRefundId: (0, import_fields45.text)({ access: { update: () => false } }),
-    providerStatus: (0, import_fields45.text)({ access: { update: () => false } }),
-    providerData: (0, import_fields45.json)({ defaultValue: {}, access: { update: () => false } }),
-    providerEventId: (0, import_fields45.text)({ db: { isNullable: true }, access: { update: () => false } }),
-    providerEventCreatedAt: (0, import_fields45.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
-    providerEventVersion: (0, import_fields45.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { update: () => false } }),
-    failureMessage: (0, import_fields45.text)({ access: { update: () => false } }),
-    reconciliationAttempts: (0, import_fields45.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { update: () => false } }),
-    reconciliationOwner: (0, import_fields45.text)({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationToken: (0, import_fields45.text)({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationLeaseExpiresAt: (0, import_fields45.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationNextAttemptAt: (0, import_fields45.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationDeadLetterAt: (0, import_fields45.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
-    reconciliationLastError: (0, import_fields45.text)({ db: { isNullable: true }, access: { update: () => false } }),
-    requestedAt: (0, import_fields45.timestamp)({ validation: { isRequired: true }, access: { update: () => false } }),
-    processedAt: (0, import_fields45.timestamp)({ access: { update: () => false } }),
-    payment: (0, import_fields45.relationship)({
+    providerCode: (0, import_fields44.text)({ validation: { isRequired: true }, access: { update: () => false } }),
+    providerPaymentId: (0, import_fields44.text)({ validation: { isRequired: true }, access: { update: () => false } }),
+    providerRefundId: (0, import_fields44.text)({ access: { update: () => false } }),
+    providerStatus: (0, import_fields44.text)({ access: { update: () => false } }),
+    providerData: (0, import_fields44.json)({ defaultValue: {}, access: { read: () => false, update: () => false } }),
+    providerEventId: (0, import_fields44.text)({ db: { isNullable: true }, access: { update: () => false } }),
+    providerEventCreatedAt: (0, import_fields44.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
+    providerEventVersion: (0, import_fields44.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { update: () => false } }),
+    failureMessage: (0, import_fields44.text)({ access: { read: () => false, update: () => false } }),
+    reconciliationAttempts: (0, import_fields44.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { update: () => false } }),
+    reconciliationOwner: (0, import_fields44.text)({ db: { isNullable: true }, access: { update: () => false } }),
+    reconciliationToken: (0, import_fields44.text)({ db: { isNullable: true }, access: { read: () => false, update: () => false } }),
+    reconciliationLeaseExpiresAt: (0, import_fields44.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
+    reconciliationNextAttemptAt: (0, import_fields44.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
+    reconciliationDeadLetterAt: (0, import_fields44.timestamp)({ db: { isNullable: true }, access: { update: () => false } }),
+    reconciliationLastError: (0, import_fields44.text)({ db: { isNullable: true }, access: { read: () => false, update: () => false } }),
+    requestedAt: (0, import_fields44.timestamp)({ validation: { isRequired: true }, access: { update: () => false } }),
+    processedAt: (0, import_fields44.timestamp)({ access: { update: () => false } }),
+    payment: (0, import_fields44.relationship)({
       ref: "Payment.refunds",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { update: () => false }
     }),
-    requestedBy: (0, import_fields45.relationship)({
+    requestedBy: (0, import_fields44.relationship)({
       ref: "User.paymentRefunds",
       access: { update: () => false }
     }),
@@ -3932,7 +4521,7 @@ var PaymentRefund = (0, import_core44.list)({
 
 // features/keystone/models/PaymentSession.ts
 var import_core45 = require("@keystone-6/core");
-var import_fields46 = require("@keystone-6/core/fields");
+var import_fields45 = require("@keystone-6/core/fields");
 init_access();
 var PaymentSession = (0, import_core45.list)({
   access: {
@@ -3954,28 +4543,28 @@ var PaymentSession = (0, import_core45.list)({
     }
   },
   fields: {
-    isSelected: (0, import_fields46.checkbox)({ defaultValue: false }),
-    isInitiated: (0, import_fields46.checkbox)({ defaultValue: false }),
-    amount: (0, import_fields46.decimal)({
+    isSelected: (0, import_fields45.checkbox)({ defaultValue: false }),
+    isInitiated: (0, import_fields45.checkbox)({ defaultValue: false }),
+    amount: (0, import_fields45.decimal)({
       precision: 10,
       scale: 2,
       validation: { isRequired: true },
       defaultValue: "0.00"
     }),
-    amountCents: (0, import_fields46.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { create: () => false, update: () => false } }),
-    reservedOrderDisplayId: (0, import_fields46.integer)({ db: { isNullable: true }, isIndexed: "unique", access: { create: () => false, update: () => false }, validation: { min: 1 }, label: "Reserved order number" }),
-    data: (0, import_fields46.json)({ defaultValue: {} }),
-    idempotencyKey: (0, import_fields46.text)({ isIndexed: "unique", validation: { isRequired: true }, access: { create: () => false, update: () => false } }),
-    cart: (0, import_fields46.relationship)({ ref: "Cart.paymentSessions", access: { create: () => false, update: () => false } }),
-    checkoutAttempts: (0, import_fields46.relationship)({ ref: "CheckoutAttempt.paymentSession", many: true }),
-    paymentProvider: (0, import_fields46.relationship)({ ref: "PaymentProvider.sessions" }),
+    amountCents: (0, import_fields45.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 }, access: { create: () => false, update: () => false } }),
+    reservedOrderDisplayId: (0, import_fields45.integer)({ db: { isNullable: true }, isIndexed: "unique", access: { create: () => false, update: () => false }, validation: { min: 1 }, label: "Reserved order number" }),
+    data: (0, import_fields45.json)({ defaultValue: {} }),
+    idempotencyKey: (0, import_fields45.text)({ isIndexed: "unique", validation: { isRequired: true }, access: { create: () => false, update: () => false } }),
+    cart: (0, import_fields45.relationship)({ ref: "Cart.paymentSessions", access: { create: () => false, update: () => false } }),
+    checkoutAttempts: (0, import_fields45.relationship)({ ref: "CheckoutAttempt.paymentSession", many: true }),
+    paymentProvider: (0, import_fields45.relationship)({ ref: "PaymentProvider.sessions" }),
     ...trackingFields
   }
 });
 
 // features/keystone/models/PaymentWebhookEvent.ts
 var import_core46 = require("@keystone-6/core");
-var import_fields47 = require("@keystone-6/core/fields");
+var import_fields46 = require("@keystone-6/core/fields");
 init_access();
 var PaymentWebhookEvent = (0, import_core46.list)({
   access: {
@@ -3985,43 +4574,45 @@ var PaymentWebhookEvent = (0, import_core46.list)({
       update: () => false,
       delete: () => false
     },
-    filter: { query: storeScopedFilter, update: storeScopedFilter, delete: storeScopedFilter }
+    filter: { query: currentMembershipStoreScopedFilter, update: currentMembershipStoreScopedFilter, delete: currentMembershipStoreScopedFilter }
   },
   ui: {
     isHidden: true
   },
   fields: {
-    replayKey: (0, import_fields47.text)({
+    replayKey: (0, import_fields46.text)({
       isIndexed: "unique",
       validation: { isRequired: true }
     }),
-    providerCode: (0, import_fields47.text)({
+    providerCode: (0, import_fields46.text)({
       validation: { isRequired: true },
       isIndexed: true
     }),
-    providerEventId: (0, import_fields47.text)({
+    providerEventId: (0, import_fields46.text)({
       validation: { isRequired: true },
       isIndexed: true
     }),
-    providerCreatedAt: (0, import_fields47.timestamp)({ db: { isNullable: true } }),
-    providerVersion: (0, import_fields47.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 } }),
-    eventType: (0, import_fields47.text)({
+    providerCreatedAt: (0, import_fields46.timestamp)({ db: { isNullable: true } }),
+    providerVersion: (0, import_fields46.integer)({ defaultValue: 0, validation: { isRequired: true, min: 0 } }),
+    eventType: (0, import_fields46.text)({
       validation: { isRequired: true }
     }),
-    verifiedPayload: (0, import_fields47.json)({ defaultValue: {}, access: { create: () => false, update: () => false } }),
-    processingAttempts: (0, import_fields47.integer)({ defaultValue: 0, validation: { min: 0 } }),
-    nextAttemptAt: (0, import_fields47.timestamp)({ db: { isNullable: true } }),
-    deadLetterAt: (0, import_fields47.timestamp)({ db: { isNullable: true } }),
-    lastProcessingError: (0, import_fields47.text)(),
-    replayAudit: (0, import_fields47.json)({ defaultValue: [] }),
-    payloadHash: (0, import_fields47.text)({
+    // Full verified provider payload is internal replay evidence, not a GraphQL field.
+    verifiedPayload: (0, import_fields46.json)({ defaultValue: {}, access: { read: () => false, create: () => false, update: () => false } }),
+    processingAttempts: (0, import_fields46.integer)({ defaultValue: 0, validation: { min: 0 } }),
+    nextAttemptAt: (0, import_fields46.timestamp)({ db: { isNullable: true } }),
+    deadLetterAt: (0, import_fields46.timestamp)({ db: { isNullable: true } }),
+    // Diagnostic and replay history are exposed only via the sanitized recovery projection.
+    lastProcessingError: (0, import_fields46.text)({ access: { read: () => false } }),
+    replayAudit: (0, import_fields46.json)({ defaultValue: [], access: { read: () => false } }),
+    payloadHash: (0, import_fields46.text)({
       validation: { isRequired: true }
     }),
-    claimToken: (0, import_fields47.text)({
+    claimToken: (0, import_fields46.text)({
       validation: { isRequired: true },
       access: { read: permissions.canManagePayments }
     }),
-    status: (0, import_fields47.select)({
+    status: (0, import_fields46.select)({
       type: "enum",
       options: [
         { label: "Processing", value: "processing" },
@@ -4032,25 +4623,25 @@ var PaymentWebhookEvent = (0, import_core46.list)({
       defaultValue: "processing",
       validation: { isRequired: true }
     }),
-    paymentRecordId: (0, import_fields47.text)(),
-    store: (0, import_fields47.relationship)({
+    paymentRecordId: (0, import_fields46.text)(),
+    store: (0, import_fields46.relationship)({
       ref: "Store.paymentWebhookEvents",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: () => false, update: () => false }
     }),
-    payment: (0, import_fields47.relationship)({
+    payment: (0, import_fields46.relationship)({
       ref: "Payment.webhookEvents",
       access: { update: () => false }
     }),
-    processedAt: (0, import_fields47.timestamp)(),
+    processedAt: (0, import_fields46.timestamp)(),
     ...trackingFields
   }
 });
 
 // features/keystone/models/PickupSlot.ts
 var import_core47 = require("@keystone-6/core");
-var import_fields48 = require("@keystone-6/core/fields");
+var import_fields47 = require("@keystone-6/core/fields");
 init_access();
 var PickupSlot = (0, import_core47.list)({
   access: {
@@ -4068,12 +4659,26 @@ var PickupSlot = (0, import_core47.list)({
   },
   hooks: {
     resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) return resolvedData;
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+      if (!context.session?.itemId) return resolvedData;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error("An active store is required");
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
-    validate: { delete: async ({ item, addValidationError }) => {
-      if (Number(item.currentOrders || 0) > 0) addValidationError("Booked pickup slots cannot be deleted");
-    } }
+    validate: {
+      create: async ({ resolvedData, context, addValidationError }) => {
+        const windowError = slotWindowError(resolvedData.startTime, resolvedData.endTime);
+        if (windowError) addValidationError(windowError);
+        const storeId = resolvedData.store?.connect?.id;
+        if (!windowError && storeId && resolvedData.date) {
+          const duplicate = await context.prisma.pickupSlot.findFirst({ where: { storeId, date: new Date(resolvedData.date), startTime: resolvedData.startTime, endTime: resolvedData.endTime }, select: { id: true } });
+          if (duplicate) addValidationError(`There is already a pickup slot for ${resolvedData.startTime}\u2013${resolvedData.endTime} on that day.`);
+        }
+        if (resolvedData.maxOrders !== void 0 && Number(resolvedData.maxOrders) < 1) addValidationError("A slot needs room for at least one order.");
+      },
+      delete: async ({ item, addValidationError }) => {
+        if (Number(item.currentOrders || 0) > 0) addValidationError("Booked pickup slots cannot be deleted");
+      }
+    }
   },
   ui: {
     listView: {
@@ -4081,14 +4686,14 @@ var PickupSlot = (0, import_core47.list)({
     }
   },
   fields: {
-    store: (0, import_fields48.relationship)({
+    store: (0, import_fields47.relationship)({
       ref: "Store.pickupSlots",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: permissions.canManageDelivery, update: () => false }
     }),
-    orders: (0, import_fields48.relationship)({ ref: "Order.pickupSlot", many: true, access: { update: () => false } }),
-    date: (0, import_fields48.timestamp)({
+    orders: (0, import_fields47.relationship)({ ref: "Order.pickupSlot", many: true, access: { update: () => false } }),
+    date: (0, import_fields47.timestamp)({
       access: { update: () => false },
       validation: { isRequired: true },
       label: "Date",
@@ -4096,7 +4701,7 @@ var PickupSlot = (0, import_core47.list)({
         description: "Date for this pickup slot"
       }
     }),
-    startTime: (0, import_fields48.text)({
+    startTime: (0, import_fields47.text)({
       access: { update: () => false },
       validation: { isRequired: true },
       label: "Start Time",
@@ -4104,7 +4709,7 @@ var PickupSlot = (0, import_core47.list)({
         description: "Start time for this slot (e.g., '09:00')"
       }
     }),
-    endTime: (0, import_fields48.text)({
+    endTime: (0, import_fields47.text)({
       access: { update: () => false },
       validation: { isRequired: true },
       label: "End Time",
@@ -4112,7 +4717,7 @@ var PickupSlot = (0, import_core47.list)({
         description: "End time for this slot (e.g., '10:00')"
       }
     }),
-    maxOrders: (0, import_fields48.integer)({
+    maxOrders: (0, import_fields47.integer)({
       access: { update: () => false },
       validation: { isRequired: true },
       defaultValue: 10,
@@ -4121,7 +4726,7 @@ var PickupSlot = (0, import_core47.list)({
         description: "Maximum number of orders that can be scheduled for this slot"
       }
     }),
-    currentOrders: (0, import_fields48.integer)({
+    currentOrders: (0, import_fields47.integer)({
       access: { create: () => false, update: () => false },
       defaultValue: 0,
       label: "Current Orders",
@@ -4129,13 +4734,13 @@ var PickupSlot = (0, import_core47.list)({
         description: "Current number of orders scheduled for this slot"
       }
     }),
-    isActive: (0, import_fields48.checkbox)({
+    isActive: (0, import_fields47.checkbox)({
       access: { update: () => false },
       defaultValue: true,
       label: "Operationally active",
       ui: { description: "Operator-owned slot state; capacity changes never reopen a closed slot" }
     }),
-    isAvailable: (0, import_fields48.checkbox)({
+    isAvailable: (0, import_fields47.checkbox)({
       access: { update: () => false },
       defaultValue: true,
       label: "Has capacity",
@@ -4149,7 +4754,7 @@ var PickupSlot = (0, import_core47.list)({
 
 // features/keystone/models/POItem.ts
 var import_core48 = require("@keystone-6/core");
-var import_fields49 = require("@keystone-6/core/fields");
+var import_fields48 = require("@keystone-6/core/fields");
 init_access();
 var POItem = (0, import_core48.list)({
   access: {
@@ -4191,35 +4796,35 @@ var POItem = (0, import_core48.list)({
     }
   },
   fields: {
-    productTitle: (0, import_fields49.text)({
+    productTitle: (0, import_fields48.text)({
       access: { create: () => false, update: () => false },
       validation: { isRequired: true },
       label: "Product Title Snapshot"
     }),
-    productSku: (0, import_fields49.text)({
+    productSku: (0, import_fields48.text)({
       access: { create: () => false, update: () => false },
       label: "Product SKU Snapshot"
     }),
-    quantity: (0, import_fields49.decimal)({
+    quantity: (0, import_fields48.decimal)({
       precision: 18,
       scale: 3,
       access: { update: () => false },
       validation: { isRequired: true, min: "0.001" },
       label: "Quantity"
     }),
-    unitCost: (0, import_fields49.float)({
+    unitCost: (0, import_fields48.float)({
       access: { update: () => false },
       validation: { isRequired: true },
       label: "Unit Cost (legacy display)",
       ui: { description: "Legacy display value; unitCostCents is authoritative" }
     }),
-    unitCostCents: (0, import_fields49.integer)({
+    unitCostCents: (0, import_fields48.integer)({
       access: { create: () => false, update: () => false },
       defaultValue: 0,
       validation: { isRequired: true, min: 0 },
       label: "Unit Cost (minor units)"
     }),
-    quantityReceived: (0, import_fields49.decimal)({
+    quantityReceived: (0, import_fields48.decimal)({
       precision: 18,
       scale: 3,
       access: { create: () => false, update: () => false },
@@ -4230,12 +4835,12 @@ var POItem = (0, import_core48.list)({
       }
     }),
     // Relationships
-    purchaseOrder: (0, import_fields49.relationship)({
+    purchaseOrder: (0, import_fields48.relationship)({
       access: { update: () => false },
       ref: "PurchaseOrder.items",
       label: "Purchase Order"
     }),
-    product: (0, import_fields49.relationship)({
+    product: (0, import_fields48.relationship)({
       access: { update: () => false },
       ref: "Product",
       label: "Product"
@@ -4246,15 +4851,17 @@ var POItem = (0, import_core48.list)({
 
 // features/keystone/models/PriceAlert.ts
 var import_core49 = require("@keystone-6/core");
-var import_fields50 = require("@keystone-6/core/fields");
+var import_fields49 = require("@keystone-6/core/fields");
 init_access();
 var PriceAlert = (0, import_core49.list)({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
+      // Alerts are created through requestGroceryPriceAlert (product and target
+      // validated, consent checked); trigger facts are written only by delivery.
+      create: () => false,
+      update: () => false,
+      delete: isCurrentAccount
     },
     filter: {
       query: ownerScopedFilter("user"),
@@ -4263,7 +4870,8 @@ var PriceAlert = (0, import_core49.list)({
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== "create") return resolvedData;
       if (!context.session?.itemId) throw new Error("An authenticated owner is required");
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     }
@@ -4276,7 +4884,7 @@ var PriceAlert = (0, import_core49.list)({
   },
   fields: {
     // User who created the price alert
-    user: (0, import_fields50.relationship)({
+    user: (0, import_fields49.relationship)({
       access: { create: () => false, update: () => false },
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
@@ -4287,7 +4895,7 @@ var PriceAlert = (0, import_core49.list)({
       }
     }),
     // Product ID (text field as specified)
-    product: (0, import_fields50.text)({
+    product: (0, import_fields49.text)({
       validation: { isRequired: true },
       isIndexed: true,
       label: "Product Snapshot",
@@ -4295,13 +4903,13 @@ var PriceAlert = (0, import_core49.list)({
         description: "Legacy product display snapshot"
       }
     }),
-    productRef: (0, import_fields50.relationship)({
+    productRef: (0, import_fields49.relationship)({
       ref: "Product.priceAlerts",
       access: { create: () => false, update: () => false },
       label: "Product"
     }),
     // Target price the user wants to be notified at
-    targetPrice: (0, import_fields50.decimal)({
+    targetPrice: (0, import_fields49.decimal)({
       validation: { isRequired: true },
       precision: 12,
       scale: 2,
@@ -4311,24 +4919,27 @@ var PriceAlert = (0, import_core49.list)({
       }
     }),
     // Current price of the product
-    currentPrice: (0, import_fields50.decimal)({
+    currentPrice: (0, import_fields49.decimal)({
       precision: 12,
       scale: 2,
+      access: { create: () => false, update: () => false },
       label: "Current Price",
       ui: {
         description: "Current price of the product"
       }
     }),
     // Whether the alert has been triggered
-    isTriggered: (0, import_fields50.checkbox)({
+    isTriggered: (0, import_fields49.checkbox)({
       defaultValue: false,
+      access: { create: () => false, update: () => false },
       label: "Is Triggered",
       ui: {
         description: "Whether the price alert has been triggered"
       }
     }),
     // When the user was notified
-    notifiedAt: (0, import_fields50.timestamp)({
+    notifiedAt: (0, import_fields49.timestamp)({
+      access: { create: () => false, update: () => false },
       label: "Notified At",
       ui: {
         description: "When the user was notified about the price drop"
@@ -4340,7 +4951,7 @@ var PriceAlert = (0, import_core49.list)({
 
 // features/keystone/models/Product.ts
 var import_core50 = require("@keystone-6/core");
-var import_fields51 = require("@keystone-6/core/fields");
+var import_fields50 = require("@keystone-6/core/fields");
 var import_fields_document = require("@keystone-6/fields-document");
 init_access();
 
@@ -4355,6 +4966,29 @@ function deriveProductSkuIdentity(storeId, value) {
   if (!storeId) throw new Error("Product SKU identity requires a Store");
   const sku = normalizeProductSku(value);
   return sku ? JSON.stringify([storeId, sku]) : null;
+}
+
+// features/keystone/lib/productImage.ts
+var IMAGE_EXTENSIONS = ["jpg", "png", "webp", "gif"];
+function uploadedImageKey(row) {
+  if (!row?.image_id || !/^[A-Za-z0-9_-]{1,128}$/.test(row.image_id)) return null;
+  if (!IMAGE_EXTENSIONS.includes(row.image_extension)) return null;
+  return { id: row.image_id, extension: row.image_extension };
+}
+function text46(value) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+async function resolveProductImage(context, row) {
+  const key2 = uploadedImageKey(row);
+  if (key2) {
+    try {
+      const url = await context.images("my_images").getUrl(key2.id, key2.extension);
+      if (text46(url)) return { imageUrl: url, thumbnailUrl: url };
+    } catch {
+    }
+  }
+  const imageUrl = text46(row.imageUrl);
+  return { imageUrl, thumbnailUrl: text46(row.thumbnailUrl) ?? imageUrl };
 }
 
 // features/keystone/lib/productInformation.ts
@@ -4382,16 +5016,18 @@ function normalizeProductInformation(input) {
 }
 
 // features/keystone/models/Product.ts
+function isUnchangedResolvedValue(value) {
+  if (value === void 0) return true;
+  return !!value && typeof value === "object" && !Array.isArray(value) && !(value instanceof Date) && Object.values(value).every((entry) => entry === void 0);
+}
 async function resolveProductCatalogIdentity({ resolvedData, context, item, operation }) {
   const existingStoreId = item?.storeId;
   const session = context.session;
   let actorStoreId;
   if (session?.itemId) {
-    const user = await context.prisma.user.findUnique({ where: { id: session.itemId }, select: { storeId: true, privacyErasedAt: true, store: { select: { isActive: true } } } });
-    if (!user?.storeId || !user.store?.isActive || user.privacyErasedAt) throw new Error("An active Store account is required for Product writes");
-    actorStoreId = user.storeId;
-    if (session.data?.store?.id !== actorStoreId) throw new Error("Refresh the active Store session before changing a Product");
-  } else if (operation !== "update" || Object.entries(resolvedData).some(([key2, value]) => value !== void 0 && !["stockQuantity", "inStock"].includes(key2))) {
+    actorStoreId = await currentMembershipStoreId({ session, context }) ?? void 0;
+    if (!actorStoreId) throw new Error("An active Store account is required for Product writes");
+  } else if (operation !== "update" || Object.entries(resolvedData).some(([key2, value]) => !isUnchangedResolvedValue(value) && !["stockQuantity", "inStock"].includes(key2))) {
     throw new Error("Catalog identity changes require an active Store account");
   }
   if (operation === "update" && (!existingStoreId || actorStoreId && existingStoreId !== actorStoreId)) throw new Error("Product belongs to another Store");
@@ -4427,7 +5063,7 @@ var Product = (0, import_core50.list)({
     },
     filter: {
       query: async ({ session, context }) => {
-        const store = storeScopedFilter({ session });
+        const store = await storeScopedFilter({ session, context });
         if (await permissions.canManageProducts({ session, context })) return store;
         return { AND: [publicStoreScopedFilter(), { status: { equals: "published" } }] };
       },
@@ -4439,7 +5075,7 @@ var Product = (0, import_core50.list)({
     resolveInput: resolveProductCatalogIdentity,
     validate: {
       create: async ({ resolvedData, context, addValidationError }) => {
-        const storeId = context.session?.data.store?.id;
+        const storeId = await currentMembershipStoreId({ session: context.session, context });
         const supplierId = resolvedData.supplier?.connect?.id;
         const departmentId = resolvedData.departmentRef?.connect?.id;
         if (supplierId) {
@@ -4452,7 +5088,7 @@ var Product = (0, import_core50.list)({
         }
       },
       update: async ({ resolvedData, context, addValidationError }) => {
-        const storeId = context.session?.data.store?.id;
+        const storeId = await currentMembershipStoreId({ session: context.session, context });
         const supplierId = resolvedData.supplier?.connect?.id;
         const departmentId = resolvedData.departmentRef?.connect?.id;
         if (supplierId) {
@@ -4502,19 +5138,19 @@ var Product = (0, import_core50.list)({
     }
   },
   fields: {
-    skuIdentity: (0, import_fields51.text)({
+    skuIdentity: (0, import_fields50.text)({
       isIndexed: "unique",
       db: { isNullable: true },
       access: { read: () => false, create: () => false, update: () => false },
       ui: { createView: { fieldMode: "hidden" }, itemView: { fieldMode: "hidden" } }
     }),
-    variantOf: (0, import_fields51.relationship)({ ref: "Product", access: { create: () => false, update: () => false } }),
-    variantLabel: (0, import_fields51.text)({ access: { create: () => false, update: () => false } }),
-    packBaseUnitsMilli: (0, import_fields51.integer)({ defaultValue: 1e3, validation: { isRequired: true, min: 1 }, access: { create: () => false, update: () => false } }),
-    nutrition: (0, import_fields51.json)({ defaultValue: {}, access: { create: () => false, update: () => false } }),
-    informationSource: (0, import_fields51.text)({ access: { create: () => false, update: () => false } }),
-    initialInformation: (0, import_fields51.json)({ defaultValue: {}, access: { read: permissions.canManageProducts, create: () => false, update: () => false } }),
-    title: (0, import_fields51.text)({
+    variantOf: (0, import_fields50.relationship)({ ref: "Product", access: { create: () => false, update: () => false } }),
+    variantLabel: (0, import_fields50.text)({ access: { create: () => false, update: () => false } }),
+    packBaseUnitsMilli: (0, import_fields50.integer)({ defaultValue: 1e3, validation: { isRequired: true, min: 1 }, access: { create: () => false, update: () => false } }),
+    nutrition: (0, import_fields50.json)({ defaultValue: {}, access: { create: () => false, update: () => false } }),
+    informationSource: (0, import_fields50.text)({ access: { create: () => false, update: () => false } }),
+    initialInformation: (0, import_fields50.json)({ defaultValue: {}, access: { read: permissions.canManageProducts, create: () => false, update: () => false } }),
+    title: (0, import_fields50.text)({
       validation: { isRequired: true },
       label: "Product Title"
     }),
@@ -4527,20 +5163,20 @@ var Product = (0, import_core50.list)({
         [1, 1, 1]
       ]
     }),
-    handle: (0, import_fields51.text)({
+    handle: (0, import_fields50.text)({
       isIndexed: "unique",
       label: "Handle",
       ui: {
         description: "URL-friendly identifier"
       }
     }),
-    sku: (0, import_fields51.text)({
+    sku: (0, import_fields50.text)({
       label: "SKU",
       ui: {
         description: "Stock Keeping Unit"
       }
     }),
-    status: (0, import_fields51.select)({
+    status: (0, import_fields50.select)({
       type: "enum",
       options: [
         { label: "Draft", value: "draft" },
@@ -4550,24 +5186,24 @@ var Product = (0, import_core50.list)({
       defaultValue: "draft",
       validation: { isRequired: true }
     }),
-    metadata: (0, import_fields51.json)({ access: { read: permissions.canManageProducts } }),
+    metadata: (0, import_fields50.json)({ access: { read: permissions.canManageProducts } }),
     // Pricing fields
-    price: (0, import_fields51.float)({
+    price: (0, import_fields50.float)({
       label: "Legacy display price (USD)",
       ui: {
         description: "Product price in dollars"
       },
       validation: { min: 0 }
     }),
-    priceCents: (0, import_fields51.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative price (minor units)" }),
-    compareAtPrice: (0, import_fields51.float)({
+    priceCents: (0, import_fields50.integer)({ access: { create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative price (minor units)" }),
+    compareAtPrice: (0, import_fields50.float)({
       label: "Compare at Price",
       ui: {
         description: "Original price for sale items"
       },
       validation: { min: 0 }
     }),
-    costPrice: (0, import_fields51.float)({
+    costPrice: (0, import_fields50.float)({
       access: { read: permissions.canManageProducts },
       label: "Cost Price",
       ui: {
@@ -4575,9 +5211,9 @@ var Product = (0, import_core50.list)({
       },
       validation: { min: 0 }
     }),
-    costPriceCents: (0, import_fields51.integer)({ access: { read: permissions.canManageProducts, create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative cost (minor units)" }),
+    costPriceCents: (0, import_fields50.integer)({ access: { read: permissions.canManageProducts, create: () => false, update: () => false }, defaultValue: 0, validation: { isRequired: true, min: 0 }, label: "Authoritative cost (minor units)" }),
     // Inventory fields
-    inStock: (0, import_fields51.checkbox)({
+    inStock: (0, import_fields50.checkbox)({
       access: { read: permissions.canManageProducts, create: () => false, update: () => false },
       defaultValue: false,
       label: "In Stock",
@@ -4585,7 +5221,7 @@ var Product = (0, import_core50.list)({
         description: "Reporting cache only; public sellability is derived from Store-owned unexpired inventory lots"
       }
     }),
-    stockQuantity: (0, import_fields51.decimal)({
+    stockQuantity: (0, import_fields50.decimal)({
       precision: 18,
       scale: 3,
       access: {
@@ -4600,7 +5236,7 @@ var Product = (0, import_core50.list)({
       },
       validation: { min: "0" }
     }),
-    lowStockThreshold: (0, import_fields51.integer)({
+    lowStockThreshold: (0, import_fields50.integer)({
       access: { read: permissions.canManageProducts },
       defaultValue: 10,
       label: "Low Stock Threshold",
@@ -4609,20 +5245,36 @@ var Product = (0, import_core50.list)({
       }
     }),
     // Media
-    imageUrl: (0, import_fields51.text)({
-      label: "Image URL",
+    image: (0, import_fields50.image)({
+      storage: "my_images",
+      label: "Product photo",
       ui: {
-        description: "Main product image URL"
+        description: "Shown on product cards and the product page. Takes precedence over Image URL."
       }
     }),
-    thumbnailUrl: (0, import_fields51.text)({
+    imageUrl: (0, import_fields50.text)({
+      label: "Image URL",
+      ui: {
+        description: "Fallback image address, used when no product photo is uploaded"
+      }
+    }),
+    photoUrl: (0, import_fields50.virtual)({
+      field: import_core50.graphql.field({
+        type: import_core50.graphql.String,
+        async resolve(item, _args, context) {
+          return (await resolveProductImage(context, item)).imageUrl;
+        }
+      }),
+      ui: { itemView: { fieldMode: "hidden" }, listView: { fieldMode: "hidden" } }
+    }),
+    thumbnailUrl: (0, import_fields50.text)({
       label: "Thumbnail URL",
       ui: {
         description: "Small product thumbnail URL"
       }
     }),
     // Grocery-specific fields
-    department: (0, import_fields51.select)({
+    department: (0, import_fields50.select)({
       type: "enum",
       options: [
         { label: "Produce", value: "produce" },
@@ -4643,25 +5295,25 @@ var Product = (0, import_core50.list)({
         description: "Store department for this product"
       }
     }),
-    isPerishable: (0, import_fields51.checkbox)({
+    isPerishable: (0, import_fields50.checkbox)({
       defaultValue: false,
       label: "Perishable",
       ui: {
         description: "Product requires refrigeration or has expiration date"
       }
     }),
-    shelfLife: (0, import_fields51.integer)({
+    shelfLife: (0, import_fields50.integer)({
       label: "Shelf Life (days)",
       ui: {
         description: "Number of days product remains fresh"
       }
     }),
-    taxRateBasisPoints: (0, import_fields51.integer)({
+    taxRateBasisPoints: (0, import_fields50.integer)({
       validation: { min: 0, max: 1e4 },
       db: { isNullable: true },
       ui: { description: "Item tax basis points; blank inherits the Store rate, zero is exempt. Confirm your configured policy." }
     }),
-    pricingMethod: (0, import_fields51.select)({
+    pricingMethod: (0, import_fields50.select)({
       type: "enum",
       options: [
         { label: "Per Unit", value: "unit" },
@@ -4674,7 +5326,7 @@ var Product = (0, import_core50.list)({
         description: "How this product is priced"
       }
     }),
-    unitOfMeasure: (0, import_fields51.select)({
+    unitOfMeasure: (0, import_fields50.select)({
       type: "enum",
       options: [
         { label: "Each", value: "each" },
@@ -4691,14 +5343,14 @@ var Product = (0, import_core50.list)({
       defaultValue: "each",
       label: "Unit of Measure"
     }),
-    organicCertified: (0, import_fields51.checkbox)({
+    organicCertified: (0, import_fields50.checkbox)({
       defaultValue: false,
       label: "Organic Certified",
       ui: {
         description: "Product is certified organic"
       }
     }),
-    allergens: (0, import_fields51.multiselect)({
+    allergens: (0, import_fields50.multiselect)({
       access: { update: () => false },
       type: "enum",
       options: [
@@ -4718,22 +5370,22 @@ var Product = (0, import_core50.list)({
       }
     }),
     // Relationships
-    store: (0, import_fields51.relationship)({
+    store: (0, import_fields50.relationship)({
       ref: "Store.products",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { create: permissions.canManageProducts, update: () => false }
     }),
-    supplier: (0, import_fields51.relationship)({
+    supplier: (0, import_fields50.relationship)({
       access: { read: permissions.canManageProducts },
       ref: "Supplier.products",
       label: "Supplier"
     }),
-    departmentRef: (0, import_fields51.relationship)({
+    departmentRef: (0, import_fields50.relationship)({
       ref: "Department.products",
       label: "Department Reference"
     }),
-    inventoryLots: (0, import_fields51.relationship)({
+    inventoryLots: (0, import_fields50.relationship)({
       access: {
         read: permissions.canManageProducts,
         update: () => false
@@ -4742,19 +5394,19 @@ var Product = (0, import_core50.list)({
       many: true,
       label: "Inventory Lots"
     }),
-    favoriteProducts: (0, import_fields51.relationship)({ ref: "FavoriteProduct.productRef", many: true, access: { update: () => false } }),
-    backInStockAlerts: (0, import_fields51.relationship)({ ref: "BackInStockAlert.productRef", many: true, access: { update: () => false } }),
-    priceAlerts: (0, import_fields51.relationship)({ ref: "PriceAlert.productRef", many: true, access: { update: () => false } }),
-    shoppingListItems: (0, import_fields51.relationship)({ ref: "ShoppingListItem.productRef", many: true, access: { update: () => false } }),
-    subscriptions: (0, import_fields51.relationship)({ ref: "Subscription.productRef", many: true, access: { update: () => false } }),
-    recipeIngredients: (0, import_fields51.relationship)({ ref: "RecipeIngredient.productRef", many: true, access: { update: () => false } }),
+    favoriteProducts: (0, import_fields50.relationship)({ ref: "FavoriteProduct.productRef", many: true, access: { update: () => false } }),
+    backInStockAlerts: (0, import_fields50.relationship)({ ref: "BackInStockAlert.productRef", many: true, access: { update: () => false } }),
+    priceAlerts: (0, import_fields50.relationship)({ ref: "PriceAlert.productRef", many: true, access: { update: () => false } }),
+    shoppingListItems: (0, import_fields50.relationship)({ ref: "ShoppingListItem.productRef", many: true, access: { update: () => false } }),
+    subscriptions: (0, import_fields50.relationship)({ ref: "Subscription.productRef", many: true, access: { update: () => false } }),
+    recipeIngredients: (0, import_fields50.relationship)({ ref: "RecipeIngredient.productRef", many: true, access: { update: () => false } }),
     ...trackingFields
   }
 });
 
 // features/keystone/models/PurchaseOrder.ts
 var import_core51 = require("@keystone-6/core");
-var import_fields52 = require("@keystone-6/core/fields");
+var import_fields51 = require("@keystone-6/core/fields");
 init_access();
 function canUpdateDraftPurchaseOrder({ item }) {
   return item.status === "draft";
@@ -4796,7 +5448,7 @@ var PurchaseOrder = (0, import_core51.list)({
     }
   },
   fields: {
-    poNumber: (0, import_fields52.text)({
+    poNumber: (0, import_fields51.text)({
       access: { update: () => false },
       validation: { isRequired: true },
       isIndexed: "unique",
@@ -4805,35 +5457,35 @@ var PurchaseOrder = (0, import_core51.list)({
         description: "Generated transactionally by the purchase-order draft workflow"
       }
     }),
-    idempotencyKey: (0, import_fields52.text)({
+    idempotencyKey: (0, import_fields51.text)({
       isIndexed: "unique",
       db: { isNullable: true },
       access: { create: () => false, update: () => false },
       ui: { itemView: { fieldMode: "hidden" } }
     }),
-    supplierName: (0, import_fields52.text)({
+    supplierName: (0, import_fields51.text)({
       access: { create: () => false, update: () => false },
       validation: { isRequired: true },
       label: "Supplier Name Snapshot"
     }),
-    supplierEmail: (0, import_fields52.text)({
+    supplierEmail: (0, import_fields51.text)({
       access: { create: () => false, update: () => false },
       label: "Supplier Email Snapshot"
     }),
-    orderDate: (0, import_fields52.timestamp)({
+    orderDate: (0, import_fields51.timestamp)({
       access: { update: () => false },
       validation: { isRequired: true },
       defaultValue: { kind: "now" },
       label: "Order Date"
     }),
-    expectedDeliveryDate: (0, import_fields52.timestamp)({
+    expectedDeliveryDate: (0, import_fields51.timestamp)({
       access: { update: canUpdateDraftPurchaseOrder },
       label: "Expected Delivery Date",
       ui: {
         description: "When we expect to receive this order"
       }
     }),
-    status: (0, import_fields52.select)({
+    status: (0, import_fields51.select)({
       access: { create: () => false, update: () => false },
       type: "enum",
       options: [
@@ -4846,25 +5498,25 @@ var PurchaseOrder = (0, import_core51.list)({
       defaultValue: "draft",
       label: "Status"
     }),
-    totalAmount: (0, import_fields52.float)({
+    totalAmount: (0, import_fields51.float)({
       access: { update: () => false },
       label: "Total Amount (legacy display)",
       ui: { description: "Legacy display value; totalAmountCents is authoritative" }
     }),
-    totalAmountCents: (0, import_fields52.integer)({
+    totalAmountCents: (0, import_fields51.integer)({
       access: { create: () => false, update: () => false },
       defaultValue: 0,
       validation: { isRequired: true, min: 0 },
       label: "Total Amount (minor units)"
     }),
-    receivedAt: (0, import_fields52.timestamp)({
+    receivedAt: (0, import_fields51.timestamp)({
       access: { create: () => false, update: () => false },
       label: "Received At",
       ui: {
         description: "When the order was actually received"
       }
     }),
-    notes: (0, import_fields52.text)({
+    notes: (0, import_fields51.text)({
       access: { update: canUpdateDraftPurchaseOrder },
       ui: {
         displayMode: "textarea"
@@ -4872,18 +5524,18 @@ var PurchaseOrder = (0, import_core51.list)({
       label: "Notes"
     }),
     // Relationships
-    store: (0, import_fields52.relationship)({
+    store: (0, import_fields51.relationship)({
       ref: "Store.purchaseOrders",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
       graphql: { isNonNull: { read: true, create: true } },
       access: { update: () => false }
     }),
-    supplier: (0, import_fields52.relationship)({
+    supplier: (0, import_fields51.relationship)({
       access: { update: () => false },
       ref: "Supplier.purchaseOrders",
       label: "Supplier"
     }),
-    items: (0, import_fields52.relationship)({
+    items: (0, import_fields51.relationship)({
       access: { update: () => false },
       ref: "POItem.purchaseOrder",
       many: true,
@@ -4901,7 +5553,7 @@ var PurchaseOrder = (0, import_core51.list)({
 
 // features/keystone/models/Recipe.ts
 var import_core52 = require("@keystone-6/core");
-var import_fields53 = require("@keystone-6/core/fields");
+var import_fields52 = require("@keystone-6/core/fields");
 var Recipe = (0, import_core52.list)({
   // Recipes are retained as a dormant migration-compatible model, not part of
   // the bounded launch surface. Keep global legacy rows inaccessible.
@@ -4914,18 +5566,18 @@ var Recipe = (0, import_core52.list)({
     }
   },
   fields: {
-    name: (0, import_fields53.text)({
+    name: (0, import_fields52.text)({
       validation: { isRequired: true },
       label: "Recipe Name"
     }),
-    description: (0, import_fields53.text)({
+    description: (0, import_fields52.text)({
       label: "Description",
       ui: {
         description: "Brief description of the recipe",
         displayMode: "textarea"
       }
     }),
-    instructions: (0, import_fields53.text)({
+    instructions: (0, import_fields52.text)({
       validation: { isRequired: true },
       label: "Instructions",
       ui: {
@@ -4933,28 +5585,28 @@ var Recipe = (0, import_core52.list)({
         displayMode: "textarea"
       }
     }),
-    prepTime: (0, import_fields53.integer)({
+    prepTime: (0, import_fields52.integer)({
       label: "Prep Time (minutes)",
       ui: {
         description: "Time required for preparation"
       },
       validation: { min: 0 }
     }),
-    cookTime: (0, import_fields53.integer)({
+    cookTime: (0, import_fields52.integer)({
       label: "Cook Time (minutes)",
       ui: {
         description: "Time required for cooking"
       },
       validation: { min: 0 }
     }),
-    servings: (0, import_fields53.integer)({
+    servings: (0, import_fields52.integer)({
       label: "Servings",
       ui: {
         description: "Number of servings this recipe makes"
       },
       validation: { min: 1 }
     }),
-    difficulty: (0, import_fields53.select)({
+    difficulty: (0, import_fields52.select)({
       type: "enum",
       options: [
         { label: "Easy", value: "easy" },
@@ -4967,20 +5619,20 @@ var Recipe = (0, import_core52.list)({
         description: "Difficulty level of the recipe"
       }
     }),
-    image: (0, import_fields53.text)({
+    image: (0, import_fields52.text)({
       label: "Image URL",
       ui: {
         description: "URL for the recipe image"
       }
     }),
-    categories: (0, import_fields53.json)({
+    categories: (0, import_fields52.json)({
       label: "Categories",
       ui: {
         description: "JSON array of recipe categories (e.g., breakfast, dinner, vegetarian)"
       }
     }),
     // Ingredients relationship
-    ingredients: (0, import_fields53.relationship)({
+    ingredients: (0, import_fields52.relationship)({
       ref: "RecipeIngredient.recipe",
       many: true,
       label: "Ingredients",
@@ -4994,7 +5646,7 @@ var Recipe = (0, import_core52.list)({
 
 // features/keystone/models/RecipeIngredient.ts
 var import_core53 = require("@keystone-6/core");
-var import_fields54 = require("@keystone-6/core/fields");
+var import_fields53 = require("@keystone-6/core/fields");
 var RecipeIngredient = (0, import_core53.list)({
   access: { operation: { query: () => false, create: () => false, update: () => false, delete: () => false } },
   ui: {
@@ -5006,7 +5658,7 @@ var RecipeIngredient = (0, import_core53.list)({
   },
   fields: {
     // Recipe relationship
-    recipe: (0, import_fields54.relationship)({
+    recipe: (0, import_fields53.relationship)({
       ref: "Recipe.ingredients",
       label: "Recipe",
       ui: {
@@ -5014,20 +5666,20 @@ var RecipeIngredient = (0, import_core53.list)({
       }
     }),
     // Product ID (text field as specified)
-    product: (0, import_fields54.text)({
+    product: (0, import_fields53.text)({
       validation: { isRequired: true },
       label: "Product Snapshot",
       ui: {
         description: "Legacy product identifier snapshot"
       }
     }),
-    productRef: (0, import_fields54.relationship)({
+    productRef: (0, import_fields53.relationship)({
       ref: "Product.recipeIngredients",
       access: { update: () => false },
       label: "Product"
     }),
     // Quantity needed
-    quantity: (0, import_fields54.float)({
+    quantity: (0, import_fields53.float)({
       validation: { isRequired: true, min: 0 },
       label: "Quantity",
       ui: {
@@ -5035,14 +5687,14 @@ var RecipeIngredient = (0, import_core53.list)({
       }
     }),
     // Unit of measurement
-    unit: (0, import_fields54.text)({
+    unit: (0, import_fields53.text)({
       label: "Unit",
       ui: {
         description: "Unit of measurement (e.g., 'cups', 'tbsp', 'oz', 'pieces')"
       }
     }),
     // Additional notes
-    notes: (0, import_fields54.text)({
+    notes: (0, import_fields53.text)({
       label: "Notes",
       ui: {
         description: "Additional notes (e.g., 'diced', 'melted', 'room temperature')",
@@ -5050,7 +5702,7 @@ var RecipeIngredient = (0, import_core53.list)({
       }
     }),
     // Whether the ingredient is optional
-    isOptional: (0, import_fields54.checkbox)({
+    isOptional: (0, import_fields53.checkbox)({
       defaultValue: false,
       label: "Is Optional",
       ui: {
@@ -5063,21 +5715,43 @@ var RecipeIngredient = (0, import_core53.list)({
 
 // features/keystone/models/RateLimitBucket.ts
 var import_core54 = require("@keystone-6/core");
-var import_fields55 = require("@keystone-6/core/fields");
+var import_fields54 = require("@keystone-6/core/fields");
 var RateLimitBucket = (0, import_core54.list)({
   access: { operation: { query: () => false, create: () => false, update: () => false, delete: () => false } },
   ui: { isHidden: true },
   fields: {
-    key: (0, import_fields55.text)({ validation: { isRequired: true }, isIndexed: "unique" }),
-    windowStartedAt: (0, import_fields55.timestamp)({ validation: { isRequired: true } }),
-    requestCount: (0, import_fields55.integer)({ validation: { isRequired: true, min: 0 } }),
+    key: (0, import_fields54.text)({ validation: { isRequired: true }, isIndexed: "unique" }),
+    // Indexed so finished windows can be pruned in bounded batches.
+    windowStartedAt: (0, import_fields54.timestamp)({ validation: { isRequired: true }, isIndexed: true }),
+    requestCount: (0, import_fields54.integer)({ validation: { isRequired: true, min: 0 } }),
+    ...trackingFields
+  }
+});
+
+// features/keystone/models/CustomerBatchRequest.ts
+var import_core55 = require("@keystone-6/core");
+var import_fields55 = require("@keystone-6/core/fields");
+var CustomerBatchRequest = (0, import_core55.list)({
+  access: { operation: { query: () => false, create: () => false, update: () => false, delete: () => false } },
+  ui: { isHidden: true },
+  fields: {
+    requestKey: (0, import_fields55.text)({ validation: { isRequired: true }, isIndexed: "unique" }),
+    storeId: (0, import_fields55.text)({ validation: { isRequired: true } }),
+    ownerKey: (0, import_fields55.text)({ validation: { isRequired: true } }),
+    kind: (0, import_fields55.text)({ validation: { isRequired: true } }),
+    sourceId: (0, import_fields55.text)({ validation: { isRequired: true } }),
+    results: (0, import_fields55.json)(),
     ...trackingFields
   }
 });
 
 // features/keystone/models/Role.ts
-var import_core55 = require("@keystone-6/core");
+var import_core56 = require("@keystone-6/core");
 var import_fields56 = require("@keystone-6/core/fields");
+init_access();
+
+// features/keystone/lib/staffInvitations.ts
+var import_node_crypto = require("node:crypto");
 
 // features/keystone/lib/runtimeConfig.ts
 var PLACEHOLDER_VALUES = /* @__PURE__ */ new Set([
@@ -5100,17 +5774,22 @@ function required(name) {
 function isProduction() {
   return process.env.NODE_ENV === "production";
 }
+var DEVELOPMENT_DATABASE_URL = "postgresql://postgres:postgres@localhost/openfront_grocery";
 function getDatabaseUrl() {
-  if (isProduction()) {
-    const value = required("DATABASE_URL");
-    if (!/^postgres(ql)?:\/\//i.test(value)) throw new Error("DATABASE_URL must be a PostgreSQL URL in production");
-    return value;
-  }
-  return process.env.DATABASE_URL || "file:./keystone.db";
+  const value = isProduction() ? required("DATABASE_URL") : process.env.DATABASE_URL?.trim() || DEVELOPMENT_DATABASE_URL;
+  if (!/^postgres(ql)?:\/\//i.test(value)) throw new Error("DATABASE_URL must be a PostgreSQL URL");
+  return value;
 }
+var DEVELOPMENT_SESSION_SECRET = "local-development-only-session-secret";
+var PUBLISHED_SESSION_SECRETS = /* @__PURE__ */ new Set([
+  DEVELOPMENT_SESSION_SECRET,
+  "replace-with-at-least-32-random-characters",
+  "replace-with-a-random-secret-at-least-32-characters"
+]);
 function getSessionSecret() {
-  const value = isProduction() ? required("SESSION_SECRET") : process.env.SESSION_SECRET || "local-development-only-session-secret";
+  const value = isProduction() ? required("SESSION_SECRET") : process.env.SESSION_SECRET || DEVELOPMENT_SESSION_SECRET;
   if (value.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
+  if (isProduction() && PUBLISHED_SESSION_SECRETS.has(value)) throw new Error("SESSION_SECRET must be a private random value, not a published example");
   return value;
 }
 var GROCERY_STORE_ID = "store_juniper";
@@ -5125,30 +5804,15 @@ function getPublicStoreId() {
   }
   return value;
 }
+function developmentSiteOrigin() {
+  const port = process.env.PORT?.trim();
+  return port && /^\d+$/.test(port) ? `http://localhost:${port}` : "http://localhost";
+}
 function getCanonicalSiteUrl() {
   const value = required("NEXT_PUBLIC_SITE_URL");
   const parsed = new URL(value);
   if (isProduction() && parsed.protocol !== "https:") throw new Error("NEXT_PUBLIC_SITE_URL must use HTTPS in production");
   return value.replace(/\/$/, "");
-}
-function isStripeEnabled() {
-  const value = process.env.STRIPE_ENABLED?.trim().toLowerCase();
-  if (isProduction() && value !== "true" && value !== "false") {
-    throw new Error("STRIPE_ENABLED must be explicitly true or false in production");
-  }
-  return value === "true";
-}
-function assertProductionPaymentConfig() {
-  if (!isProduction()) return;
-  if (isStripeEnabled()) {
-    const secretKey = required("STRIPE_SECRET_KEY");
-    required("STRIPE_WEBHOOK_SECRET");
-    const publishableKey = required("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY");
-    if (!secretKey.startsWith("sk_live_")) throw new Error("STRIPE_SECRET_KEY must be a live-mode key in production");
-    if (!publishableKey.startsWith("pk_live_")) throw new Error("NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY must be a live-mode key in production");
-  }
-  if (process.env.TRUSTED_PROXY !== "true") throw new Error("TRUSTED_PROXY=true is required in production for rate-limit identity");
-  required("TRUSTED_PROXY_IDENTITY_SECRET");
 }
 function getStorageConfig() {
   if (!isProduction()) {
@@ -5176,21 +5840,56 @@ function getSessionMaxAge() {
   return configured;
 }
 
+// features/keystone/lib/staffInvitations.ts
+var STAFF_CAPABILITIES = ["canManageProducts", "canManageOrders", "canManageInventory", "canManageSuppliers", "canManageDelivery", "canManageUsers", "canManagePayments", "canManageOnboarding", "canAccessDashboard"];
+function normalizeStaffCapabilities(input, actor) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("An explicit capability map is required");
+  if (Object.keys(input).some((key2) => !STAFF_CAPABILITIES.includes(key2))) throw new Error("Unknown staff capability");
+  const result = {};
+  for (const key2 of STAFF_CAPABILITIES) {
+    const value = input[key2] ?? false;
+    if (typeof value !== "boolean") throw new Error("Capabilities must be boolean");
+    if (value && actor[key2] !== true) throw new Error(`Cannot grant capability not currently held: ${key2}`);
+    result[key2] = value;
+  }
+  if (Object.values(result).some(Boolean) && !result.canAccessDashboard) throw new Error("Staff capabilities require dashboard access");
+  return result;
+}
+function staffInvitationHash(token) {
+  return (0, import_node_crypto.createHash)("sha256").update(token).digest("hex");
+}
+function verifyStaffInvitationToken(token, hash) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token) || !/^[a-f0-9]{64}$/.test(hash)) return false;
+  return (0, import_node_crypto.timingSafeEqual)(Buffer.from(staffInvitationHash(token), "hex"), Buffer.from(hash, "hex"));
+}
+function createStaffInvitationToken() {
+  return (0, import_node_crypto.randomBytes)(32).toString("base64url");
+}
+function assertLastManagerSafe(target, next, managerCount) {
+  if (target?.role?.canManageUsers && target.role.canAccessDashboard && !(next.canManageUsers && next.canAccessDashboard) && managerCount <= 1) throw new Error("The last staff administrator cannot be revoked or downgraded");
+}
+function assertCapabilitiesRecoverable(staff, targetId, next) {
+  const after = staff.map((member) => member.id === targetId ? { id: member.id, role: next } : member);
+  const administrators = after.filter((member) => member.role?.canManageUsers === true && member.role?.canAccessDashboard === true);
+  for (const capability of STAFF_CAPABILITIES) {
+    const heldToday = staff.some((member) => member.role?.[capability] === true);
+    if (heldToday && !administrators.some((member) => member.role?.[capability] === true)) {
+      throw new Error(`This change would leave no staff administrator able to grant ${capability}; give it to another administrator first`);
+    }
+  }
+}
+
 // features/keystone/lib/freshInstallAccess.ts
 async function isFreshInstallBootstrapWindow(context) {
-  if (!context?.prisma?.user?.count || !context.prisma.role?.count) return false;
-  const [userCount, roleCount] = await Promise.all([
-    context.prisma.user.count(),
-    context.prisma.role.count()
-  ]);
-  return roleCount === 0 && (userCount === 0 || userCount === 1);
+  if (!context?.prisma?.user?.count) return false;
+  return await context.prisma.user.count() === 0;
 }
 async function canResolveFreshInstallStore({ session, context }) {
   if (session?.itemId) return true;
   return isFreshInstallBootstrapWindow(context);
 }
 async function freshInstallStoreQueryFilter(args) {
-  if (args.session?.itemId) return currentStoreScopedFilter({ session: args.session });
+  if (args.session?.itemId) return currentStoreScopedFilter(args);
   if (!await canResolveFreshInstallStore(args)) return false;
   return {
     AND: [
@@ -5201,18 +5900,54 @@ async function freshInstallStoreQueryFilter(args) {
 }
 
 // features/keystone/models/Role.ts
-var Role = (0, import_core55.list)({
+async function isCurrentStaffAdministrator({ context }) {
+  try {
+    await requireFreshCapability(context, "canManageUsers");
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function validateGrantedCapabilities({ resolvedData, context, addValidationError }) {
+  if (!context.session?.itemId) return;
+  const actor = await context.prisma.user.findUnique({ where: { id: context.session.itemId }, select: { role: true } });
+  for (const capability of STAFF_CAPABILITIES) {
+    if (resolvedData[capability] === true && actor?.role?.[capability] !== true) {
+      addValidationError(`A role cannot grant ${capability}, which you do not currently hold`);
+    }
+  }
+}
+var ownRoleFilter = (session) => session?.itemId ? { assignedTo: { some: { id: { equals: session.itemId } } } } : false;
+var Role = (0, import_core56.list)({
   access: {
-    // Role administration is domain-owned. Generic CRUD must not trust
-    // capability claims cached in a stateless session after revocation.
-    operation: { query: ({ session }) => Boolean(session?.itemId), create: () => false, update: () => false, delete: () => false },
+    // E-commerce parity: staff administrators can create, edit and delete the
+    // Store's roles. Roles that people hold change only through the audited,
+    // last-manager-safe updateGroceryStaffAccess workflow, so generic update
+    // and delete are limited to unassigned roles.
+    operation: {
+      query: ({ session }) => Boolean(session?.itemId),
+      create: isCurrentStaffAdministrator,
+      update: isCurrentStaffAdministrator,
+      delete: isCurrentStaffAdministrator
+    },
     filter: {
-      query: ({ session }) => session?.itemId ? { assignedTo: { some: { id: { equals: session.itemId } } } } : false,
-      update: storeScopedFilter,
+      query: async (args) => await isCurrentStaffAdministrator(args) ? storeScopedFilter(args) : ownRoleFilter(args.session),
+      update: async (args) => {
+        const store = await storeScopedFilter(args);
+        return store === false ? false : { AND: [store, { assignedTo: { none: {} } }] };
+      },
       delete: storeScopedFilter
     }
   },
   hooks: {
+    validate: {
+      create: validateGrantedCapabilities,
+      update: validateGrantedCapabilities,
+      delete: async ({ item, context, addValidationError }) => {
+        const assigned = await context.prisma.user.count({ where: { roleId: String(item.id) } });
+        if (assigned > 0) addValidationError("Change these staff members' access before deleting their role");
+      }
+    },
     resolveInput: {
       create: async ({ resolvedData, context }) => {
         if (!context.session?.itemId) {
@@ -5281,13 +6016,15 @@ var Role = (0, import_core55.list)({
     store: (0, import_fields56.relationship)({
       ref: "Store.roles",
       db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
+      // The Store is always derived from the caller (resolveInput), never sent.
+      graphql: { isNonNull: { read: true } },
       access: { create: () => false, update: () => false }
     }),
     assignedTo: (0, import_fields56.relationship)({
       ref: "User.role",
       many: true,
-      access: { update: () => false },
+      // People get access only through the staff workflow.
+      access: { create: () => false, update: () => false },
       label: "Assigned To"
     }),
     ...trackingFields
@@ -5295,10 +6032,10 @@ var Role = (0, import_core55.list)({
 });
 
 // features/keystone/models/ShoppingList.ts
-var import_core56 = require("@keystone-6/core");
+var import_core57 = require("@keystone-6/core");
 var import_fields57 = require("@keystone-6/core/fields");
 init_access();
-var ShoppingList = (0, import_core56.list)({
+var ShoppingList = (0, import_core57.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -5307,16 +6044,16 @@ var ShoppingList = (0, import_core56.list)({
       delete: () => false
     },
     filter: {
-      query: ({ session }) => {
-        const store = ownerStoreScopedFilter("user")({ session });
+      query: async ({ session, context }) => {
+        const store = await ownerStoreScopedFilter("user")({ session, context });
         return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
-      update: ({ session }) => {
-        const store = ownerStoreScopedFilter("user")({ session });
+      update: async ({ session, context }) => {
+        const store = await ownerStoreScopedFilter("user")({ session, context });
         return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       },
-      delete: ({ session }) => {
-        const store = ownerStoreScopedFilter("user")({ session });
+      delete: async ({ session, context }) => {
+        const store = await ownerStoreScopedFilter("user")({ session, context });
         return session?.itemId && store !== false ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
       }
     }
@@ -5369,10 +6106,10 @@ var ShoppingList = (0, import_core56.list)({
 });
 
 // features/keystone/models/ShoppingListItem.ts
-var import_core57 = require("@keystone-6/core");
+var import_core58 = require("@keystone-6/core");
 var import_fields58 = require("@keystone-6/core/fields");
 init_access();
-var ShoppingListItem = (0, import_core57.list)({
+var ShoppingListItem = (0, import_core58.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -5480,16 +6217,16 @@ var ShoppingListItem = (0, import_core57.list)({
 });
 
 // features/keystone/models/Subscription.ts
-var import_core58 = require("@keystone-6/core");
+var import_core59 = require("@keystone-6/core");
 var import_fields59 = require("@keystone-6/core/fields");
 init_access();
 async function subscriptionAccessFilter({ session, context }) {
-  const store = ownerStoreScopedFilter("user")({ session });
+  const store = await ownerStoreScopedFilter("user")({ session, context });
   if (store === false) return false;
   if (await permissions.canManageOrders({ session, context })) return store;
   return session?.itemId ? { AND: [store, { user: { id: { equals: session.itemId } } }] } : false;
 }
-var Subscription = (0, import_core58.list)({
+var Subscription = (0, import_core59.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -5521,7 +6258,8 @@ var Subscription = (0, import_core58.list)({
     // User who owns the subscription
     user: (0, import_fields59.relationship)({
       db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
+      // Nullable on read: staff cannot read other customers' User rows.
+      graphql: { isNonNull: { create: true } },
       access: { create: () => false, update: () => false },
       ref: "User",
       label: "User",
@@ -5578,8 +6316,8 @@ var Subscription = (0, import_core58.list)({
     }),
     // Subscription discount percentage
     discount: (0, import_fields59.float)({
-      label: "Discount percentage (legacy display)",
-      ui: { description: "Legacy display value; discountBps is authoritative" },
+      label: "Discount (%)",
+      ui: { description: "Percent off each delivery." },
       validation: { min: 0, max: 100 },
       defaultValue: 0
     }),
@@ -5587,7 +6325,9 @@ var Subscription = (0, import_core58.list)({
       defaultValue: 0,
       validation: { isRequired: true, min: 0, max: 1e4 },
       access: { create: () => false, update: () => false },
-      label: "Discount (basis points)"
+      // Pricing copy kept in hundredths of a percent; the form shows the percentage above.
+      label: "Discount",
+      ui: { createView: { fieldMode: "hidden" }, itemView: { fieldMode: "hidden" } }
     }),
     // Whether subscription is currently active
     isActive: (0, import_fields59.checkbox)({
@@ -5609,16 +6349,16 @@ var Subscription = (0, import_core58.list)({
 });
 
 // features/keystone/models/SubstitutionPreference.ts
-var import_core59 = require("@keystone-6/core");
+var import_core60 = require("@keystone-6/core");
 var import_fields60 = require("@keystone-6/core/fields");
 init_access();
-var SubstitutionPreference = (0, import_core59.list)({
+var SubstitutionPreference = (0, import_core60.list)({
   access: {
     operation: {
       query: isSignedIn,
-      create: isSignedIn,
-      update: isSignedIn,
-      delete: isSignedIn
+      create: isCurrentAccount,
+      update: isCurrentAccount,
+      delete: isCurrentAccount
     },
     filter: {
       query: ownerScopedFilter("user"),
@@ -5627,7 +6367,8 @@ var SubstitutionPreference = (0, import_core59.list)({
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      if (operation !== "create") return resolvedData;
       if (!context.session?.itemId) throw new Error("An authenticated owner is required");
       return { ...resolvedData, user: { connect: { id: context.session.itemId } } };
     }
@@ -5687,9 +6428,9 @@ var SubstitutionPreference = (0, import_core59.list)({
 });
 
 // features/keystone/models/Store.ts
-var import_core60 = require("@keystone-6/core");
+var import_core61 = require("@keystone-6/core");
 var import_fields61 = require("@keystone-6/core/fields");
-var Store = (0, import_core60.list)({
+var Store = (0, import_core61.list)({
   access: {
     operation: {
       query: canResolveFreshInstallStore,
@@ -5741,44 +6482,60 @@ var Store = (0, import_core60.list)({
     payments: (0, import_fields61.relationship)({ ref: "Payment.store", many: true }),
     orderLineInventoryAllocations: (0, import_fields61.relationship)({ ref: "OrderLineInventoryAllocation.store", many: true }),
     paymentWebhookEvents: (0, import_fields61.relationship)({ ref: "PaymentWebhookEvent.store", many: true }),
-    outboxEvents: (0, import_fields61.relationship)({ ref: "GroceryOutboxEvent.store", many: true }),
     ...trackingFields
   }
 });
+
+// features/keystone/lib/deliveryPolicy.ts
+init_publicError();
+
+// features/storefront/lib/marketFormatting.ts
+function formatDeliveryArea(prefixes, limit = 10) {
+  const shown = prefixes.slice(0, limit);
+  const full = shown.filter((prefix) => /^\d{5}(-\d{4})?$/.test(prefix));
+  const partial = shown.filter((prefix) => !full.includes(prefix));
+  const parts = [
+    full.length ? `${full.length === 1 && !partial.length ? "postal code" : "postal codes"} ${full.join(", ")}` : "",
+    partial.length ? `${full.length ? "" : "postal codes "}starting with ${partial.join(", ")}` : ""
+  ].filter(Boolean);
+  const more = prefixes.length > shown.length ? ` and ${prefixes.length - shown.length} more` : "";
+  return `${parts.join(" and ")}${more}`;
+}
 
 // features/keystone/lib/deliveryPolicy.ts
 function normalizeDeliveryPolicy(raw) {
   const value = raw || {};
   const read = (key2, max = 1e8) => {
     const n = Number(value[key2] ?? 0);
-    if (!Number.isSafeInteger(n) || n < 0 || n > max) throw new Error(`Invalid ${key2}`);
+    if (!Number.isSafeInteger(n) || n < 0 || n > max) throw publicError(`Invalid ${key2}`);
     return n;
   };
-  if (value.version !== void 0 && value.version !== 1) throw new Error("Unsupported delivery policy version");
-  if (value.postalPrefixes !== void 0 && !Array.isArray(value.postalPrefixes)) throw new Error("Postal prefixes must be a list");
+  if (value.version !== void 0 && value.version !== 1) throw publicError("Unsupported delivery policy version");
+  if (value.postalPrefixes !== void 0 && !Array.isArray(value.postalPrefixes)) throw publicError("Postal prefixes must be a list");
   const prefixes = (value.postalPrefixes || []).map((s) => {
-    if (typeof s !== "string") throw new Error("Invalid postal prefix");
+    if (typeof s !== "string") throw publicError("Invalid postal prefix");
     const normalized = s.replace(/\s/g, "").toUpperCase();
-    if (!/^[A-Z0-9-]{3,12}$/.test(normalized)) throw new Error("Use explicit postal prefixes of at least three characters");
+    if (!/^[A-Z0-9-]{3,12}$/.test(normalized)) throw publicError("Use explicit postal prefixes of at least three characters");
     return normalized;
   });
-  if (prefixes.length > 200) throw new Error("Too many service areas");
+  if (prefixes.length > 200) throw publicError("Too many service areas");
   return { version: 1, pickupMinimumCents: read("pickupMinimumCents"), deliveryMinimumCents: read("deliveryMinimumCents"), postalPrefixes: [...new Set(prefixes)], deliveryFeeCents: read("deliveryFeeCents"), feeTaxRateBasisPoints: read("feeTaxRateBasisPoints", 1e4) };
 }
 function evaluateDeliveryPolicy(raw, method, postalCode, goodsAfterDiscountCents) {
   const policy = normalizeDeliveryPolicy(raw);
   if (!Number.isSafeInteger(goodsAfterDiscountCents) || goodsAfterDiscountCents < 0) throw new Error("Invalid basket amount");
   const minimum = method === "pickup" ? policy.pickupMinimumCents : policy.deliveryMinimumCents;
-  if (goodsAfterDiscountCents < minimum) throw new Error(`The ${method} minimum is ${(minimum / 100).toFixed(2)} before tax and fees`);
+  if (goodsAfterDiscountCents < minimum) throw publicError(`The ${method} minimum is $${(minimum / 100).toFixed(2)} before tax and fees. Add $${((minimum - goodsAfterDiscountCents) / 100).toFixed(2)} more to your basket${method === "delivery" ? " or choose pickup" : ""}.`, "FULFILLMENT_MINIMUM");
   if (method === "delivery") {
     const postal = postalCode.replace(/\s/g, "").toUpperCase();
-    if (!/^[A-Z0-9-]{3,12}$/.test(postal) || !policy.postalPrefixes.some((prefix) => postal.startsWith(prefix))) throw new Error("This address is outside the configured delivery area");
+    if (!/^[A-Z0-9-]{3,12}$/.test(postal)) throw publicError("Enter a valid delivery postal code.", "DELIVERY_AREA");
+    if (!policy.postalPrefixes.some((prefix) => postal.startsWith(prefix))) throw publicError(policy.postalPrefixes.length ? `We don't deliver to postal code ${postal}. We deliver to ${formatDeliveryArea(policy.postalPrefixes)}. Change the address or choose pickup.` : "Delivery is not available right now. Choose pickup instead.", "DELIVERY_AREA");
   }
   return { policy, feeCents: method === "delivery" ? policy.deliveryFeeCents : 0, feeTaxRateBasisPoints: method === "delivery" ? policy.feeTaxRateBasisPoints : 0 };
 }
 
 // features/keystone/models/StoreSettings.ts
-var import_core61 = require("@keystone-6/core");
+var import_core62 = require("@keystone-6/core");
 var import_fields62 = require("@keystone-6/core/fields");
 init_access();
 
@@ -5907,7 +6664,7 @@ var DAY_KEYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday"
 function record(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
-function integer38(value, fallback, minimum, maximum) {
+function integer36(value, fallback, minimum, maximum) {
   const candidate = Number(value);
   return Number.isInteger(candidate) ? Math.min(maximum, Math.max(minimum, candidate)) : fallback;
 }
@@ -5965,6 +6722,17 @@ function parseDayRanges(value) {
     const range = parseRange(candidate);
     return range ? [range] : [];
   });
+}
+var PUBLIC_DAY_ORDER = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+var wallClock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+function openingHoursEntryProblem(value) {
+  if (/^closed$/i.test(value.trim())) return null;
+  return parseRange(value) ? null : "Use a range like 8:00 AM - 8:00 PM, or Closed";
+}
+function publicOpeningHours(hours) {
+  const source = record(hours) || {};
+  if (!PUBLIC_DAY_ORDER.some((day) => Object.hasOwn(source, day))) return [];
+  return PUBLIC_DAY_ORDER.map((day) => ({ day, ranges: parseDayRanges(source[day]).map(({ start, end }) => ({ start: wallClock(start), end: wallClock(end) })) }));
 }
 function operatingRanges(hours, dateKey) {
   const source = record(hours);
@@ -6079,8 +6847,8 @@ function resolveRollingFulfillmentPolicy({
     return template ? [template] : [];
   }) : fallbackPickup;
   return {
-    horizonDays: integer38(configured?.horizonDays, DEFAULT_HORIZON_DAYS, 1, MAX_HORIZON_DAYS),
-    cutoffMinutes: integer38(configured?.cutoffMinutes, DEFAULT_CUTOFF_MINUTES, 0, 24 * 60),
+    horizonDays: integer36(configured?.horizonDays, DEFAULT_HORIZON_DAYS, 1, MAX_HORIZON_DAYS),
+    cutoffMinutes: integer36(configured?.cutoffMinutes, DEFAULT_CUTOFF_MINUTES, 0, 24 * 60),
     blackoutDates,
     deliveryTemplates,
     pickupTemplates
@@ -6134,7 +6902,7 @@ function planRollingFulfillmentAvailability({
   assertValidTimeZone(timeZone);
   assertValidRollingFulfillmentPolicy(hours);
   const policy = resolveRollingFulfillmentPolicy({ hours, deliverySlots, pickupSlots });
-  const days = Math.min(policy.horizonDays, integer38(requestedDays, DEFAULT_HORIZON_DAYS, 1, MAX_HORIZON_DAYS));
+  const days = Math.min(policy.horizonDays, integer36(requestedDays, DEFAULT_HORIZON_DAYS, 1, MAX_HORIZON_DAYS));
   const existingDelivery = new Set(deliverySlots.map((slot) => `${dateKeyFor(slot.date, timeZone)}:${templateKey(slot)}`));
   const existingPickup = new Set(pickupSlots.map((slot) => `${dateKeyFor(slot.date, timeZone)}:${templateKey(slot)}`));
   const deliveryCreates = [];
@@ -6198,11 +6966,13 @@ async function ensureRollingFulfillmentAvailability(context, store, requestedDay
     });
     if (plan.deliveryCreates.length) {
       await tx.deliverySlot.createMany({
+        skipDuplicates: true,
         data: plan.deliveryCreates.map((slot) => ({ ...slot, storeId: store.id }))
       });
     }
     if (plan.pickupCreates.length) {
       await tx.pickupSlot.createMany({
+        skipDuplicates: true,
         data: plan.pickupCreates.map((slot) => ({ ...slot, storeId: store.id }))
       });
     }
@@ -6220,15 +6990,383 @@ function normalizeStorefrontBrandHue(value) {
   if (value === null || value === void 0 || value === "" || typeof value === "string" && !value.trim()) return null;
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) throw new Error("Storefront brand hue must be a finite number");
-  const integer42 = Math.round(numeric);
-  return (integer42 % 360 + 360) % 360;
+  const integer40 = Math.round(numeric);
+  return (integer40 % 360 + 360) % 360;
 }
 function effectiveStorefrontBrandHue(value) {
   return normalizeStorefrontBrandHue(value) ?? DEFAULT_STOREFRONT_BRAND_HUE;
 }
 
+// features/platform/settings/lib/icon-registry.ts
+var LOGO_ICONS = [
+  {
+    id: "3portals",
+    name: "3Portals",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill-rule="evenodd"><path d="m34.5868 8.40061-9.6868-2.59556c-.6687-.17919-1.2108.23679-1.2108.92911v10.02854c0 .6923.5421 1.3988 1.2108 1.578l9.6868 2.5955c.6687.1792 1.2109-.2368 1.2109-.9291v-10.02848c0-.69232-.5422-1.39882-1.2109-1.57801zm-9.6868-6.35625c-2.6749-.71674-4.8434.94718-4.8434 3.71647v10.02847c0 2.7693 2.1685 5.5953 4.8434 6.312l9.6868 2.5956c2.6749.7168 4.8434-.9472 4.8434-3.7165v-10.0284c0-2.76934-2.1685-5.59533-4.8434-6.31207z" fill="#8098f9"/><path d="m26.9812 16.5707-12.1085-3.2444c-.6687-.1792-1.2109.2368-1.2109.9291v12.5356c0 .6923.5422 1.3988 1.2109 1.578l12.1085 3.2445c.6687.1792 1.2108-.2368 1.2108-.9291v-12.5356c0-.6924-.5421-1.3989-1.2108-1.5781zm-12.1085-7.0051c-2.6749-.71674-4.8434.9472-4.8434 3.7165v12.5356c0 2.7693 2.1685 5.5953 4.8434 6.312l12.1085 3.2445c2.6749.7167 4.8433-.9472 4.8433-3.7165v-12.5356c0-2.7693-2.1684-5.5953-4.8433-6.312z" fill="#6172f3"/><path d="m19.3736 24.7409-14.53021-3.8934c-.66873-.1792-1.21085.2368-1.21085.9291v15.0428c0 .6923.54212 1.3988 1.21085 1.578l14.53021 3.8933c.6687.1792 1.2108-.2368 1.2108-.9291v-15.0427c0-.6923-.5421-1.3988-1.2108-1.578zm-14.53021-7.6541c-2.67493-.7167-4.84339.9472-4.84339 3.7165v15.0427c0 2.7693 2.16846 5.5953 4.84339 6.3121l14.53021 3.8933c2.6749.7168 4.8433-.9472 4.8433-3.7164v-15.0428c0-2.7693-2.1684-5.5953-4.8433-6.312z" fill="#444ce7"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill="#fff" fill-rule="evenodd"><path d="m34.5868 8.40061-9.6868-2.59556c-.6687-.17919-1.2108.23679-1.2108.92911v10.02854c0 .6923.5421 1.3988 1.2108 1.578l9.6868 2.5955c.6687.1792 1.2109-.2368 1.2109-.9291v-10.02848c0-.69232-.5422-1.39882-1.2109-1.57801zm-9.6868-6.35625c-2.6749-.71674-4.8434.94718-4.8434 3.71647v10.02847c0 2.7693 2.1685 5.5953 4.8434 6.312l9.6868 2.5956c2.6749.7168 4.8434-.9472 4.8434-3.7165v-10.0284c0-2.76934-2.1685-5.59533-4.8434-6.31207z" opacity=".5"/><path d="m26.9812 16.5707-12.1085-3.2444c-.6687-.1792-1.2109.2368-1.2109.9291v12.5356c0 .6923.5422 1.3988 1.2109 1.578l12.1085 3.2445c.6687.1792 1.2108-.2368 1.2108-.9291v-12.5356c0-.6924-.5421-1.3989-1.2108-1.5781zm-12.1085-7.0051c-2.6749-.71674-4.8434.9472-4.8434 3.7165v12.5356c0 2.7693 2.1685 5.5953 4.8434 6.312l12.1085 3.2445c2.6749.7167 4.8433-.9472 4.8433-3.7165v-12.5356c0-2.7693-2.1684-5.5953-4.8433-6.312z" opacity=".7"/><path d="m19.3736 24.7409-14.53021-3.8934c-.66873-.1792-1.21085.2368-1.21085.9291v15.0428c0 .6923.54212 1.3988 1.21085 1.578l14.53021 3.8933c.6687.1792 1.2108-.2368 1.2108-.9291v-15.0427c0-.6923-.5421-1.3988-1.2108-1.578zm-14.53021-7.6541c-2.67493-.7167-4.84339.9472-4.84339 3.7165v15.0427c0 2.7693 2.16846 5.5953 4.84339 6.3121l14.53021 3.8933c2.6749.7168 4.8433-.9472 4.8433-3.7164v-15.0428c0-2.7693-2.1684-5.5953-4.8433-6.312z"/></g></svg>`
+  },
+  {
+    id: "45-degrees",
+    name: "45 Degrees",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 24 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 15.8981h17.3455l-17.061314 17.0613 2.756374 2.7564 17.06134-17.0613v17.3455h.1104l3.7877-3.7877v-15.9638l-4.2485-4.2485h-15.96596l-3.78553995 3.7855z" fill="#155eef"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 24 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 15.8981h17.3455l-17.061314 17.0613 2.756374 2.7564 17.06134-17.0613v17.3455h.1104l3.7877-3.7877v-15.9638l-4.2485-4.2485h-15.96596l-3.78553995 3.7855z" fill="#155eef"/></svg>`
+  },
+  {
+    id: "acme-corp",
+    name: "Acme Corp",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 48 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m0 24c15.2548 0 24-8.7452 24-24 0 15.2548 8.7452 24 24 24-15.2548 0-24 8.7452-24 24 0-15.2548-8.7452-24-24-24z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 48 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m0 24c15.2548 0 24-8.7452 24-24 0 15.2548 8.7452 24 24 24-15.2548 0-24 8.7452-24 24 0-15.2548-8.7452-24-24-24z" fill="#155eef" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "alphawave",
+    name: "AlphaWave",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 47 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m24.9706 7.03309c-3.1242-3.1242-8.1896-3.1242-11.3137 0l-11.31375 11.31371c-3.124199 3.1242-3.124199 8.1895 0 11.3137l11.31375 11.3137c3.1241 3.1242 8.1895 3.1242 11.3137 0l5.3982-5.3983c-4.4939-1.7337-7.682-6.0944-7.682-11.1997 0-5.3087 3.4472-9.8123 8.2254-11.3943-.0935-.0982-.1884-.1955-.2848-.292z" fill="#155eef"/><path d="m30.3691 35.5798c1.3398.5168 2.7955.8001 4.3174.8001 6.6274 0 12-5.3726 12-12s-5.3726-12-12-12c-1.3185 0-2.5873.2126-3.774.6055 5.9623 6.2681 5.8675 16.1836-.2846 22.3356z" fill="#155eef" opacity=".7"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 47 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m24.9706 7.03309c-3.1242-3.1242-8.1896-3.1242-11.3137 0l-11.31375 11.31371c-3.124199 3.1242-3.124199 8.1895 0 11.3137l11.31375 11.3137c3.1241 3.1242 8.1895 3.1242 11.3137 0l5.3982-5.3983c-4.4939-1.7337-7.682-6.0944-7.682-11.1997 0-5.3087 3.4472-9.8123 8.2254-11.3943-.0935-.0982-.1884-.1955-.2848-.292z" fill="#155eef"/><path d="m30.3691 35.5798c1.3398.5168 2.7955.8001 4.3174.8001 6.6274 0 12-5.3726 12-12s-5.3726-12-12-12c-1.3185 0-2.5873.2126-3.774.6055 5.9623 6.2681 5.8675 16.1836-.2846 22.3356z" fill="#155eef" opacity=".7"/></svg>`
+  },
+  {
+    id: "alt-shift",
+    name: "Alt+Shift",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m23.4538 34.7189c-3.1818-1.1818-6.4544-1.3636-9.4544-.5455-2.0909.5455-4.09082 1.6364-5.90897 3l-1.27273 1.0909-.36362.3636.81816.7273c.09091 0 .09092.0909.18183.1818.18181.1818.36364.2727.63636.4545l.54542.3636.54545-.4545c.09091-.0909.27273-.2727.45454-.3636 1.63636-1.3636 3.45446-2.2727 5.36356-2.7272 2.4545-.6364 5.0908-.5455 7.7271.4545 2.1818.8182 6.6363 1.8181 11.9998-.4545l.1818-.091.2728-.2727c0-.0909.0909-.0909.1818-.1818.4545-.5454.9091-1.0909 1.2727-1.7272l1.8181-2.8182-2.909 1.6363c-4.2727 2.3636-8.1817 2.8182-12.0907 1.3637z"/><path d="m10.9998 24.9011c2.4545-.6363 5.0908-.5454 7.7272.4546 2.909 1.0909 10.3634 2.6363 18.7269-4.909l1.8182-1.8182-.1819-.4545c-.0909-.3636-.2727-.8182-.4545-1.2727l-.4545-1.2727-.9091.909c-.0909.1819-.2727.2728-.4546.4546-3.9999 4.0908-10.1816 8.2726-17.2724 5.7272-3.1817-1.1818-6.4544-1.3637-9.4544-.5455-2.909.8182-5.45442 2.3636-7.81801 4.5454v-.0909l-1.363614 1.4545c0 .0909-.090891.0909-.181798.1818l-.27274.2727.090913.3637c.090908.4545.272717.909.363625 1.3636l.545454 1.4545.90907-1.1818c.09091-.1818.27272-.2727.36363-.4545 1.90905-1.7273 4.54538-4.1818 8.27257-5.1818z"/><path d="m2.1818 23.2646c2.09088-2.1818 4.45445-3.5454 6.99987-4.2727 2.45453-.6363 5.09083-.5454 7.72713.4546 8.1817 2.9999 15.2725-1.9091 18.3633-4.5454l1.1818-1.1818.4546-.3636-.3637-.5455c-.2727-.2727-.4545-.6363-.7272-1l-.5455-.7272-.6363.6363c-.0909.0909-.2727.2727-.3637.3637-3.8181 3.6363-9.7271 7.3635-16.4542 4.8181-3.1818-1.1818-6.4544-1.3637-9.4544-.5455-1.90906.5455-3.72721 1.4545-5.54536 2.6363l-1.909065 1.5455c-.181815.1818-.272722.2727-.454537.4545l-.181799.1818v.2727c-.090907.6364-.090918 1.2727-.1818259 1.8182l-.0909131 2.2727 1.54544-1.6364c.18181-.1818.36364-.4545.63636-.6363z"/><path d="m26.0908 40.9007c-.2727-.0909-.4545-.1819-.7272-.2728-3.1818-1.1818-6.4545-1.3636-9.4545-.5454-.6363.1818-1.2726.3636-1.909.6364l-2.1818.9999-.5454.2728 1.8181.6363c.5455.1818 1.0909.3637 1.6364.5455l.2727.0909.2727-.0909c.2727-.0909.5455-.2728.8182-.2728.1818 0 .3636-.0909.5454-.1818 2.1818-.5454 4.5454-.5454 7.0908.2727.2727.091.4546.1819.7273.2728l.4545.1818.2727-.0909c.6364-.1818 1.3636-.3636 1.9091-.6364l2.5454-.909-2.6363-.6364c-.2727-.0909-.6364-.1818-.9091-.2727z"/><path d="m40 22.0829-1.3636 1.3636c-.1818.1818-.3636.3636-.5454.5454-3.7272 3.5454-9.7271 7.3635-16.4543 4.8181-3.1818-1.1818-6.4544-1.3636-9.4544-.5454-2.81811.8182-5.36354 2.2727-7.63623 4.4545l-1.18179 1.2727-.36362.4545.36362.5454c.27273.3637.45455.6364.63637 1l.54542.8182.63636-.8182c.09091-.0909.27272-.2727.36363-.3636 2.18178-2.3636 4.54534-3.8181 7.27264-4.5454 2.4545-.6364 5.0908-.5454 7.7271.4545 2.2727.8182 4.6363 1.0909 6.9999.8182 4.1817-.4545 8.3635-2.8181 11.4543-5.4544.1819-.1818.3636-.2727.5455-.4546l.2727-.2727v-.2727c0-.5455.0909-1.1818.0909-1.7273z"/><path d="m5.45373 13.7196c.54545-.2728 1.18182-.4546 1.72726-.6364 2.45451-.6364 5.09081-.5455 7.72711.4545 1.7273.6364 3.4545.9091 5.3636.9091 3.8181 0 7.6362-1.3636 11.1816-3.9999l1.8181-1.45455-.8181-.63636c-.2727-.27273-.6364-.54544-1-.72725l-.5455-.36363-.4545.36363c-.1818.09091-.2727.27272-.4545.36362-4.8181 3.63634-9.6362 4.63634-14.1816 2.90904-3.2727-1.18178-6.54535-1.45451-9.81802-.4545-.27272.0909-.54544.1818-.90907.2727l-.1818.0909-.27274.2727c0 .0909-.09089.0909-.1818.1818-.36363.5455-.81818 1-1.18181 1.5455l-1.72724 2.6363 2.81814-1.4545c.45453 0 .81815-.1818 1.09087-.2727z"/><path d="m12.9089 7.53769.2727.09091c1.1818.45454 3 .90907 5.2726.90907 2.3636 0 4.6363-.54545 6.909-1.45452l2.8181-1.36361-1.909-.63634c-.5454-.18182-1.0909-.36363-1.7273-.45454h-.2727l-.2727.09089c-.2727.0909-.5455.27274-.8182.36365-2.7272.99998-5.4544 1.1818-8.0907.45454-.2728-.09091-.5455-.18183-.8182-.27274l-.2727-.09091-.2728.09091c-.5454.18181-1.0908.36364-1.6363.63636l-2.09087.90908 2.18177.63633c.1818-.0909.4546.00001.7273.09092z"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m23.4538 34.7189c-3.1818-1.1818-6.4544-1.3636-9.4544-.5455-2.0909.5455-4.09082 1.6364-5.90897 3l-1.27273 1.0909-.36362.3636.81816.7273c.09091 0 .09092.0909.18183.1818.18181.1818.36364.2727.63636.4545l.54542.3636.54545-.4545c.09091-.0909.27273-.2727.45454-.3636 1.63636-1.3636 3.45446-2.2727 5.36356-2.7272 2.4545-.6364 5.0908-.5455 7.7271.4545 2.1818.8182 6.6363 1.8181 11.9998-.4545l.1818-.091.2728-.2727c0-.0909.0909-.0909.1818-.1818.4545-.5454.9091-1.0909 1.2727-1.7272l1.8181-2.8182-2.909 1.6363c-4.2727 2.3636-8.1817 2.8182-12.0907 1.3637z"/><path d="m10.9998 24.9011c2.4545-.6363 5.0908-.5454 7.7272.4546 2.909 1.0909 10.3634 2.6363 18.7269-4.909l1.8182-1.8182-.1819-.4545c-.0909-.3636-.2727-.8182-.4545-1.2727l-.4545-1.2727-.9091.909c-.0909.1819-.2727.2728-.4546.4546-3.9999 4.0908-10.1816 8.2726-17.2724 5.7272-3.1817-1.1818-6.4544-1.3637-9.4544-.5455-2.909.8182-5.45442 2.3636-7.81801 4.5454v-.0909l-1.363614 1.4545c0 .0909-.090891.0909-.181798.1818l-.27274.2727.090913.3637c.090908.4545.272717.909.363625 1.3636l.545454 1.4545.90907-1.1818c.09091-.1818.27272-.2727.36363-.4545 1.90905-1.7273 4.54538-4.1818 8.27257-5.1818z"/><path d="m2.1818 23.2646c2.09088-2.1818 4.45445-3.5454 6.99987-4.2727 2.45453-.6363 5.09083-.5454 7.72713.4546 8.1817 2.9999 15.2725-1.9091 18.3633-4.5454l1.1818-1.1818.4546-.3636-.3637-.5455c-.2727-.2727-.4545-.6363-.7272-1l-.5455-.7272-.6363.6363c-.0909.0909-.2727.2727-.3637.3637-3.8181 3.6363-9.7271 7.3635-16.4542 4.8181-3.1818-1.1818-6.4544-1.3637-9.4544-.5455-1.90906.5455-3.72721 1.4545-5.54536 2.6363l-1.909065 1.5455c-.181815.1818-.272722.2727-.454537.4545l-.181799.1818v.2727c-.090907.6364-.090918 1.2727-.1818259 1.8182l-.0909131 2.2727 1.54544-1.6364c.18181-.1818.36364-.4545.63636-.6363z"/><path d="m26.0908 40.9007c-.2727-.0909-.4545-.1819-.7272-.2728-3.1818-1.1818-6.4545-1.3636-9.4545-.5454-.6363.1818-1.2726.3636-1.909.6364l-2.1818.9999-.5454.2728 1.8181.6363c.5455.1818 1.0909.3637 1.6364.5455l.2727.0909.2727-.0909c.2727-.0909.5455-.2728.8182-.2728.1818 0 .3636-.0909.5454-.1818 2.1818-.5454 4.5454-.5454 7.0908.2727.2727.091.4546.1819.7273.2728l.4545.1818.2727-.0909c.6364-.1818 1.3636-.3636 1.9091-.6364l2.5454-.909-2.6363-.6364c-.2727-.0909-.6364-.1818-.9091-.2727z"/><path d="m40 22.0829-1.3636 1.3636c-.1818.1818-.3636.3636-.5454.5454-3.7272 3.5454-9.7271 7.3635-16.4543 4.8181-3.1818-1.1818-6.4544-1.3636-9.4544-.5454-2.81811.8182-5.36354 2.2727-7.63623 4.4545l-1.18179 1.2727-.36362.4545.36362.5454c.27273.3637.45455.6364.63637 1l.54542.8182.63636-.8182c.09091-.0909.27272-.2727.36363-.3636 2.18178-2.3636 4.54534-3.8181 7.27264-4.5454 2.4545-.6364 5.0908-.5454 7.7271.4545 2.2727.8182 4.6363 1.0909 6.9999.8182 4.1817-.4545 8.3635-2.8181 11.4543-5.4544.1819-.1818.3636-.2727.5455-.4546l.2727-.2727v-.2727c0-.5455.0909-1.1818.0909-1.7273z"/><path d="m5.45373 13.7196c.54545-.2728 1.18182-.4546 1.72726-.6364 2.45451-.6364 5.09081-.5455 7.72711.4545 1.7273.6364 3.4545.9091 5.3636.9091 3.8181 0 7.6362-1.3636 11.1816-3.9999l1.8181-1.45455-.8181-.63636c-.2728-.27273-.6364-.54544-1-.72725l-.5455-.36363-.4545.36363c-.1818.09091-.2727.27272-.4545.36362-4.8181 3.63634-9.6362 4.63634-14.1816 2.90904-3.2727-1.18178-6.54535-1.45451-9.81802-.4545-.27272.0909-.54544.1818-.90907.2727l-.1818.0909-.27274.2727c0 .0909-.09089.0909-.1818.1818-.36363.5455-.81818 1-1.18181 1.5455l-1.72724 2.6363 2.81814-1.4545c.45453 0 .81815-.1818 1.09087-.2727z"/><path d="m12.9089 7.53769.2727.09091c1.1818.45454 3 .90907 5.2726.90907 2.3636 0 4.6363-.54545 6.909-1.45452l2.8181-1.36361-1.909-.63634c-.5454-.18182-1.0909-.36363-1.7273-.45454h-.2727l-.2727.09089c-.2727.0909-.5455.27274-.8182.36365-2.7272.99998-5.4544 1.1818-8.0907.45454-.2728-.09091-.5455-.18183-.8182-.27274l-.2727-.09091-.2728.09091c-.5454.18181-1.0908.36364-1.6363.63636l-2.09087.90908 2.18177.63633c.1818-.0909.4546.00001.7273.09092z"/></g></svg>`
+  },
+  {
+    id: "biosynthesis",
+    name: "Biosynthesis",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill-rule="evenodd"><path d="m4.29111 28.6025c.90712.9019.9071 2.3641-.00003 3.266l-.04646.0462c-.90713.9019-2.37788.9018-3.284994-.0001-.9071177-.9019-.9071038-2.3641.000031-3.266l.046453-.0462c.90714-.9019 2.37788-.9018 3.285.0001z" fill="#a4bcfd"/><path d="m15.2112 29.298c.9055.9035.9028 2.3658-.006 3.266l-6.43424 6.3741c-.90876.9002-2.3795.8976-3.28499-.0059-.90548-.9035-.90282-2.3658.00594-3.266l6.43429-6.3741c.9088-.9002 2.3795-.8976 3.285.0059z" fill="#6172f3"/><path d="m23.9431 40.2706c.7116-1.0613 2.1538-1.348 3.2212-.6405l.1394.0923c1.0674.7075 1.3558 2.1414.6442 3.2026-.7116 1.0613-2.1538 1.3481-3.2212.6406l-.1394-.0924c-1.0674-.7075-1.3558-2.1414-.6442-3.2026z" fill="#a4bcfd"/><path d="m39.2728 28.4638c.9072.9019.9072 2.3641 0 3.266l-3.159 3.1408c-.9072.9019-2.3779.9019-3.285 0s-.9071-2.3641 0-3.266l3.1591-3.1408c.9071-.9019 2.3778-.9019 3.2849 0z" fill="#6172f3"/><g fill="#444ce7"><path d="m39.3197 16.8473c.9071.9019.9071 2.3642 0 3.266l-23.3446 23.2098c-.9071.9019-2.3779.9019-3.285 0s-.9071-2.3641 0-3.266l23.3446-23.2098c.9071-.9019 2.3778-.9019 3.285 0z"/><path d="m34.905 9.71133c.9072.90187.9072 2.36417 0 3.26607l-13.426 13.3485c-.9071.9019-2.3779.9019-3.285 0s-.9071-2.3642 0-3.2661l13.4261-13.34847c.9071-.90189 2.3778-.90189 3.2849 0z"/><path d="m27.8187 5.18362c.9077.90128.9087 2.36353.0022 3.26603l-17.2588 17.18215c-.90647.9025-2.37721.9035-3.28495.0022-.90773-.9013-.90872-2.3635-.00221-3.266l17.25876-17.18218c.9065-.9025 2.3772-.90348 3.285-.0022z"/></g><path d="m10.7276 10.6841c.9056.9035.9031 2.3657-.0056 3.266l-6.75949 6.6974c-.90869.9003-2.37943.8978-3.28499-.0056-.905563-.9035-.903032-2.3657.005654-3.2661l6.759476-6.6973c.90868-.90034 2.37942-.89783 3.28495.0056z" fill="#6172f3"/><path d="m14.8678 4.00024c1.2828 0 2.3228 1.03397 2.3228 2.30944v.23094c0 1.27546-1.04 2.30943-2.3228 2.30943-1.2829 0-2.3229-1.03397-2.3229-2.30943v-.23094c0-1.27547 1.04-2.30944 2.3229-2.30944z" fill="#a4bcfd"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill="#fff" fill-rule="evenodd"><path d="m4.29111 28.6025c.90712.9019.9071 2.3641-.00003 3.266l-.04646.0462c-.90713.9019-2.37788.9018-3.284994-.0001-.9071177-.9019-.9071038-2.3641.000031-3.266l.046453-.0462c.90714-.9019 2.37788-.9018 3.285.0001z" opacity=".5"/><path d="m15.2112 29.298c.9055.9035.9028 2.3658-.006 3.266l-6.43424 6.3741c-.90876.9002-2.3795.8976-3.28499-.0059-.90548-.9035-.90282-2.3658.00594-3.266l6.43429-6.3741c.9088-.9002 2.3795-.8976 3.285.0059z" opacity=".7"/><path d="m23.9431 40.2706c.7116-1.0613 2.1538-1.348 3.2212-.6405l.1394.0923c1.0674.7075 1.3558 2.1414.6442 3.2026-.7116 1.0613-2.1538 1.3481-3.2212.6406l-.1394-.0924c-1.0674-.7075-1.3558-2.1414-.6442-3.2026z" opacity=".5"/><path d="m39.2728 28.4638c.9072.9019.9072 2.3641 0 3.266l-3.159 3.1408c-.9072.9019-2.3779.9019-3.285 0s-.9071-2.3641 0-3.266l3.1591-3.1408c.9071-.9019 2.3778-.9019 3.2849 0z" opacity=".7"/><path d="m39.3197 16.8473c.9071.9019.9071 2.3642 0 3.266l-23.3446 23.2098c-.9071.9019-2.3779.9019-3.285 0s-.9071-2.3641 0-3.266l23.3446-23.2098c.9071-.9019 2.3778-.9019 3.285 0z"/><path d="m34.905 9.71133c.9072.90187.9072 2.36417 0 3.26607l-13.426 13.3485c-.9071.9019-2.3779.9019-3.285 0s-.9071-2.3642 0-3.2661l13.4261-13.34847c.9071-.90189 2.3778-.90189 3.2849 0z"/><path d="m27.8187 5.18362c.9077.90128.9087 2.36353.0022 3.26603l-17.2588 17.18215c-.90647.9025-2.37721.9035-3.28495.0022-.90773-.9013-.90872-2.3635-.00221-3.266l17.25876-17.18218c.9065-.9025 2.3772-.90348 3.285-.0022z"/><path d="m10.7276 10.6841c.9056.9035.9031 2.3657-.0056 3.266l-6.75949 6.6974c-.90869.9003-2.37943.8978-3.28499-.0056-.905563-.9035-.903032-2.3657.005654-3.2661l6.759476-6.6973c.90868-.90034 2.37942-.89783 3.28495.0056z" opacity=".7"/><path d="m14.8678 4.00024c1.2828 0 2.3228 1.03397 2.3228 2.30944v.23094c0 1.27546-1.04 2.30943-2.3228 2.30943-1.2829 0-2.3229-1.03397-2.3229-2.30943v-.23094c0-1.27547 1.04-2.30944 2.3229-2.30944z" opacity=".5"/></g></svg>`
+  },
+  {
+    id: "boltshift",
+    name: "Boltshift",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m20 44c11.0457 0 20-8.9543 20-20s-8.9543-20-20-20c-11.04572 0-20 8.9543-20 20s8.95428 20 20 20zm6.2393-30.6832c.3037-1.0787-.7432-1.7167-1.6993-1.0355l-13.3469 9.5083c-1.0369.7387-.8738 2.2104.245 2.2104h3.5146v-.0272h6.8498l-5.5813 1.9693-2.4605 8.7411c-.3037 1.0788.7431 1.7167 1.6993 1.0355l13.3469-9.5082c1.0369-.7387.8737-2.2105-.245-2.2105h-5.3298z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m20 44c11.0457 0 20-8.9543 20-20s-8.9543-20-20-20c-11.04572 0-20 8.9543-20 20s8.95428 20 20 20zm6.2393-30.6832c.3037-1.0787-.7432-1.7167-1.6993-1.0355l-13.3469 9.5083c-1.0369.7387-.8738 2.2104.245 2.2104h3.5146v-.0272h6.8498l-5.5813 1.9693-2.4605 8.7411c-.3037 1.0788.7431 1.7167 1.6993 1.0355l13.3469-9.5082c1.0369-.7387.8737-2.2105-.245-2.2105h-5.3298z" fill="#fff" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "buildingblocks",
+    name: "BuildingBlocks",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 37 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m12.8841 4.30945-6.8842 3.97574 6.8891 3.97661 6.8862-3.97575zm8.8919 7.44025-6.887 3.9762-.0007 7.9532 6.8877-3.9771zm2 11.4164-6.8879 3.9772 6.8889 3.9765 6.8871-3.9763zm8.8879 7.4416-6.8868 3.9761v7.9522l6.8868-3.9761zm-10.8868 11.9287v-7.9525l-6.8891-3.9766v7.9525zm-10.8888-18.8569-6.8883-3.9775v-7.9526l6.889 3.9765zm-.0003 4.6187-9.38814-5.4209c-.928127-.5359-1.49986-1.5262-1.49986-2.598v-11.99368c0-.71444.381106-1.37463.999789-1.73193l10.383811-5.996798c.9281-.5359626 2.0716-.5361538 2.9998-.000505l10.3922 5.996973c.619.3572 1.0004 1.01758 1.0004 1.73226v11.41638l9.888 5.7096c.6188.3573.9999 1.0175.9999 1.732v11.9937c0 1.0718-.5718 2.0621-1.5 2.598l-10.3868 5.9969c-.6187.3572-1.381.3572-1.9998.0001l-10.3891-5.9969c-.9283-.5358-1.5002-1.5263-1.5002-2.5982z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 37 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m12.8841 4.30945-6.8842 3.97574 6.8891 3.97661 6.8862-3.97575zm8.8919 7.44025-6.887 3.9762-.0007 7.9532 6.8877-3.9771zm2 11.4164-6.8879 3.9772 6.8889 3.9765 6.8871-3.9763zm8.8879 7.4416-6.8868 3.9761v7.9522l6.8868-3.9761zm-10.8868 11.9287v-7.9525l-6.8891-3.9766v7.9525zm-10.8888-18.8569-6.8883-3.9775v-7.9526l6.889 3.9765zm-.0003 4.6187-9.38814-5.4209c-.928127-.5359-1.49986-1.5262-1.49986-2.598v-11.99368c0-.71444.381106-1.37463.999789-1.73193l10.383811-5.996798c.9281-.5359626 2.0716-.5361538 2.9998-.000505l10.3922 5.996973c.619.3572 1.0004 1.01758 1.0004 1.73226v11.41638l9.888 5.7096c.6188.3573.9999 1.0175.9999 1.732v11.9937c0 1.0718-.5718 2.0621-1.5 2.598l-10.3868 5.9969c-.6187.3572-1.381.3572-1.9998.0001l-10.3891-5.9969c-.9283-.5358-1.5002-1.5263-1.5002-2.5982z" fill="#155eef" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "calescence",
+    name: "Calescence",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 36 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill="#1570ef" fill-rule="evenodd"><path d="m35.3721 14v8.0492h-9.9698v-2.2927z"/><path d="m35.3699 14.0001-9.9698 5.7565-7.3513-4.2436v-11.513z" opacity=".9"/><path d="m18.0512 4v11.513l-7.349 4.2436-9.969778-5.7565z" opacity=".8"/><path d="m10.7002 19.7565v8.4868l-9.969731 5.756v-19.9993z" opacity=".7"/><path d="m18.0492 32.4871v11.5129l-17.318731-10.0006 9.969731-5.756z" opacity=".6"/><path d="m35.3699 33.9994-17.3211 10.0006v-11.5129l7.3513-4.2437z" opacity=".5"/><path d="m35.3721 25.9507v8.0487l-9.9698-5.756v-2.2927z" opacity=".4"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 36 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill="#fff" fill-rule="evenodd"><path d="m35.3721 14v8.0492h-9.9698v-2.2927z"/><path d="m35.3699 14.0001-9.9698 5.7565-7.3513-4.2436v-11.513z" opacity=".9"/><path d="m18.0512 4v11.513l-7.349 4.2436-9.969778-5.7565z" opacity=".8"/><path d="m10.7002 19.7565v8.4868l-9.969731 5.756v-19.9993z" opacity=".7"/><path d="m18.0492 32.4871v11.5129l-17.318731-10.0006 9.969731-5.756z" opacity=".6"/><path d="m35.3699 33.9994-17.3211 10.0006v-11.5129l7.3513-4.2437z" opacity=".5"/><path d="m35.3721 25.9507v8.0487l-9.9698-5.756v-2.2927z" opacity=".4"/></g></svg>`
+  },
+  {
+    id: "capsule",
+    name: "Capsule",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="18" fill="#1570ef" r="14"/><circle cx="26" cy="30" fill="#53b1fd" r="14"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><circle cx="14" cy="18" opacity=".7" r="14"/><circle cx="26" cy="30" opacity=".7" r="14"/></g></svg>`
+  },
+  {
+    id: "constellation",
+    name: "Constellation",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m16 8 5.0912 10.9088 10.9088 5.0912-10.9088 5.0912-5.0912 10.9088-5.0912-10.9088-10.9088-5.0912 10.9088-5.0912z"/><path d="m20.0469 31.3286 6.3539-1.0932 3.6 9.7646 3.6-9.7646 10.2565 1.7646-6.6564-8 6.6564-8-10.2565 1.7646-3.6-9.7646-3.6 9.7646-6.3539-1.0932 1.0442 2.2374 10.9088 5.0912-10.9088 5.0912z" opacity=".5"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m16 8 5.0912 10.9088 10.9088 5.0912-10.9088 5.0912-5.0912 10.9088-5.0912-10.9088-10.9088-5.0912 10.9088-5.0912z"/><path d="m20.0469 31.3286 6.3539-1.0932 3.6 9.7646 3.6-9.7646 10.2565 1.7646-6.6564-8 6.6564-8-10.2565 1.7646-3.6-9.7646-3.6 9.7646-6.3539-1.0932 1.0442 2.2374 10.9088 5.0912-10.9088 5.0912z" opacity=".5"/></g></svg>`
+  },
+  {
+    id: "codecraft",
+    name: "Codecraft",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 9c0-2.76142 2.23858-5 5-5h10c2.7614 0 5 2.23858 5 5v9.8192c.0002.06.0003.1203.0003.1808 0 2.7575 2.2322 4.9936 4.9881 5h.0116 10c2.7614 0 5 2.2386 5 5v10c0 2.7614-2.2386 5-5 5h-10c-2.7614 0-5-2.2386-5-5v-10c0-.0139.0001-.0277.0002-.0416-.0224-2.7422-2.2523-4.9584-4.9999-4.9584-.0129 0-.0258 0-.0387 0h-9.9616c-2.76142 0-5-2.2386-5-5z" fill="#155eef"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 9c0-2.76142 2.23858-5 5-5h10c2.7614 0 5 2.23858 5 5v9.8192c.0002.06.0003.1203.0003.1808 0 2.7575 2.2322 4.9936 4.9881 5h.0116 10c2.7614 0 5 2.2386 5 5v10c0 2.7614-2.2386 5-5 5h-10c-2.7614 0-5-2.2386-5-5v-10c0-.0139.0001-.0277.0002-.0416-.0224-2.7422-2.2523-4.9584-4.9999-4.9584-.0129 0-.0258 0-.0387 0h-9.9616c-2.76142 0-5-2.2386-5-5z" fill="#155eef"/></svg>`
+  },
+  {
+    id: "command-r",
+    name: "Command+R",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 32 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m18.6667 30.6667c7.3638 0 13.3333-5.9696 13.3333-13.3334 0-7.36376-5.9695-13.3333-13.3333-13.3333h-18.6667v26.6667z" fill="#155eef"/><path d="m0 4 32 40h-21.3333l-10.6667-13.3333z" fill="#2e90fa"/><path d="m21.1488 30.436c-.8042.1515-1.6339.2307-2.4821.2307h-18.6667v-26.6667z" fill="#53b1fd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 32 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m18.6667 30.6667c7.3638 0 13.3333-5.9696 13.3333-13.3334 0-7.36376-5.9695-13.3333-13.3333-13.3333h-18.6667v26.6667z" opacity=".7"/><path d="m0 4 32 40h-21.3333l-10.6667-13.3333z" opacity=".7"/><path d="m21.1488 30.436c-.8042.1515-1.6339.2307-2.4821.2307h-18.6667v-26.6667z" opacity=".7"/></g></svg>`
+  },
+  {
+    id: "contrast-ai",
+    name: "ContrastAI",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m20 4c11.0457 0 20 8.9543 20 20s-8.9543 20-20 20-20-8.9543-20-20 8.9543-20 20-20zm15 20c0 8.2843-6.7157 15-15 15v-30c8.2843 0 15 6.7157 15 15z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m20 4c11.0457 0 20 8.9543 20 20s-8.9543 20-20 20-20-8.9543-20-20 8.9543-20 20-20zm15 20c0 8.2843-6.7157 15-15 15v-30c8.2843 0 15 6.7157 15 15z" fill="#fff" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "convergence",
+    name: "Convergence",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 42 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m22.1017 20.8596 9.8995-9.8994-2.1213-2.12137-7.3389 7.33887v-13.1777h-3v13.1777l-7.3388-7.33887-2.1213 2.12137 9.8995 9.8994 1.0606 1.0607zm2.1207 2.1214 9.8995-9.8995 2.1213 2.1213-7.3388 7.3388h13.0956v3h-13.0956l7.3388 7.3389-2.1213 2.1213-9.8995-9.8995-1.0607-1.0607zm-16.26224 12.0208 9.89944-9.8995 1.0607-1.0607-1.0607-1.0606-9.89944-9.8995-2.12133 2.1213 7.33887 7.3388h-13.17574688v3h13.17574688l-7.33887 7.3389zm12.02024-7.7782-9.8995 9.8995 2.1213 2.1213 7.3388-7.3388v13.0944h3v-13.0944l7.3389 7.3388 2.1213-2.1213-9.8995-9.8995-1.0607-1.0607z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 42 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m22.1017 20.8596 9.8995-9.8994-2.1213-2.12137-7.3389 7.33887v-13.1777h-3v13.1777l-7.3388-7.33887-2.1213 2.12137 9.8995 9.8994 1.0606 1.0607zm2.1207 2.1214 9.8995-9.8995 2.1213 2.1213-7.3388 7.3388h13.0956v3h-13.0956l7.3388 7.3389-2.1213 2.1213-9.8995-9.8995-1.0607-1.0607zm-16.26224 12.0208 9.89944-9.8995 1.0607-1.0607-1.0607-1.0606-9.89944-9.8995-2.12133 2.1213 7.33887 7.3388h-13.17574688v3h13.17574688l-7.33887 7.3389zm12.02024-7.7782-9.8995 9.8995 2.1213 2.1213 7.3388-7.3388v13.0944h3v-13.0944l7.3389 7.3388 2.1213-2.1213-9.8995-9.8995-1.0607-1.0607z" fill="#155eef" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "core-os",
+    name: "CoreOS",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 42 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m15.2286 4.99951c-3.2154 0-6.18655 1.71539-7.79425 4.5l-5.7735 9.99999c-1.6076941 2.7846-1.607697 6.2154 0 9l5.7735 10c1.6077 2.7846 4.57885 4.5 7.79425 4.5h11.547c3.2154 0 6.1865-1.7154 7.7942-4.5l5.7735-10c1.6077-2.7846 1.6077-6.2154 0-9l-5.7735-9.99999c-1.6077-2.78461-4.5788-4.5-7.7942-4.5zm11.547 5.99999h-7.2169c-1.1547 0-1.8762 1.2499-1.298 2.2494 1.784 3.0838 3.5722 6.1653 5.3536 9.2506.5359.9282.5359 2.0718 0 3-1.7814 3.0854-3.5696 6.1668-5.3536 9.2506-.5782.9995.1433 2.2494 1.298 2.2494h7.2169c1.0718 0 2.0622-.5718 2.5981-1.5l5.7735-10c.5359-.9282.5359-2.0718 0-3l-5.7735-10c-.5359-.9282-1.5263-1.5-2.5981-1.5z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 42 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m15.2286 4.99951c-3.2154 0-6.18655 1.71539-7.79425 4.5l-5.7735 9.99999c-1.6076941 2.7846-1.607697 6.2154 0 9l5.7735 10c1.6077 2.7846 4.57885 4.5 7.79425 4.5h11.547c3.2154 0 6.1865-1.7154 7.7942-4.5l5.7735-10c1.6077-2.7846 1.6077-6.2154 0-9l-5.7735-9.99999c-1.6077-2.78461-4.5788-4.5-7.7942-4.5zm11.547 5.99999h-7.2169c-1.1547 0-1.8762 1.2499-1.298 2.2494 1.784 3.0838 3.5722 6.1653 5.3536 9.2506.5359.9282.5359 2.0718 0 3-1.7814 3.0854-3.5696 6.1668-5.3536 9.2506-.5782.9995.1433 2.2494 1.298 2.2494h7.2169c1.0718 0 2.0622-.5718 2.5981-1.5l5.7735-10c.5359-.9282.5359-2.0718 0-3l-5.7735-10c-.5359-.9282-1.5263-1.5-2.5981-1.5z" fill="#155eef" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "cubekit",
+    name: "Cubekit",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 14.5264v18.9473l17.8947-12.2437v-18.94741z" fill="#155eef" opacity=".5"/><path d="m0 33.4737v-18.9474l17.8947 12.2438v18.9474z" fill="#1570ef" opacity=".5"/><path d="m40 14.5263v18.9474l-17.8947-12.2438v-18.94737z" fill="#155eef" opacity=".5"/><path d="m40 33.4737v-18.9474l-17.8947 12.2438v18.9474z" fill="#1570ef" opacity=".5"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m0 14.5264v18.9473l17.8947-12.2437v-18.94741z" opacity=".5"/><path d="m0 33.4737v-18.9474l17.8947 12.2438v18.9474z" opacity=".5"/><path d="m40 14.5263v18.9474l-17.8947-12.2438v-18.94737z" opacity=".5"/><path d="m40 33.4737v-18.9474l-17.8947 12.2438v18.9474z" opacity=".5"/></g></svg>`
+  },
+  {
+    id: "europa",
+    name: "Europa",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m28.6446 39.168c-.6032 1.3404-1.353 2.6531-2.2519 3.7888 7.4581-2.5137 12.9483-9.3054 13.5527-17.4568h-2.6549c-3.2399 0-5.8424 2.5861-6.369 5.7829-.4855 2.9468-1.2621 5.6301-2.2769 7.8851z"/><path d="m22.7724 25.5c3.3921 0 6.167 2.8299 5.5439 6.1643-1.3533 7.2424-4.5667 12.3357-8.3155 12.3357-4.7435 0-8.6299-8.1549-8.975-18.5z"/><path d="m30.9904 17.1502c.4961 3.2267 3.1106 5.8498 6.3752 5.8498h2.6107c-.4123-8.3729-5.9735-15.39183-13.5836-17.95683.8989 1.13575 1.6487 2.44843 2.2519 3.78878 1.0643 2.36505 1.8666 5.20115 2.3458 8.31825z"/><path d="m28.4165 16.8957c.5674 3.3176-2.1954 6.1043-5.5612 6.1043h-11.8434c.2344-10.5811 4.1693-19 8.9889-19 3.8447 0 7.1263 5.35721 8.4157 12.8957z"/><path d="m8.51131 23c.11359-5.4083 1.14536-10.3894 2.84579-14.16805.6031-1.34035 1.3529-2.65303 2.2519-3.78878-7.61011 2.565-13.171316 9.58393-13.5836094 17.95683z"/><path d="m.0562286 25.5c.6043994 8.1514 6.0946514 14.9431 13.5527714 17.4568-.899-1.1357-1.6488-2.4484-2.2519-3.7888-1.6479-3.6619-2.66781-8.4531-2.83264-13.668z"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m28.6446 39.168c-.6032 1.3404-1.353 2.6531-2.2519 3.7888 7.4581-2.5137 12.9483-9.3054 13.5527-17.4568h-2.6549c-3.2399 0-5.8424 2.5861-6.369 5.7829-.4855 2.9468-1.2621 5.6301-2.2769 7.8851z"/><path d="m22.7724 25.5c3.3921 0 6.167 2.8299 5.5439 6.1643-1.3533 7.2424-4.5667 12.3357-8.3155 12.3357-4.7435 0-8.6299-8.1549-8.975-18.5z"/><path d="m30.9904 17.1502c.4961 3.2267 3.1106 5.8498 6.3752 5.8498h2.6107c-.4123-8.3729-5.9735-15.39183-13.5836-17.95683.8989 1.13575 1.6487 2.44843 2.2519 3.78878 1.0643 2.36505 1.8666 5.20115 2.3458 8.31825z"/><path d="m28.4165 16.8957c.5674 3.3176-2.1954 6.1043-5.5612 6.1043h-11.8434c.2344-10.5811 4.1693-19 8.9889-19 3.8447 0 7.1263 5.35721 8.4157 12.8957z"/><path d="m8.51131 23c.11359-5.4083 1.14536-10.3894 2.84579-14.16805.6031-1.34035 1.3529-2.65303 2.2519-3.78878-7.61011 2.565-13.171316 9.58393-13.5836094 17.95683z"/><path d="m.0562286 25.5c.6043994 8.1514 6.0946514 14.9431 13.5527714 17.4568-.899-1.1357-1.6488-2.4484-2.2519-3.7888-1.6479-3.6619-2.66781-8.4531-2.83264-13.668z"/></g></svg>`
+  },
+  {
+    id: "feather-dev",
+    name: "FeatherDev",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m36.3068 11.4224c-.4322-.4323-.8644-.8645-1.2967-1.2967-1.2966-1.38311-2.6797-2.76621-4.4086-3.63065-1.9882-1.03733-4.1493-.778-6.3104-.778-3.2849 0-11.4971 0-16.33798 0l3.28488 4.40865h19.6228c1.8153 0 3.3713.3458 4.8409 1.2967.2593.0864.5186.0864.6051 0z" fill="#53b1fd"/><path d="m39.9368 18.511c-.4322-.4322-.8645-.8645-1.2967-1.2967-1.2967-1.3831-2.6797-2.7662-4.4086-3.6306-1.9882-1.0374-4.1494-.778-6.3105-.778-2.8526 0-9.6817 0-14.5226 0l3.2849 4.4086h17.8939c1.8154 0 3.3714.3458 4.8409 1.2967.1729.0864.3458.0864.5187 0z" fill="#2e90fa"/><path d="m44 25.4263c-.4322-.4323-.8645-.8645-1.2967-1.2967-1.2966-1.3831-2.6797-2.7662-4.4086-3.6307-1.9882-1.0373-4.1493-.7779-6.3104-.7779-2.6798 0-8.558 0-13.3124 0l3.2848 4.4086h16.5973c1.8153 0 3.3713.3458 4.8409 1.2967.2593.0864.4322.1729.6051 0z" fill="#1570ef"/><path d="m7.60742 37.0961c.43222.4322.86444.8644 1.29666 1.2966 1.29662 1.3831 2.67972 2.7662 4.40862 3.6307 1.9882 1.0373 4.1493.778 6.3104.778h16.338l-3.2849-4.4087c-5.9646 0-15.3006 0-19.6228 0-1.8153 0-3.37132-.3457-4.84087-1.2966-.25933-.0865-.43222-.0865-.60511 0z" fill="#53b1fd"/><path d="m3.97656 30.0079c.43222.4323.86444.8645 1.29666 1.2967 1.29667 1.3831 2.67976 2.7662 4.40864 3.6307 1.98824 1.0373 4.14934.778 6.31044.778h14.5226l-3.2849-4.4087c-5.8782 0-13.9175 0-17.89391 0-1.81532 0-3.37132-.3458-4.84087-1.2967-.17289-.0864-.34577-.0864-.51866 0z" fill="#2e90fa"/><path d="m0 23.0058c.43222.4322.864441.8644 1.29666 1.2966 1.29666 1.3831 2.67977 2.7662 4.40866 3.6307 1.98821 1.0373 4.1493.778 6.31038.778h13.3124l-3.2849-4.4087c-5.7053 0-12.96657 0-16.59722 0-1.81533 0-3.37132-.3458-4.840874-1.2966-.259332-.0865-.432218-.0865-.605106 0z" fill="#1570ef"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m36.3068 11.4224c-.4322-.4323-.8644-.8645-1.2967-1.2967-1.2966-1.38311-2.6797-2.76621-4.4086-3.63065-1.9882-1.03733-4.1493-.778-6.3104-.778-3.2849 0-11.4971 0-16.33798 0l3.28488 4.40865h19.6228c1.8153 0 3.3713.3458 4.8409 1.2967.2593.0864.5186.0864.6051 0z" opacity=".5"/><path d="m39.9368 18.511c-.4322-.4322-.8645-.8645-1.2967-1.2967-1.2967-1.3831-2.6797-2.7662-4.4086-3.6306-1.9882-1.0374-4.1494-.778-6.3105-.778-2.8526 0-9.6817 0-14.5226 0l3.2849 4.4086h17.8939c1.8154 0 3.3714.3458 4.8409 1.2967.1729.0864.3458.0864.5187 0z" opacity=".7"/><path d="m44 25.4263c-.4322-.4323-.8645-.8645-1.2967-1.2967-1.2966-1.3831-2.6797-2.7662-4.4086-3.6307-1.9882-1.0373-4.1493-.7779-6.3104-.7779-2.6798 0-8.558 0-13.3124 0l3.2848 4.4086h16.5973c1.8153 0 3.3713.3458 4.8409 1.2967.2593.0864.4322.1729.6051 0z"/><path d="m7.60742 37.0961c.43222.4322.86444.8644 1.29666 1.2966 1.29662 1.3832 2.67972 2.7662 4.40862 3.6307 1.9882 1.0373 4.1493.778 6.3104.778h16.338l-3.2849-4.4087c-5.9646 0-15.3006 0-19.6228 0-1.8153 0-3.37132-.3457-4.84087-1.2966-.25933-.0865-.43222-.0865-.60511 0z" opacity=".5"/><path d="m3.97656 30.0079c.43222.4323.86444.8645 1.29666 1.2967 1.29667 1.3831 2.67976 2.7662 4.40864 3.6307 1.98824 1.0373 4.14934.778 6.31044.778h14.5226l-3.2849-4.4087c-5.8782 0-13.9175 0-17.89391 0-1.81532 0-3.37132-.3458-4.84087-1.2967-.17289-.0864-.34577-.0864-.51866 0z" opacity=".7"/><path d="m0 23.0058c.43222.4322.864441.8644 1.29666 1.2966 1.29666 1.3831 2.67977 2.7662 4.40866 3.6307 1.98821 1.0373 4.1493.778 6.31038.778h13.3124l-3.2849-4.4087c-5.7053 0-12.96657 0-16.59722 0-1.81533 0-3.37132-.3458-4.840874-1.2966-.259332-.0865-.432218-.0865-.605106 0z"/></g></svg>`
+  },
+  {
+    id: "flora-fauna",
+    name: "Flora&Fauna",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m13.7146 4c-2.2564 0-4.4203.89634-6.01579 2.49183l-7.69881 7.69877v3.524c0 2.4897 1.06944 4.7296 2.77401 6.2854-1.70457 1.5558-2.77401 3.7957-2.77401 6.2854v3.524l7.69881 7.6988c1.59549 1.5955 3.75939 2.4918 6.01579 2.4918 2.4897 0 4.7296-1.0694 6.2854-2.774 1.5558 1.7046 3.7957 2.774 6.2854 2.774 2.2564 0 4.4203-.8963 6.0158-2.4918l7.6988-7.6988v-3.524c0-2.4897-1.0694-4.7296-2.774-6.2854 1.7046-1.5558 2.774-3.7957 2.774-6.2854v-3.524l-7.6988-7.69877c-1.5955-1.59549-3.7594-2.49183-6.0158-2.49183-2.4897 0-4.7296 1.06944-6.2854 2.77401-1.5558-1.70457-3.7957-2.77401-6.2854-2.77401zm12.0442 20c-.0959-.0875-.19-.1774-.2822-.2696l-5.4766-5.4766-5.4766 5.4766c-.0922.0922-.1863.1821-.2822.2696.0959.0875.19.1774.2822.2696l5.4766 5.4766 5.4766-5.4766c.0922-.0922.1863-.1821.2822-.2696zm-3.5366 9.8094v1.683c0 2.244 1.8192 4.0632 4.0632 4.0632 1.0776 0 2.1111-.4281 2.8731-1.1901l6.3971-6.3971v-1.683c0-2.244-1.8192-4.0632-4.0632-4.0632-1.0776 0-2.1111.4281-2.8731 1.1901zm-4.4444 0-6.3971-6.3971c-.762-.762-1.79546-1.1901-2.87308-1.1901-2.24403 0-4.06318 1.8192-4.06318 4.0632v1.683l6.39706 6.3971c.762.762 1.7955 1.1901 2.8731 1.1901 2.244 0 4.0632-1.8192 4.0632-4.0632zm0-21.3018v1.683l-6.3971 6.3971c-.762.762-1.79546 1.1901-2.87308 1.1901-2.24403 0-4.06318-1.8192-4.06318-4.0632v-1.683l6.39706-6.39708c.762-.76199 1.7955-1.19007 2.8731-1.19007 2.244 0 4.0632 1.81915 4.0632 4.06315zm10.8415 8.0801-6.3971-6.3971v-1.683c0-2.244 1.8192-4.06315 4.0632-4.06315 1.0776 0 2.1111.42808 2.8731 1.19007l6.3971 6.39708v1.683c0 2.244-1.8192 4.0632-4.0632 4.0632-1.0776 0-2.1111-.4281-2.8731-1.1901z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m13.7146 4c-2.2564 0-4.4203.89634-6.01579 2.49183l-7.69881 7.69877v3.524c0 2.4897 1.06944 4.7296 2.77401 6.2854-1.70457 1.5558-2.77401 3.7957-2.77401 6.2854v3.524l7.69881 7.6988c1.59549 1.5955 3.75939 2.4918 6.01579 2.4918 2.4897 0 4.7296-1.0694 6.2854-2.774 1.5558 1.7046 3.7957 2.774 6.2854 2.774 2.2564 0 4.4203-.8963 6.0158-2.4918l7.6988-7.6988v-3.524c0-2.4897-1.0694-4.7296-2.774-6.2854 1.7046-1.5558 2.774-3.7957 2.774-6.2854v-3.524l-7.6988-7.69877c-1.5955-1.59549-3.7594-2.49183-6.0158-2.49183-2.4897 0-4.7296 1.06944-6.2854 2.77401-1.5558-1.70457-3.7957-2.77401-6.2854-2.77401zm12.0442 20c-.0959-.0875-.19-.1774-.2822-.2696l-5.4766-5.4766-5.4766 5.4766c-.0922.0922-.1863.1821-.2822.2696.0959.0875.19.1774.2822.2696l5.4766 5.4766 5.4766-5.4766c.0922-.0922.1863-.1821.2822-.2696zm-3.5366 9.8094v1.683c0 2.244 1.8192 4.0632 4.0632 4.0632 1.0776 0 2.1111-.4281 2.8731-1.1901l6.3971-6.3971v-1.683c0-2.244-1.8192-4.0632-4.0632-4.0632-1.0776 0-2.1111.4281-2.8731 1.1901zm-4.4444 0-6.3971-6.3971c-.762-.762-1.79546-1.1901-2.87308-1.1901-2.24403 0-4.06318 1.8192-4.06318 4.0632v1.683l6.39706 6.3971c.762.762 1.7955 1.1901 2.8731 1.1901 2.244 0 4.0632-1.8192 4.0632-4.0632zm0-21.3018v1.683l-6.3971 6.3971c-.762.762-1.79546 1.1901-2.87308 1.1901-2.24403 0-4.06318-1.8192-4.06318-4.0632v-1.683l6.39706-6.39708c.762-.76199 1.7955-1.19007 2.8731-1.19007 2.244 0 4.0632 1.81915 4.0632 4.06315zm10.8415 8.0801-6.3971-6.3971v-1.683c0-2.244 1.8192-4.06315 4.0632-4.06315 1.0776 0 2.1111.42808 2.8731 1.19007l6.3971 6.39708v1.683c0 2.244-1.8192 4.0632-4.0632 4.0632-1.0776 0-2.1111-.4281-2.8731-1.1901z" fill="#fff" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "focal-point",
+    name: "FocalPoint",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m10.7788 6.1817 4.6901 17.5036v-19.24382c.3719-.08679.7478-.16322 1.1273-.22897v19.47459l5.2752-19.6871c.3801.03442.7572.07945 1.1309.13479l-5.3176 19.84571 10.5701-18.30794c.3443.15492.6835.31927 1.0172.49274l-10.6095 18.3763 15.1464-15.1465c.2731.25824.5389.52407.7971.7972l-15.1486 15.1487 18.3784-10.6108c.1734.3337.3377.6729.4926 1.0173l-18.3034 10.5675 19.8403-5.3162c.0553.3737.1003.7508.1347 1.1309l-19.6869 5.2751h19.4741c-.0658.3796-.1422.7554-.229 1.1273h-19.2481l17.507 4.691c-.1798.3443-.3693.6827-.5681 1.0149l-17.2257-4.6156 14.3874 8.3066c-.2723.2801-.5528.5522-.8411.8161l-14.1087-8.1457 10.6759 10.6758c-.3377.1973-.6817.385-1.0316.5628l-10.4426-10.4426 6.8421 11.8508c-.3746.1059-.7537.2012-1.1368.2855l-6.6825-11.5744 3.2219 12.0243c-.2872.0122-.5759.0184-.8661.0184-.0991 0-.198-.0007-.2967-.0022l-3.1483-11.7497v11.4569c-.3795-.0657-.7554-.1421-1.1273-.2289v-11.2261l-2.7759 10.36c-.3541-.1396-.7033-.289-1.0471-.4478l2.7337-10.2024-5.13175 8.8884c-.3177-.2034-.62928-.4156-.9344-.6361l5.09135-8.8186-7.1301 7.1302c-.2731-.2583-.53893-.5241-.79717-.7971l7.12787-7.1279-8.81599 5.0899c-.22059-.3051-.4328-.6167-.6363-.9344l8.89259-5.1341-10.20737 2.735c-.15888-.3438-.3083-.693-.44793-1.047l10.3599-2.776h-11.226124c-.086806-.3719-.163256-.7477-.22903-1.1273h11.452154l-11.74511583-3.1471c-.00145443-.0995-.00218417-.1991-.00218417-.2989 0-.2894.00613487-.5774.0182816-.8639l12.0258184 3.2224-11.57621-6.6836c.084291-.3832.179549-.7623.285427-1.1369l11.855683 6.8449-10.44698-10.447c.17774-.3499.36544-.6939.56273-1.0315l10.68025 10.6802-8.14896-14.1144c.26387-.2882.53605-.56863.81617-.84096l8.30809 14.38996-4.61634-17.22828c.33214-.1988.67064-.38826 1.01484-.56802z" fill="#155eef"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m10.7788 6.1817 4.6901 17.5036v-19.24382c.3719-.08679.7478-.16322 1.1273-.22897v19.47459l5.2752-19.6871c.3801.03442.7572.07945 1.1309.13479l-5.3176 19.84571 10.5701-18.30794c.3443.15492.6835.31927 1.0172.49274l-10.6095 18.3763 15.1464-15.1465c.2731.25824.5389.52407.7971.7972l-15.1486 15.1487 18.3784-10.6108c.1734.3337.3377.6729.4926 1.0173l-18.3034 10.5675 19.8403-5.3162c.0553.3737.1003.7508.1347 1.1309l-19.6869 5.2751h19.4741c-.0658.3796-.1422.7554-.229 1.1273h-19.2481l17.507 4.691c-.1798.3443-.3693.6827-.5681 1.0149l-17.2257-4.6156 14.3874 8.3066c-.2723.2801-.5528.5522-.8411.8161l-14.1087-8.1457 10.6759 10.6758c-.3377.1973-.6817.385-1.0316.5628l-10.4426-10.4426 6.8421 11.8508c-.3746.1059-.7537.2012-1.1368.2855l-6.6825-11.5744 3.2219 12.0243c-.2872.0122-.5759.0184-.8661.0184-.0991 0-.198-.0007-.2967-.0022l-3.1483-11.7497v11.4569c-.3795-.0657-.7554-.1421-1.1273-.2289v-11.2261l-2.7759 10.36c-.3541-.1396-.7033-.289-1.0471-.4478l2.7337-10.2024-5.13174 8.8884c-.31771-.2034-.62929-.4156-.93441-.6361l5.09135-8.8186-7.1301 7.1302c-.2731-.2583-.53893-.5241-.79717-.7971l7.12787-7.1279-8.81599 5.0899c-.22059-.3051-.4328-.6167-.6363-.9344l8.89259-5.1341-10.20737 2.735c-.15888-.3438-.3083-.693-.44793-1.047l10.3599-2.776h-11.226124c-.086806-.3719-.163256-.7477-.22903-1.1273h11.452154l-11.74511583-3.1471c-.00145443-.0995-.00218417-.1991-.00218417-.2989 0-.2894.00613486-.5774.0182816-.8639l12.0258184 3.2224-11.57621-6.6836c.084291-.3832.179549-.7623.285427-1.1369l11.855683 6.8449-10.44698-10.447c.17774-.3499.36544-.6939.56273-1.0315l10.68025 10.6802-8.14896-14.1144c.26387-.2882.53605-.56863.81617-.84096l8.30809 14.38996-4.61634-17.22828c.33214-.1988.67064-.38826 1.01484-.56802z" fill="#fff"/></svg>`
+  },
+  {
+    id: "foresight",
+    name: "Foresight",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 31 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#444ce7"><path d="m-.00195312 17.8433 30.90545312-17.8433-.8189 12.6994-26.32058 15.1961z"/><path d="m3.76367 27.8951 21.73573-12.5492-.8189 12.6994-17.15086 9.902z" opacity=".5"/><path d="m7.52734 37.9477 12.56596-7.255-.8189 12.6994-7.9811 4.6079z" opacity=".25"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 31 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m-.00195312 17.8433 30.90545312-17.8433-.8189 12.6994-26.32058 15.1961z"/><path d="m3.76367 27.8951 21.73573-12.5492-.8189 12.6994-17.15086 9.902z" opacity=".5"/><path d="m7.52734 37.9477 12.56596-7.255-.8189 12.6994-7.9811 4.6079z" opacity=".25"/></g></svg>`
+  },
+  {
+    id: "galileo",
+    name: "Galileo",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m29.5411 6.41772c2.6913 5.27688 4.209 11.25228 4.209 17.58218s-1.5177 12.3054-4.2091 17.5823c6.2304-3.3881 10.4593-9.9914 10.4593-17.5823s-4.2289-14.19404-10.4592-17.58218z" fill="#6172f3"/><path d="m20.5481 5.99826c-.9047-1.28153-2.4457-1.9717-3.9913-1.70349-9.40496 1.63214-16.5568 9.83343-16.5568 19.70503 0 9.8717 7.1518 18.0729 16.5567 19.7051 1.5456.2682 3.0867-.4219 3.9913-1.7035 3.5923-5.0889 5.7025-11.2988 5.7025-18.0016 0-6.7027-2.1101-12.9126-5.7024-18.00154z" fill="#444ce7"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m29.5411 6.41772c2.6913 5.27688 4.209 11.25228 4.209 17.58218s-1.5177 12.3054-4.2091 17.5823c6.2304-3.3881 10.4593-9.9914 10.4593-17.5823s-4.2289-14.19404-10.4592-17.58218z" opacity=".7"/><path d="m20.5481 5.99826c-.9047-1.28153-2.4457-1.9717-3.9913-1.70349-9.40496 1.63214-16.5568 9.83343-16.5568 19.70503 0 9.8717 7.1518 18.0729 16.5567 19.7051 1.5456.2682 3.0867-.4219 3.9913-1.7035 3.5923-5.0889 5.7025-11.2988 5.7025-18.0016 0-6.7027-2.1101-12.9126-5.7024-18.00154z"/></g></svg>`
+  },
+  {
+    id: "global-bank",
+    name: "GlobalBank",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m27.6627 4h-15.3253l-12.3374 12.3373v15.3253l12.3374 12.3374h15.3253l12.3373-12.3374v-15.3253zm-13.2049 27.8554-7.90357-7.9036 7.90357-7.9036c2.988-2.988 7.9037-2.988 10.8916 0l7.9036 7.9036-7.9036 7.9036c-2.9879 2.988-7.8072 2.988-10.8916 0z" fill="#444ce7"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m27.6627 4h-15.3253l-12.3374 12.3373v15.3253l12.3374 12.3374h15.3253l12.3373-12.3374v-15.3253zm-13.2049 27.8554-7.90357-7.9036 7.90357-7.9036c2.988-2.988 7.9037-2.988 10.8916 0l7.9036 7.9036-7.9036 7.9036c-2.9879 2.988-7.8072 2.988-10.8916 0z" fill="#fff"/></svg>`
+  },
+  {
+    id: "hexsmith",
+    name: "Hexsmith",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m9.72461 41.7983h18.49589c1.2717 0 2.4469-.6785 3.0827-1.7798l4.1102-7.1191h-20.5481z" opacity=".7"/><path d="m25.1445 15.1015h-20.55661l4.11021-7.11909c.63585-1.10133 1.811-1.77977 3.0827-1.77977h18.4959z" opacity=".4"/><path d="m39.5272 25.7801c.6358-1.1014.6358-2.4582 0-3.5596l-4.1102-7.1191-5.1378 8.8989h-20.55068l5.13718 8.8989h20.5481l.0016-.0027.0016.0027z" opacity=".4"/><path d="m14.8634 32.8992-5.13775-8.8988-5.13776 8.8988 5.13776 8.8989z"/><path d="m25.1445 15.1014h-20.55593l-4.108166 7.1192c-.635516 1.1013-.635318 2.458.000521 3.5591l4.111125 7.1195 5.13775-8.8989h20.55l.0013-.0021z" opacity=".7"/><path d="m35.4181 15.1015-5.1378-8.89886-5.1377 8.89886 5.1377 8.8989z"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m9.72461 41.7983h18.49589c1.2717 0 2.4469-.6785 3.0827-1.7798l4.1102-7.1191h-20.5481z" opacity=".7"/><path d="m25.1445 15.1015h-20.55661l4.11021-7.11909c.63585-1.10133 1.811-1.77977 3.0827-1.77977h18.4959z" opacity=".4"/><path d="m39.5272 25.7801c.6358-1.1013.6358-2.4582 0-3.5596l-4.1102-7.1191-5.1378 8.8989h-20.55068l5.13718 8.8989h20.5481l.0016-.0027.0016.0027z" opacity=".4"/><path d="m14.8634 32.8992-5.13775-8.8988-5.13776 8.8988 5.13776 8.8989z"/><path d="m25.1445 15.1014h-20.55593l-4.108166 7.1192c-.635516 1.1013-.635318 2.458.000521 3.5591l4.111125 7.1195 5.13775-8.8989h20.55l.0013-.0022z" opacity=".7"/><path d="m35.4181 15.1015-5.1378-8.89886-5.1377 8.89886 5.1377 8.8989z"/></g></svg>`
+  },
+  {
+    id: "hourglass",
+    name: "Hourglass",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 30 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 41.2222c0 1.5341 1.24365 2.7778 2.77778 2.7778h24.44442c1.5341 0 2.7778-1.2437 2.7778-2.7778v-7.2222c0-8.2843-6.7157-15-15-15-8.28427 0-15 6.7157-15 15z" fill="#1570ef"/><path d="m0 6.77778c0-1.53413 1.24365-2.77778 2.77778-2.77778h24.44442c1.5341 0 2.7778 1.24365 2.7778 2.77778v7.22222c0 8.2843-6.7157 15-15 15-8.28427 0-15-6.7157-15-15z" fill="#53b1fd" opacity=".5"/></svg>`,
+    darkSvg: `<svg width="100%" height="100%" viewBox="0 0 30 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path opacity="0.7" d="M0 41.2222C0 42.7563 1.24365 44 2.77778 44H27.2222C28.7563 44 30 42.7563 30 41.2222V34C30 25.7157 23.2843 19 15 19C6.71573 19 0 25.7157 0 34V41.2222Z" fill="white"/><path opacity="0.7" d="M0 6.77778C0 5.24365 1.24365 4 2.77778 4H27.2222C28.7563 4 30 5.24365 30 6.77778V14C30 22.2843 23.2843 29 15 29C6.71573 29 0 22.2843 0 14V6.77778Z" fill="white"/></svg>`
+  },
+  {
+    id: "kintsugi",
+    name: "Kintsugi",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m20 4 4.2861 9.6525 9.856-3.79464-3.7946 9.85604 9.6525 4.2861-9.6525 4.2861 3.7946 9.856-9.856-3.7946-4.2861 9.6525-4.2861-9.6525-9.85604 3.7946 3.79469-9.856-9.65255-4.2861 9.65255-4.2861-3.79469-9.85604 9.85604 3.79464z" fill="#155eef"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m20 4 4.2861 9.6525 9.856-3.79464-3.7946 9.85604 9.6525 4.2861-9.6525 4.2861 3.7946 9.856-9.856-3.7946-4.2861 9.6525-4.2861-9.6525-9.85604 3.7946 3.79469-9.856-9.65255-4.2861 9.65255-4.2861-3.79469-9.85604 9.85604 3.79464z" fill="#155eef"/></svg>`
+  },
+  {
+    id: "layers",
+    name: "Layers",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m5.03741 15.4637c.7506-2.8008 3.62961-5.67985 6.43049-6.43044l17.4617-4.67957c2.8009-.7506 4.4629.91146 3.7123 3.71231l-4.6795 17.4617c-.7506 2.8009-3.6297 5.6799-6.4305 6.4305l-17.46175 4.6796c-2.80085.7505-4.462904-.9115-3.712306-3.7124z" opacity=".7"/><path d="m12.0355 22.4642c.7506-2.8008 3.6296-5.6799 6.4304-6.4305l17.4617-4.6795c2.8009-.7506 4.4629.9114 3.7123 3.7123l-4.6795 17.4617c-.7506 2.8009-3.6296 5.6799-6.4305 6.4305l-17.4617 4.6795c-2.80085.7506-4.46291-.9114-3.71231-3.7123z" opacity=".7"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m5.03741 15.4637c.7506-2.8008 3.62961-5.67985 6.43049-6.43044l17.4617-4.67957c2.8009-.7506 4.4629.91146 3.7123 3.71231l-4.6795 17.4617c-.7506 2.8009-3.6297 5.6799-6.4305 6.4305l-17.46175 4.6795c-2.80085.7506-4.462904-.9114-3.712306-3.7123z" opacity=".7"/><path d="m12.0355 22.4642c.7506-2.8008 3.6296-5.6799 6.4304-6.4305l17.4617-4.6795c2.8009-.7506 4.4629.9114 3.7123 3.7123l-4.6795 17.4617c-.7506 2.8009-3.6296 5.6799-6.4305 6.4305l-17.4617 4.6795c-2.80085.7506-4.46291-.9114-3.71231-3.7123z" opacity=".7"/></g></svg>`
+  },
+  {
+    id: "lightspeed",
+    name: "Lightspeed",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 48 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 24c0 6.6274 5.37258 12 12 12v-12c0 6.6274 5.3726 12 12 12v-12c0 6.6274 5.3726 12 12 12s12-5.3726 12-12-5.3726-12-12-12-12 5.3726-12 12v-12c-6.6274 0-12 5.3726-12 12v-12c-6.62742 0-12 5.3726-12 12z" fill="#155eef"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 48 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m0 24c0 6.6274 5.37258 12 12 12v-12c0 6.6274 5.3726 12 12 12v-12c0 6.6274 5.3726 12 12 12s12-5.3726 12-12-5.3726-12-12-12-12 5.3726-12 12v-12c-6.6274 0-12 5.3726-12 12v-12c-6.62742 0-12 5.3726-12 12z" fill="#155eef"/></svg>`
+  },
+  {
+    id: "luminescence",
+    name: "Luminescence",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m32.3008 36h-.1015c-.0261.0402-.0523.0804-.0787.1204-2.7604 1.8201-6.0668 2.8794-9.6206 2.8794-9.665 0-17.5-7.835-17.5-17.5 0-3.5538 1.05931-6.8602 2.87939-9.6206.04009-.0264.08029-.0527.12061-.0788v-.1017c-.04056.0599-.08077.1201-.12061.1805-4.7469 3.1299-7.87939 8.5094-7.87939 14.6206 0 9.665 7.83502 17.5 17.5 17.5 6.1112 0 11.4907-3.1325 14.6206-7.8794.0603-.0398.1204-.0799.1802-.1204z"/><g opacity=".5"><path d="m40.0003 21.5c0 6.1112-3.1325 11.4907-7.8794 14.6206 1.8201-2.7604 2.8794-6.0668 2.8794-9.6206 0-9.665-7.835-17.5-17.5-17.5-3.5538 0-6.8602 1.0593-9.6206 2.8794 3.1299-4.74691 8.5094-7.8794 14.6206-7.8794 9.665 0 17.5 7.835 17.5 17.5z"/><path d="m32.0003 36.1994c.0403-.0261.0805-.0524.1206-.0788-.0398.0604-.08.1206-.1206.1805z"/><path d="m7.80088 12c.02611-.0403.05238-.0805.07882-.1206-.06043.0398-.12059.08-.18048.1206z"/></g></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m32.3008 36h-.1015c-.0261.0402-.0523.0804-.0787.1204-2.7604 1.8201-6.0668 2.8794-9.6206 2.8794-9.665 0-17.5-7.835-17.5-17.5 0-3.5538 1.05931-6.8602 2.87939-9.6206.04009-.0264.08029-.0527.12061-.0788v-.1017c-.04056.0599-.08077.1201-.12061.1805-4.7469 3.1299-7.87939 8.5094-7.87939 14.6206 0 9.665 7.83502 17.5 17.5 17.5 6.1112 0 11.4907-3.1325 14.6206-7.8794.0603-.0398.1204-.0799.1802-.1204z"/><g opacity=".5"><path d="m40.0003 21.5c0 6.1112-3.1325 11.4907-7.8794 14.6206 1.8201-2.7604 2.8794-6.0668 2.8794-9.6206 0-9.665-7.835-17.5-17.5-17.5-3.5538 0-6.8602 1.0593-9.6206 2.8794 3.1299-4.74691 8.5094-7.8794 14.6206-7.8794 9.665 0 17.5 7.835 17.5 17.5z"/><path d="m32.0003 36.1994c.0403-.0261.0805-.0524.1206-.0788-.0398.0604-.08.1206-.1206.1805z"/><path d="m7.80088 12c.02611-.0403.05238-.0805.07882-.1206-.06043.0398-.12059.08-.18048.1206z"/></g></g></svg>`
+  },
+  {
+    id: "luminous",
+    name: "Luminous",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 42 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m14.1061 19.6565c5.499-2.6299 9.8025-7.0929 12.2731-12.67168-1.5939-1.67362-3.666-2.86907-5.8975-3.58634l-1.1954-.39848c-.0797.15939-.1594.39849-.1594.55788-1.9127 5.41936-5.8178 9.80262-11.07766 12.27322-3.66599 1.7533-6.37564 4.9412-7.650763 8.7666l-.398477 1.1955c.159391.0797.39848.1593.557871.1593 1.514209.5579 3.028419 1.2752 4.462939 2.1519 1.99238-3.5864 5.18019-6.6148 9.08529-8.4479z"/><path d="m37.2173 19.9753c-2.9487 4.463-7.0132 8.0494-12.034 10.4403-4.0645 1.9127-7.1726 5.499-8.6071 9.8026l-.3985 1.3549c1.5142 1.3548 3.3472 2.3909 5.3396 3.0284l1.1955.3985c.0796-.1594.1593-.3985.1593-.5579 1.9127-5.4193 5.8178-9.8026 11.0777-12.2732 3.666-1.7533 6.4553-4.9412 7.6507-8.7666l.3985-1.1954c-1.6736-.4782-3.2675-1.2752-4.7817-2.2316z" opacity=".6"/><path d="m12.9903 37.4284c1.9924-4.7818 5.6584-8.6869 10.3604-10.9184 4.3035-2.0721 7.8898-5.26 10.3604-9.1651-1.833-1.7533-3.3472-3.7458-4.463-6.1366-2.9487 5.4193-7.571 9.8026-13.2294 12.5123-3.2675 1.5142-5.8974 4.1442-7.49136 7.3321 1.75326 1.6736 3.18786 3.7457 4.30356 6.0569 0 0 .0797.1594.1594.3188z" opacity=".8"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 42 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m14.1061 19.6565c5.499-2.6299 9.8025-7.0929 12.2731-12.67168-1.5939-1.67362-3.666-2.86907-5.8975-3.58634l-1.1954-.39848c-.0797.15939-.1594.39849-.1594.55788-1.9127 5.41936-5.8178 9.80262-11.07766 12.27322-3.66599 1.7533-6.37564 4.9412-7.650763 8.7666l-.398477 1.1955c.159391.0797.39848.1593.557871.1593 1.514209.5579 3.028419 1.2752 4.462939 2.1519 1.99238-3.5864 5.18019-6.6148 9.08529-8.4479z"/><path d="m37.2173 19.9753c-2.9487 4.463-7.0132 8.0494-12.034 10.4403-4.0645 1.9127-7.1726 5.499-8.6071 9.8026l-.3985 1.3549c1.5142 1.3548 3.3472 2.3909 5.3396 3.0284l1.1955.3985c.0796-.1594.1593-.3985.1593-.5579 1.9127-5.4193 5.8178-9.8026 11.0777-12.2732 3.666-1.7533 6.4553-4.9412 7.6507-8.7666l.3985-1.1954c-1.6736-.4782-3.2675-1.2752-4.7817-2.2316z" opacity=".5"/><path d="m12.9903 37.4284c1.9924-4.7818 5.6584-8.6869 10.3604-10.9184 4.3035-2.0721 7.8898-5.26 10.3604-9.1651-1.833-1.7533-3.3472-3.7458-4.463-6.1366-2.9487 5.4193-7.571 9.8026-13.2294 12.5123-3.2675 1.5142-5.8974 4.1442-7.49136 7.3321 1.75326 1.6736 3.18786 3.7457 4.30356 6.0569 0 0 .0797.1594.1594.3188z" opacity=".7"/></g></svg>`
+  },
+  {
+    id: "pollinate",
+    name: "Pollinate",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 38 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m25.0008 24c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6 2.6863-6 6-6 6 2.6863 6 6z"/><path d="m25.0008 10c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6c0-3.31371 2.6863-6 6-6s6 2.68629 6 6z"/><path d="m37.125 31c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6 2.6863-6 6-6 6 2.6863 6 6z"/><path d="m37.127 17.0002c0 3.3137-2.6863 6-6 6-3.3138 0-6-2.6863-6-6s2.6862-6 6-6c3.3137 0 6 2.6863 6 6z"/><path d="m25.0008 38c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6 2.6863-6 6-6 6 2.6863 6 6z"/><path d="m12.877 17c0 3.3137-2.6863 6-6.00005 6-3.31371 0-5.999997-2.6863-5.999997-6s2.686287-6 5.999997-6c3.31375 0 6.00005 2.6863 6.00005 6z"/><path d="m12.875 30.9997c0 3.3137-2.6863 6-6 6-3.31371 0-6-2.6863-6-6s2.68629-6 6-6c3.3137 0 6 2.6863 6 6z"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 38 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m25.0008 24c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6 2.6863-6 6-6 6 2.6863 6 6z"/><path d="m25.0008 10c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6c0-3.31371 2.6863-6 6-6s6 2.68629 6 6z"/><path d="m37.125 31c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6 2.6863-6 6-6 6 2.6863 6 6z"/><path d="m37.127 17.0002c0 3.3137-2.6863 6-6 6-3.3138 0-6-2.6863-6-6s2.6862-6 6-6c3.3137 0 6 2.6863 6 6z"/><path d="m25.0008 38c0 3.3137-2.6863 6-6 6s-6-2.6863-6-6 2.6863-6 6-6 6 2.6863 6 6z"/><path d="m12.877 17c0 3.3137-2.6863 6-6.00005 6-3.31371 0-5.999997-2.6863-5.999997-6s2.686287-6 5.999997-6c3.31375 0 6.00005 2.6863 6.00005 6z"/><path d="m12.875 30.9997c0 3.3137-2.6863 6-6 6-3.31371 0-6-2.6863-6-6s2.68629-6 6-6c3.3137 0 6 2.6863 6 6z"/></g></svg>`
+  },
+  {
+    id: "polymath",
+    name: "Polymath",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 38 48" width="100%" xmlns="http://www.w3.org/2000/svg"><circle cx="19" cy="24" r="16" stroke="#155eef" stroke-width="6"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 38 48" width="100%" xmlns="http://www.w3.org/2000/svg"><circle cx="19" cy="24" r="16" stroke="#fff" stroke-width="6"/></svg>`
+  },
+  {
+    id: "prometheus",
+    name: "Prometheus",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m10.4993 16.5h-7.29875c-1.76731 0-3.20055 1.4327-3.20055 3.2v2.8h11c2.7614 0 5-2.2386 5-5s2.2386-5 5-5h19c2.2091 0 4-1.7909 4-4v-3h-22.5c-3.0376 0-5.5 2.46243-5.5 5.5 0 3.0376-2.4631 5.5-5.5007 5.5z"/><path d="m10.4993 26.5h-7.29875c-1.76731 0-3.20055 1.4327-3.20055 3.2v2.8h11c2.7614 0 5-2.2386 5-5s2.2386-5 5-5h13c2.2091 0 4-1.7909 4-4v-3h-16.5c-3.0376 0-5.5 2.4624-5.5 5.5s-2.4631 5.5-5.5007 5.5z" opacity=".7"/><path d="m10.4993 36.5h-7.29875c-1.76731 0-3.20055 1.4327-3.20055 3.2v2.8h11c2.7614 0 5-2.2386 5-5s2.2386-5 5-5h7.8c1.7673 0 3.2-1.4327 3.2-3.2v-3.8h-10.5c-3.0376 0-5.5 2.4624-5.5 5.5s-2.4631 5.5-5.5007 5.5z" opacity=".5"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m10.4993 16.5h-7.29875c-1.76731 0-3.20055 1.4327-3.20055 3.2v2.8h11c2.7614 0 5-2.2386 5-5s2.2386-5 5-5h19c2.2091 0 4-1.7909 4-4v-3h-22.5c-3.0376 0-5.5 2.46243-5.5 5.5 0 3.0376-2.4631 5.5-5.5007 5.5z"/><path d="m10.4993 26.5h-7.29875c-1.76731 0-3.20055 1.4327-3.20055 3.2v2.8h11c2.7614 0 5-2.2386 5-5s2.2386-5 5-5h13c2.2091 0 4-1.7909 4-4v-3h-16.5c-3.0376 0-5.5 2.4624-5.5 5.5s-2.4631 5.5-5.5007 5.5z" opacity=".75"/><path d="m10.4993 36.5h-7.29875c-1.76731 0-3.20055 1.4327-3.20055 3.2v2.8h11c2.7614 0 5-2.2386 5-5s2.2386-5 5-5h7.8c1.7673 0 3.2-1.4327 3.2-3.2v-3.8h-10.5c-3.0376 0-5.5 2.4624-5.5 5.5s-2.4631 5.5-5.5007 5.5z" opacity=".5"/></g></svg>`
+  },
+  {
+    id: "quantum",
+    name: "Quantum",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 39 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m9 23c0-5.5228 4.4772-10 10-10 5.5229 0 10 4.4772 10 10h9c0-10.4934-8.5066-19-19-19-10.49341 0-18.99999908 8.5066-19 19s8.50659 19 19 19v-9c-5.5228 0-10-4.4771-10-10z"/><path d="m29 23c0 5.5228 4.4772 10 10 10v9c-10.4934 0-19-8.5066-19-19z" opacity=".5"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 39 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m9 23c0-5.5228 4.4772-10 10-10 5.5229 0 10 4.4772 10 10h9c0-10.4934-8.5066-19-19-19-10.49341 0-18.99999908 8.5066-19 19s8.50659 19 19 19v-9c-5.5228 0-10-4.4771-10-10z"/><path d="m29 23c0 5.5228 4.4772 10 10 10v9c-10.4934 0-19-8.5066-19-19z" opacity=".5"/></g></svg>`
+  },
+  {
+    id: "quartz-ai",
+    name: "QuartzAI",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m17.6264 6.5h14.8017l11.4661 18.6661-15.7786 15.9489-22.68835-4.0459-5.157719-19.2098zm.5273 4.9692-6.816 15.105 6.4504 5.3411 8.8246-3.7975zm12.3276 15.3 9.2139-2.7073-7.1983-11.7184zm-.6163-17.2692h-9.3468l7.3309 14.4284zm6.9795 18.5263-6.779 1.9919-.5448 5.4109zm-10.5005 9.008.5824-5.7856-6.0573 2.6067zm-6.8394-.5022-10.91261-1.9459 1.64741-5.0264 6.438 5.3308zm-11.69782-9.1824-2.7037-3.0571 1.66868 6.215zm-3.53432-8.5248 4.81433 5.4437 5.50351-12.1963z" fill="#155eef" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 44 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m17.6264 6.5h14.8017l11.4661 18.6661-15.7786 15.9489-22.68835-4.0459-5.157719-19.2098zm.5273 4.9692-6.816 15.105 6.4504 5.3411 8.8246-3.7975zm12.3276 15.3 9.2139-2.7073-7.1983-11.7184zm-.6163-17.2692h-9.3468l7.3309 14.4284zm6.9795 18.5263-6.779 1.9919-.5448 5.4109zm-10.5005 9.008.5824-5.7856-6.0573 2.6067zm-6.8394-.5022-10.91261-1.9459 1.64741-5.0264 6.438 5.3308zm-11.69782-9.1824-2.7037-3.0571 1.66868 6.215zm-3.53432-8.5248 4.81433 5.4437 5.50351-12.1963z" fill="#fff" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "radius",
+    name: "Radius",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill="#155eef" fill-rule="evenodd"><path d="m18.5 19v-15h3v15z"/><path d="m18.5 44v-15h3v15z"/><path d="m22.4754 19.404 10.6066-10.60664 2.1214 2.12134-8.4853 8.4853z"/><path d="m4.79776 37.0816 10.60664-10.6066 2.1213 2.1214-10.60662 10.6066z"/><path d="m26.7178 28.5963 8.4853 8.4852-2.1213 2.1214-10.6066-10.6066z"/><path d="m6.91885 8.79727 10.60665 10.60663-2.1214 2.1213-10.60657-10.6066z"/><path d="m18.5 22.5h21.5v3h-21.5z"/><path d="m.00000026 22.5h14.99999974v3h-15z"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 40 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g clip-rule="evenodd" fill="#155eef" fill-rule="evenodd"><path d="m18.5 19v-15h3v15z"/><path d="m18.5 44v-15h3v15z"/><path d="m22.4754 19.404 10.6066-10.60664 2.1214 2.12134-8.4853 8.4853z"/><path d="m4.79776 37.0816 10.60664-10.6066 2.1213 2.1214-10.60662 10.6066z"/><path d="m26.7178 28.5963 8.4853 8.4852-2.1213 2.1214-10.6066-10.6066z"/><path d="m6.91885 8.79727 10.60665 10.60663-2.1214 2.1213-10.60657-10.6066z"/><path d="m18.5 22.5h21.5v3h-21.5z"/><path d="m.00000026 22.5h14.99999974v3h-15z"/></g></svg>`
+  },
+  {
+    id: "railspeed",
+    name: "Railspeed",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 36 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m0 7.5h28.8c2.5202 0 3.7804 0 4.743.49047.8467.43143 1.5351 1.11984 1.9665 1.96657.4905.96256.4905 2.22276.4905 4.74296v1.8h-28.8c-2.52024 0-3.78035 0-4.74296-.4905-.84673-.4314-1.535139-1.1198-1.966569-1.9665-.490471-.9626-.490471-2.2228-.490471-4.743z"/><path d="m0 28.5h28.8c2.5202 0 3.7804 0 4.743-.4905.8467-.4314 1.5351-1.1198 1.9665-1.9665.4905-.9626.4905-2.2228.4905-4.743v-1.8h-28.8c-2.52024 0-3.78035 0-4.74296.4905-.84673.4314-1.535139 1.1198-1.966569 1.9665-.490471.9626-.490471 2.2228-.490471 4.743z"/><path d="m14 31.5h14.8c2.5202 0 3.7804 0 4.743.4905.8467.4314 1.5351 1.1198 1.9665 1.9665.4905.9626.4905 2.2228.4905 4.743v1.8h-14.8c-2.5202 0-3.7804 0-4.743-.4905-.8467-.4314-1.5351-1.1198-1.9665-1.9665-.4905-.9626-.4905-2.2228-.4905-4.743z"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 36 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m0 7.5h28.8c2.5202 0 3.7804 0 4.743.49047.8467.43143 1.5351 1.11984 1.9665 1.96657.4905.96256.4905 2.22276.4905 4.74296v1.8h-28.8c-2.52024 0-3.78035 0-4.74296-.4905-.84673-.4314-1.535139-1.1198-1.966569-1.9665-.490471-.9626-.490471-2.2228-.490471-4.743z"/><path d="m0 28.5h28.8c2.5202 0 3.7804 0 4.743-.4905.8467-.4314 1.5351-1.1198 1.9665-1.9665.4905-.9626.4905-2.2228.4905-4.743v-1.8h-28.8c-2.52024 0-3.78035 0-4.74296.4905-.84673.4314-1.535139 1.1198-1.966569 1.9665-.490471.9626-.490471 2.2228-.490471 4.743z"/><path d="m14 31.5h14.8c2.5202 0 3.7804 0 4.743.4905.8467.4314 1.5351 1.1198 1.9665 1.9665.4905.9626.4905 2.2228.4905 4.743v1.8h-14.8c-2.5202 0-3.7804 0-4.743-.4905-.8467-.4314-1.5351-1.1198-1.9665-1.9665-.4905-.9626-.4905-2.2228-.4905-4.743z"/></g></svg>`
+  },
+  {
+    id: "refractional",
+    name: "Refractional",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 48 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path d="m48 11h-17.0775c-1.2151 0-2.3644.5524-3.1235 1.5012l-1.598 1.9976c-.7591.9488-1.9084 1.5012-3.1235 1.5012h-15.0775l-4 5h17.0775c1.2151 0 2.3644-.5524 3.1235-1.5012l1.598-1.9976c.7591-.9488 1.9084-1.5012 3.1235-1.5012h15.0775z" fill="#444ce7"/><path d="m46 19h-17.0775c-1.2151 0-2.3644.5524-3.1235 1.5012l-1.598 1.9976c-.7591.9488-1.9084 1.5012-3.1235 1.5012h-15.0775l-4 5h17.0775c1.2151 0 2.3644-.5524 3.1235-1.5012l1.598-1.9976c.7591-.9488 1.9084-1.5012 3.1235-1.5012h15.0775z" fill="#155eef"/><path d="m44 27h-17.0775c-1.2151 0-2.3644.5524-3.1235 1.5012l-1.598 1.9976c-.7591.9488-1.9084 1.5012-3.1235 1.5012h-15.0775l-4 5h17.0775c1.2151 0 2.3644-.5524 3.1235-1.5012l1.598-1.9976c.7591-.9488 1.9084-1.5012 3.1235-1.5012h15.0775z" fill="#8098f9"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 48 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#fff"><path d="m48 11h-17.0775c-1.2151 0-2.3644.5524-3.1235 1.5012l-1.598 1.9976c-.7591.9488-1.9084 1.5012-3.1235 1.5012h-15.0775l-4 5h17.0775c1.2151 0 2.3644-.5524 3.1235-1.5012l1.598-1.9976c.7591-.9488 1.9084-1.5012 3.1235-1.5012h15.0775z"/><path d="m46 19h-17.0775c-1.2151 0-2.3644.5524-3.1235 1.5012l-1.598 1.9976c-.7591.9488-1.9084 1.5012-3.1235 1.5012h-15.0775l-4 5h17.0775c1.2151 0 2.3644-.5524 3.1235-1.5012l1.598-1.9976c.7591-.9488 1.9084-1.5012 3.1235-1.5012h15.0775z"/><path d="m44 27h-17.0775c-1.2151 0-2.3644.5524-3.1235 1.5012l-1.598 1.9976c-.7591.9488-1.9084 1.5012-3.1235 1.5012h-15.0775l-4 5h17.0775c1.2151 0 2.3644-.5524 3.1235-1.5012l1.598-1.9976c.7591-.9488 1.9084-1.5012 3.1235-1.5012h15.0775z"/></g></svg>`
+  },
+  {
+    id: "renaissance",
+    name: "Renaissance",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 35 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m12.7018 5c1.841 0 3.4172 1.31967 3.7408 3.13199l.4648 2.60271c.3236 1.8123 1.8998 3.132 3.7408 3.132h3.1518c4.8969 0 8.8667 3.9697 8.8667 8.8666 0 2.9333-1.4244 5.5339-3.6191 7.1479.92.3126 1.6466.809 2.1799 1.461.549.7191.9411 1.7411 1.1764 3.028.0392.3406.0883.6718.1373 1.003s.098.6624.1372 1.003c.0408.3538.0709.6566.096.9083.0232.233.042.4223.0609.5679.0784 1.0598.1961 1.9303.3529 2.5738.1655.9048.4994 1.7867.9727 2.5738h-6.6982c-.3137-.6056-.5098-1.3248-.6666-2.1196-.1349-.6836-.2408-1.5352-.3676-2.5548-.0207-.1659-.0418-.3362-.0638-.5111l-.2353-1.7411c-.1961-1.3247-.4314-2.271-.6667-2.8766-.2745-.5677-.7058-.9841-1.2941-1.2112-.6274-.2271-1.5686-.3856-2.9019-.3856h-.3018c-1.841 0-3.4172-1.3197-3.7408-3.132l-.4648-2.6027c-.3236-1.8123-1.8998-3.132-3.7408-3.132h-5.68517v10.1334h-6.33333v-27.8667zm13.6315 17.7333c0 1.3992-1.1342 2.5334-2.5333 2.5334h-3.1518c-1.841 0-3.4172-1.3197-3.7408-3.132l-.4648-2.6027c-.3236-1.8123-1.8998-3.132-3.7408-3.132h-5.36847v-5.0667h5.68517c1.841 0 3.4172 1.3197 3.7408 3.132l.4647 2.6027c.3237 1.8123 1.8999 3.132 3.7409 3.132h2.8351c1.3991 0 2.5333 1.1342 2.5333 2.5333z" fill="#1849a9" fill-rule="evenodd"/></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 35 48" width="100%" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="m12.7018 5c1.841 0 3.4172 1.31967 3.7408 3.13199l.4648 2.60271c.3236 1.8123 1.8998 3.132 3.7408 3.132h3.1518c4.8969 0 8.8667 3.9697 8.8667 8.8666 0 2.9333-1.4244 5.5339-3.6191 7.1479.92.3126 1.6466.809 2.1799 1.461.549.7191.9411 1.7411 1.1764 3.028.0392.3406.0883.6718.1373 1.003s.098.6624.1372 1.003c.0408.3538.0709.6566.096.9083.0232.233.042.4223.0609.5679.0784 1.0598.1961 1.9303.3529 2.5738.1655.9048.4994 1.7867.9727 2.5738h-6.6982c-.3137-.6056-.5098-1.3247-.6666-2.1196-.1349-.6836-.2408-1.5352-.3676-2.5548-.0207-.1659-.0418-.3362-.0638-.5111l-.2353-1.7411c-.1961-1.3247-.4314-2.271-.6667-2.8766-.2745-.5677-.7058-.9841-1.2941-1.2112-.6274-.2271-1.5686-.3856-2.9019-.3856h-.3018c-1.841 0-3.4172-1.3197-3.7408-3.132l-.4648-2.6027c-.3236-1.8123-1.8998-3.132-3.7408-3.132h-5.68517v10.1334h-6.33333v-27.8667zm13.6315 17.7333c0 1.3992-1.1342 2.5334-2.5333 2.5334h-3.1518c-1.841 0-3.4172-1.3197-3.7408-3.132l-.4648-2.6027c-.3236-1.8123-1.8998-3.132-3.7408-3.132h-5.36847v-5.0667h5.68517c1.841 0 3.4172 1.3197 3.7408 3.132l.4647 2.6027c.3237 1.8123 1.8999 3.132 3.7409 3.132h2.8351c1.3991 0 2.5333 1.1342 2.5333 2.5333z" fill="#fff" fill-rule="evenodd"/></svg>`
+  },
+  {
+    id: "sisyphus",
+    name: "Sisyphus",
+    lightSvg: `<svg fill="none" height="100%" viewBox="0 0 32 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m.599609 19.2002h9.59998v9.59999h-9.59998z"/><path d="m31.4004 28.7998h9.6v9.59999h-9.6z" transform="matrix(-1 0 -0 -1 62.8008 57.5996)"/><path d="m10.1992 19.2001 11.6-9.6v9.6l-11.6 9.6z" opacity=".2"/><path d="m21.7988 28.7999-11.6 9.6v-9.6l11.6-9.6z" opacity=".5"/><path d="m.599609 19.2 21.199991-19.2v9.59999l-11.6 9.60001z" opacity=".6"/><path d="m31.4004 28.8-21.2 19.2v-9.6l11.6-9.6z" opacity=".7"/></g></svg>`,
+    darkSvg: `<svg fill="none" height="100%" viewBox="0 0 32 48" width="100%" xmlns="http://www.w3.org/2000/svg"><g fill="#155eef"><path d="m.599609 19.2002h9.59998v9.59999h-9.59998z"/><path d="m31.4004 28.7998h9.6v9.59999h-9.6z" transform="matrix(-1 0 -0 -1 62.8008 57.5996)"/><path d="m10.1992 19.2001 11.6-9.6v9.6l-11.6 9.6z" opacity=".2"/><path d="m21.7988 28.7999-11.6 9.6v-9.6l11.6-9.6z" opacity=".5"/><path d="m.599609 19.2 21.199991-19.2v9.59999l-11.6 9.60001z" opacity=".6"/><path d="m31.4004 28.8-21.2 19.2v-9.6l11.6-9.6z" opacity=".7"/></g></svg>`
+  },
+  {
+    id: "solaris-energy",
+    name: "Solaris Energy",
+    lightSvg: `<svg width="100%" height="100%" viewBox="0 0 40 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 4V16.3604C20 19.087 16.6569 20.3998 14.8016 18.4017L7 10M40 24H27.6396C24.913 24 23.6002 20.6569 25.5983 18.8016L34 11M20 44V31.6396C20 28.913 23.3431 27.6002 25.1984 29.5983L33 38M0 24L12.3604 24C15.087 24 16.3998 27.3431 14.4017 29.1984L6 37" stroke="#175CD3" stroke-width="4"/></svg>`,
+    darkSvg: `<svg width="100%" height="100%" viewBox="0 0 40 48" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M20 4V16.3604C20 19.087 16.6569 20.3998 14.8016 18.4017L7 10M40 24H27.6396C24.913 24 23.6002 20.6569 25.5983 18.8016L34 11M20 44V31.6396C20 28.913 23.3431 27.6002 25.1984 29.5983L33 38M0 24L12.3604 24C15.087 24 16.3998 27.3431 14.4017 29.1984L6 37" stroke="white" stroke-width="4"/></svg>`
+  }
+];
+
+// features/lib/store-logo.ts
+var DEFAULT_STORE_LOGO_ICON_ID = "capsule";
+var DEFAULT_STORE_LOGO_ICON = LOGO_ICONS.find((icon) => icon.id === DEFAULT_STORE_LOGO_ICON_ID).lightSvg;
+var DEFAULT_LIBRARY_LOGO_COLOR = "297";
+function storeLogoSvgFor(value) {
+  const text63 = typeof value === "string" ? value.trim() : "";
+  if (!text63) return "";
+  return LOGO_ICONS.find((icon) => icon.id === text63)?.lightSvg || text63;
+}
+var DEFAULT_STORE_LOGO_COLOR = "0";
+function normalizeStoreLogoColor(value) {
+  const numeric = Number.parseFloat(String(value ?? DEFAULT_STORE_LOGO_COLOR));
+  if (!Number.isFinite(numeric)) return DEFAULT_STORE_LOGO_COLOR;
+  return String((numeric % 360 + 360) % 360);
+}
+
+// features/keystone/utils/storeLogo.ts
+var ALLOWED_ELEMENTS = /* @__PURE__ */ new Set([
+  "svg",
+  "g",
+  "path",
+  "defs",
+  "lineargradient",
+  "radialgradient",
+  "stop",
+  "clippath",
+  "rect",
+  "circle",
+  "ellipse",
+  "line",
+  "polyline",
+  "polygon",
+  "title",
+  "desc"
+]);
+var ALLOWED_ATTRIBUTES = /* @__PURE__ */ new Set([
+  "xmlns",
+  "fill",
+  "fill-rule",
+  "clip-rule",
+  "height",
+  "width",
+  "viewbox",
+  "d",
+  "clip-path",
+  "id",
+  "x1",
+  "x2",
+  "y1",
+  "y2",
+  "gradientunits",
+  "gradienttransform",
+  "offset",
+  "stop-color",
+  "stop-opacity",
+  "opacity",
+  "cx",
+  "cy",
+  "r",
+  "rx",
+  "ry",
+  "x",
+  "y",
+  "transform",
+  "stroke",
+  "stroke-width",
+  "stroke-linecap",
+  "stroke-linejoin",
+  "points",
+  "role",
+  "aria-hidden",
+  "aria-label",
+  "preserveaspectratio"
+]);
+var ATTRIBUTE_PATTERN = /\s+([A-Za-z_:][\w:.-]*)\s*=\s*("[^"]*"|'[^']*')/g;
+var TAG_PATTERN = /<\/?\s*([A-Za-z][\w:-]*)([^<>]*)>/g;
+function sanitizeStoreLogoSvg(svg) {
+  const source = svg.trim();
+  if (!source.startsWith("<svg") || !source.endsWith("</svg>") || source.length > 1e5) {
+    return "";
+  }
+  if (/<!|<\?|\b(?:javascript|data|vbscript):|\bon[a-z]+\s*=|\b(?:href|src|style)\s*=/i.test(source)) {
+    return "";
+  }
+  let tagCount = 0;
+  let match;
+  TAG_PATTERN.lastIndex = 0;
+  while (match = TAG_PATTERN.exec(source)) {
+    tagCount += 1;
+    const element = match[1].toLowerCase();
+    if (!ALLOWED_ELEMENTS.has(element)) return "";
+    if (match[0].startsWith("</")) continue;
+    const attributes = match[2];
+    let consumed = "";
+    ATTRIBUTE_PATTERN.lastIndex = 0;
+    let attributeMatch;
+    while (attributeMatch = ATTRIBUTE_PATTERN.exec(attributes)) {
+      consumed += attributeMatch[0];
+      const attribute = attributeMatch[1].toLowerCase();
+      const value = attributeMatch[2].slice(1, -1);
+      if (!ALLOWED_ATTRIBUTES.has(attribute)) return "";
+      if (attribute === "id" && !/^[A-Za-z_][\w:.-]*$/.test(value)) return "";
+      if (/url\(/i.test(value) && !/^url\(#[A-Za-z_][\w:.-]*\)$/.test(value)) return "";
+    }
+    const remainder = attributes.replace(consumed, "").replace(/\//g, "").trim();
+    if (remainder) return "";
+  }
+  TAG_PATTERN.lastIndex = 0;
+  if (tagCount === 0 || source.replace(TAG_PATTERN, "").trim()) return "";
+  return source;
+}
+
 // features/keystone/models/StoreSettings.ts
-var StoreSettings = (0, import_core61.list)({
+var StoreSettings = (0, import_core62.list)({
   db: { idField: { kind: "autoincrement" } },
   access: {
     operation: {
@@ -6271,22 +7409,12 @@ var StoreSettings = (0, import_core61.list)({
       const data = { ...resolvedData };
       if ("brandHue" in data) data.brandHue = normalizeStorefrontBrandHue(data.brandHue);
       if (operation !== "create") return data;
-      const storeId = context.session?.data.store?.id;
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
       if (!storeId) throw new Error("An active store is required");
       return { ...data, store: { connect: { id: storeId } } };
-    },
-    afterOperation: async ({ operation, item, resolvedData, context }) => {
-      if (operation !== "update") return;
-      const storeId = item.storeId;
-      if (!storeId) throw new Error("Store settings are missing ownership");
-      const data = Object.fromEntries(Object.entries({
-        name: resolvedData.name,
-        timezone: resolvedData.timezone,
-        currencyCode: resolvedData.currencyCode,
-        isActive: resolvedData.isActive
-      }).filter(([, value]) => value !== void 0));
-      if (Object.keys(data).length) await context.prisma.store.update({ where: { id: storeId }, data });
     }
+    // Name and timezone are mirrored on Store; they change only through
+    // updateGroceryStoreProfile, which writes both in one transaction.
   },
   graphql: { plural: "storeSettingsItems" },
   ui: {
@@ -6302,7 +7430,8 @@ var StoreSettings = (0, import_core61.list)({
       graphql: { isNonNull: { create: true } },
       access: { create: () => false, update: () => false }
     }),
-    name: (0, import_fields62.text)({ validation: { isRequired: true }, defaultValue: "Juniper Market" }),
+    // Mirrored on Store: edited only through updateGroceryStoreProfile (atomic with the mirror).
+    name: (0, import_fields62.text)({ validation: { isRequired: true }, defaultValue: "Juniper Market", access: { update: () => false } }),
     tagline: (0, import_fields62.text)({ defaultValue: "Neighborhood grocery \xB7 delivery & curbside pickup" }),
     homepageTitle: (0, import_fields62.text)({ defaultValue: "Fresh from the neighborhood" }),
     homepageDescription: (0, import_fields62.text)({
@@ -6312,16 +7441,55 @@ var StoreSettings = (0, import_core61.list)({
     contactEmail: (0, import_fields62.text)({ defaultValue: "hello@junipermarket.example" }),
     contactPhone: (0, import_fields62.text)({ defaultValue: "(415) 555-0148" }),
     address: (0, import_fields62.text)({ defaultValue: "184 Juniper Street, San Francisco, CA 94107" }),
+    // Merchant-written terms shown on the storefront Policies page above the standard
+    // picking, payment and pickup rules. Empty shows only the standard sections.
+    policyNotes: (0, import_fields62.text)({
+      defaultValue: "",
+      validation: { length: { max: 5e3 } },
+      ui: { displayMode: "textarea", description: "Your own store policy text (returns, refunds, age-restricted goods, and so on), shown on the storefront Policies page." }
+    }),
     logoUrl: (0, import_fields62.text)({ defaultValue: "/logo.svg" }),
+    // Openfront logo-library mark. Nullable so existing stores keep their logoUrl artwork until an
+    // operator explicitly chooses a library or custom SVG; when set, it takes precedence over logoUrl.
+    logoIcon: (0, import_fields62.text)({
+      db: { isNullable: true },
+      ui: { displayMode: "textarea", description: "Sanitized SVG from the logo library or a custom SVG. Unset uses the logo path." },
+      hooks: {
+        resolveInput: ({ resolvedData, fieldKey }) => {
+          const value = resolvedData[fieldKey];
+          if (value === void 0 || value === null || value === "") return value;
+          return typeof value === "string" ? sanitizeStoreLogoSvg(value) : "";
+        },
+        validate: ({ inputData, resolvedData, fieldKey, addValidationError }) => {
+          const submitted = inputData?.[fieldKey];
+          if (typeof submitted === "string" && submitted.trim() && !resolvedData?.[fieldKey]) {
+            addValidationError("Logo must be a valid, safe SVG document");
+          }
+        }
+      }
+    }),
+    logoColor: (0, import_fields62.text)({
+      defaultValue: DEFAULT_STORE_LOGO_COLOR,
+      label: "Logo colour",
+      ui: { description: "Hue rotation in degrees applied to the library or uploaded SVG logo. The shop\u2019s buttons, links, focus rings and hero follow this colour. Custom image logos use the storefront brand hue instead." },
+      hooks: {
+        resolveInput: ({ resolvedData, fieldKey }) => {
+          const value = resolvedData[fieldKey];
+          return value === void 0 ? value : normalizeStoreLogoColor(value);
+        }
+      }
+    }),
     brandHue: (0, import_fields62.integer)({
       validation: { min: 0, max: 359 },
       label: "Storefront brand hue (0\u2013359)",
-      ui: { description: "Leave unset to use the explicit storefront default. Use Platform Settings to choose a supported preset." }
+      ui: { description: "Accent colour for shops whose logo is a custom image (library and SVG logos set the accent from the logo colour). Leave empty to use the default green." }
     }),
-    currencyCode: (0, import_fields62.text)({ access: { update: () => false }, defaultValue: "USD" }),
+    // Grocery prices in two-decimal minor units; the currency is fixed when the
+    // store is set up (onboarding accepts USD) and orders keep their own copy.
+    currencyCode: (0, import_fields62.text)({ access: { update: () => false }, defaultValue: "USD", ui: { description: "Fixed at store setup. Orders keep the currency they were placed in." } }),
     taxRateBps: (0, import_fields62.integer)({ defaultValue: 875, validation: { isRequired: true, min: 0, max: 1e4 }, label: "Default tax rate (basis points)" }),
     locale: (0, import_fields62.text)({ defaultValue: "en-US" }),
-    timezone: (0, import_fields62.text)({ defaultValue: "America/Los_Angeles" }),
+    timezone: (0, import_fields62.text)({ defaultValue: "America/Los_Angeles", access: { update: () => false } }),
     countryCode: (0, import_fields62.text)({ defaultValue: "US" }),
     deliveryPolicy: (0, import_fields62.json)({ defaultValue: { version: 1, postalPrefixes: [], pickupMinimumCents: 0, deliveryMinimumCents: 0, deliveryFeeCents: 0, feeTaxRateBasisPoints: 0 }, access: { create: () => false, update: () => false } }),
     hours: (0, import_fields62.json)({
@@ -6341,10 +7509,10 @@ var StoreSettings = (0, import_core61.list)({
 });
 
 // features/keystone/models/Supplier.ts
-var import_core62 = require("@keystone-6/core");
+var import_core63 = require("@keystone-6/core");
 var import_fields63 = require("@keystone-6/core/fields");
 init_access();
-var Supplier = (0, import_core62.list)({
+var Supplier = (0, import_core63.list)({
   access: {
     operation: {
       query: permissions.canManageSuppliers,
@@ -6359,9 +7527,18 @@ var Supplier = (0, import_core62.list)({
     }
   },
   hooks: {
-    resolveInput: async ({ resolvedData, context }) => {
-      if (!context.session?.data.store?.id) throw new Error("An active store is required");
-      return { ...resolvedData, store: { connect: { id: context.session.data.store.id } } };
+    resolveInput: async ({ operation, resolvedData, context }) => {
+      const storeId = await currentMembershipStoreId({ session: context.session, context });
+      if (!storeId) throw new Error("An active store is required");
+      if (operation === "create") {
+        const amount = Number(resolvedData.minimumOrder ?? 0);
+        const cents3 = Math.round(amount * 100);
+        if (!Number.isFinite(amount) || amount < 0 || Math.abs(amount * 100 - cents3) > 1e-6) {
+          throw new Error("Minimum order must be a non-negative amount with at most two decimal places");
+        }
+        return { ...resolvedData, minimumOrder: cents3 / 100, minimumOrderCents: cents3, store: { connect: { id: storeId } } };
+      }
+      return { ...resolvedData, store: { connect: { id: storeId } } };
     },
     validate: {
       delete: async ({ item, context, addValidationError }) => {
@@ -6464,11 +7641,11 @@ var Supplier = (0, import_core62.list)({
 });
 
 // features/keystone/models/User.ts
-var import_core63 = require("@keystone-6/core");
-var import_access56 = require("@keystone-6/core/access");
+var import_core64 = require("@keystone-6/core");
+var import_access57 = require("@keystone-6/core/access");
 var import_fields64 = require("@keystone-6/core/fields");
 init_access();
-var User = (0, import_core63.list)({
+var User = (0, import_core64.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -6485,12 +7662,12 @@ var User = (0, import_core63.list)({
       delete: () => false
     },
     filter: {
-      query: ({ session }) => {
-        const store = storeScopedFilter({ session });
+      query: async ({ session, context }) => {
+        const store = await storeScopedFilter({ session, context });
         return store === false ? false : { AND: [store, { id: { equals: session?.itemId } }] };
       },
-      update: ({ session }) => {
-        const store = storeScopedFilter({ session });
+      update: async ({ session, context }) => {
+        const store = await storeScopedFilter({ session, context });
         return store === false ? false : { AND: [store, { id: { equals: session?.itemId } }] };
       },
       delete: storeScopedFilter
@@ -6534,7 +7711,10 @@ var User = (0, import_core63.list)({
     email: (0, import_fields64.text)({
       validation: { isRequired: true },
       isIndexed: "unique",
-      label: "Email"
+      label: "Email",
+      // The sign-in identity changes only through updateActiveUser, which
+      // requires the current password.
+      access: { update: () => false }
     }),
     password: (0, import_fields64.password)({
       validation: {
@@ -6542,8 +7722,10 @@ var User = (0, import_core63.list)({
         length: { min: 8, max: 128 }
       },
       access: {
-        read: import_access56.denyAll,
-        update: ({ session, item }) => session?.itemId === item.id
+        read: import_access57.denyAll,
+        // Password changes go through updateActiveUserPassword (current password
+        // required) or the emailed reset token.
+        update: () => false
       }
     }),
     store: (0, import_fields64.relationship)({
@@ -6571,7 +7753,10 @@ var User = (0, import_core63.list)({
         { label: "Dismissed", value: "dismissed" }
       ],
       defaultValue: "not_started",
-      label: "Onboarding Status"
+      label: "Onboarding Status",
+      // Transitions are owned by updateActiveUser (capability-checked) and
+      // runGroceryOnboarding (completion after verified setup).
+      access: { update: () => false }
     }),
     staffAccessEvents: (0, import_fields64.relationship)({ ref: "StaffAccessEvent.subject", many: true, access: { update: () => false } }),
     privacyErasedAt: (0, import_fields64.timestamp)({ db: { isNullable: true }, access: { create: () => false, update: () => false } }),
@@ -6580,10 +7765,10 @@ var User = (0, import_core63.list)({
 });
 
 // features/keystone/models/UserCoupon.ts
-var import_core64 = require("@keystone-6/core");
+var import_core65 = require("@keystone-6/core");
 var import_fields65 = require("@keystone-6/core/fields");
 init_access();
-var UserCoupon = (0, import_core64.list)({
+var UserCoupon = (0, import_core65.list)({
   access: {
     operation: {
       query: isSignedIn,
@@ -6668,7 +7853,7 @@ var models = {
   SupplierCredit,
   SupplierInvoice,
   ProductInformationVersion,
-  CustomerMessage,
+  ContactMessage,
   PurchaseReceipt,
   InventoryCount,
   InventoryRecall,
@@ -6685,7 +7870,6 @@ var models = {
   DeliveryRoute,
   DeliverySlot,
   FavoriteProduct,
-  GroceryOutboxEvent,
   InventoryLot,
   InventoryAdjustment,
   LoyaltyProgram,
@@ -6709,6 +7893,7 @@ var models = {
   Recipe,
   RecipeIngredient,
   RateLimitBucket,
+  CustomerBatchRequest,
   Role,
   ShoppingList,
   ShoppingListItem,
@@ -6731,7 +7916,7 @@ init_inventoryMovements();
 
 // features/keystone/lib/inventorySafety.ts
 function isInventoryLotEligible(lot, promisedAt = /* @__PURE__ */ new Date()) {
-  return (lot.safetyStatus || "available") === "available" && (lot.conditionStatus || "accepted") === "accepted" && Number.isFinite(new Date(lot.expirationDate).getTime()) && new Date(lot.expirationDate).getTime() > promisedAt.getTime();
+  return lot.safetyStatus === "available" && lot.conditionStatus === "accepted" && Number.isFinite(new Date(lot.expirationDate).getTime()) && new Date(lot.expirationDate).getTime() > promisedAt.getTime();
 }
 function traceAffectedOrders(orders, lotIds) {
   const scope = new Set(lotIds);
@@ -6755,14 +7940,15 @@ async function assertOrderInventoryEligible(tx, orderId, storeId, promisedAt = /
   for (const lotId of lotIds) {
     await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', lotId);
     const lot = await tx.inventoryLot.findUnique({ where: { id: lotId } });
-    if (!lot || lot.storeId !== storeId || !isInventoryLotEligible(lot, promisedAt)) throw new Error("Order contains held, recalled, quarantined or expired stock; resolve actual goods before fulfillment");
+    if (!lot || lot.storeId !== storeId || !isInventoryLotEligible(lot, promisedAt)) throw new Error("Order contains held, recalled, quarantined, uninspected, unknown or expired stock; resolve actual goods before fulfillment");
   }
 }
 
 // features/keystone/lib/inventoryConversion.ts
-var import_node_crypto = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 init_inventoryMovements();
-var conversionHash = (value) => (0, import_node_crypto.createHash)("sha256").update(JSON.stringify(value)).digest("hex");
+init_serializableTransaction();
+var conversionHash = (value) => (0, import_node_crypto2.createHash)("sha256").update(JSON.stringify(value)).digest("hex");
 function splitWholeCaseCost(cases, unitsPerCase, costPerCaseCents) {
   if (![cases, unitsPerCase, costPerCaseCents].every((value) => Number.isSafeInteger(value)) || cases < 1 || unitsPerCase < 2 || costPerCaseCents < 0) throw new Error("Conversion requires whole cases, at least two units per case and integer non-negative case cost");
   const units = BigInt(cases) * BigInt(unitsPerCase), cost = BigInt(cases) * BigInt(costPerCaseCents);
@@ -6772,12 +7958,12 @@ function splitWholeCaseCost(cases, unitsPerCase, costPerCaseCents) {
   return { quantityCases: cases, unitsPerCase, destinationQuantity: Number(units), totalCostCents: Number(cost), lots };
 }
 async function lockInventoryConversionScope(tx, storeId) {
-  await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-inventory-conversion'), hashtext($1))", storeId);
+  requirePrismaSuccess(await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-inventory-conversion'), hashtext($1))", storeId), "inventory conversion scope lock");
 }
 async function unconvertedLotCapacityMilli(tx, storeId, lot) {
   let converted = 0;
   for (let skip = 0; ; skip += 100) {
-    const page = await tx.inventoryConversion.findMany({ where: { storeId, sourceInventoryLotId: lot.id }, orderBy: { id: "asc" }, take: 100, skip });
+    const page = requirePrismaSuccess(await tx.inventoryConversion.findMany({ where: { storeId, sourceInventoryLotId: lot.id }, orderBy: { id: "asc" }, take: 100, skip }), "inventory conversion provenance lookup");
     for (const record2 of page) converted += quantityMilli(record2.quantityCases);
     if (page.length < 100) break;
   }
@@ -6793,7 +7979,7 @@ async function expandConvertedLotScope(tx, storeId, initialLotIds) {
     for (let offset = 0; offset < frontier.length; offset += 100) {
       const ids = frontier.slice(offset, offset + 100);
       for (let skip = 0; ; skip += 100) {
-        const page = await tx.inventoryConversion.findMany({ where: { storeId, sourceInventoryLotId: { in: ids } }, orderBy: { id: "asc" }, take: 100, skip });
+        const page = requirePrismaSuccess(await tx.inventoryConversion.findMany({ where: { storeId, sourceInventoryLotId: { in: ids } }, orderBy: { id: "asc" }, take: 100, skip }), "converted-lot trace lookup");
         for (const conversion of page) {
           conversions.push(conversion);
           convertedOutMilli.set(conversion.sourceInventoryLotId, (convertedOutMilli.get(conversion.sourceInventoryLotId) || 0) + quantityMilli(conversion.quantityCases));
@@ -6825,20 +8011,20 @@ async function convertInventoryCases(_root, args, context) {
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await lockInventoryConversionScope(tx, store.id);
-    const prior = await tx.inventoryConversion.findUnique({ where: { idempotencyKey } });
+    const prior = requirePrismaSuccess(await tx.inventoryConversion.findUnique({ where: { idempotencyKey } }), "inventory conversion lookup");
     if (prior) {
       if (prior.storeId !== store.id || prior.inputFingerprint !== fingerprint) throw new Error("Conversion request identity was reused with different physical evidence");
       return { success: true, committed: true, reused: true, conversionId: prior.id, reviewHash: prior.reviewHash, source: prior.sourceSnapshot, destinations: prior.destinations, totalCostCents: prior.totalCostCents, currencyCode: prior.currencyCode };
     }
-    const identity2 = await tx.inventoryLot.findUnique({ where: { id: args.sourceInventoryLotId } });
+    const identity2 = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: args.sourceInventoryLotId } }), "inventory lot identity lookup");
     if (!identity2 || identity2.storeId !== store.id || !identity2.productId) throw new Error("Source lot not found in active Store");
-    const originalProduct = await tx.product.findUnique({ where: { id: identity2.productId } });
+    const originalProduct = requirePrismaSuccess(await tx.product.findUnique({ where: { id: identity2.productId } }), "inventory product lookup");
     if (!originalProduct?.variantOfId) throw new Error("Source product must be a configured case variant of its base product");
-    for (const id of [identity2.productId, originalProduct.variantOfId].sort()) await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', id);
-    await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', identity2.id);
-    const lot = await tx.inventoryLot.findUnique({ where: { id: identity2.id } });
-    const source = await tx.product.findUnique({ where: { id: identity2.productId } });
-    const target = await tx.product.findUnique({ where: { id: originalProduct.variantOfId } });
+    for (const id of [identity2.productId, originalProduct.variantOfId].sort()) requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', id), "inventory product lock");
+    requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', identity2.id), "inventory lot lock");
+    const lot = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: identity2.id } }), "locked inventory lot lookup");
+    const source = requirePrismaSuccess(await tx.product.findUnique({ where: { id: identity2.productId } }), "locked source product lookup");
+    const target = requirePrismaSuccess(await tx.product.findUnique({ where: { id: originalProduct.variantOfId } }), "locked destination product lookup");
     if (!lot || !source || !target || lot.storeId !== store.id || source.storeId !== store.id || target.storeId !== store.id || lot.productId !== source.id || source.variantOfId !== target.id || source.id === target.id || target.variantOfId) throw new Error("Conversion products and physical lot must share one Store and an unchanged root relationship");
     if ([source, target].some((product) => product.unitOfMeasure !== "each" || product.pricingMethod !== "unit" || product.status === "archived") || Number(target.packBaseUnitsMilli ?? 1e3) !== 1e3 || Number(source.packBaseUnitsMilli) % 1e3 !== 0) throw new Error("Only whole case-to-each conversion with an integer configured pack factor is supported");
     if (!isInventoryLotEligible(lot)) throw new Error("Held, recalled, quarantined or expired cases cannot be converted");
@@ -6849,26 +8035,26 @@ async function convertInventoryCases(_root, args, context) {
     if (quantityMilli(lot.quantityRemaining) < quantityMilli(args.quantityCases) || quantityMilli(source.stockQuantity) < quantityMilli(args.quantityCases)) throw new Error("Conversion exceeds unallocated source stock");
     const supplierLotNumber = lot.supplierLotNumber || lot.lotNumber;
     for (let skip = 0; ; skip += 100) {
-      const recalls = await tx.inventoryRecall.findMany({ where: { storeId: store.id }, orderBy: { id: "asc" }, take: 100, skip });
+      const recalls = requirePrismaSuccess(await tx.inventoryRecall.findMany({ where: { storeId: store.id }, orderBy: { id: "asc" }, take: 100, skip }), "inventory recall lookup");
       if (recalls.some((recall) => recall.scope?.productId === target.id || (recall.scope?.lots || []).some((scope) => scope.productId === target.id && scope.supplierId === (lot.supplierId || null) && scope.supplierLotNumber === supplierLotNumber))) throw new Error("The destination product or supplier batch is in a recorded recall scope");
       if (recalls.length < 100) break;
     }
-    const receipt = await tx.purchaseReceipt.findFirst({ where: { inventoryLotId: lot.id, storeId: store.id } });
+    const receipt = requirePrismaSuccess(await tx.purchaseReceipt.findFirst({ where: { inventoryLotId: lot.id, storeId: store.id } }), "purchase receipt lookup");
     const sourceSnapshot = { lotId: lot.id, productId: source.id, productTitle: source.title, productSku: source.sku, unitOfMeasure: source.unitOfMeasure, quantityRemaining: Number(lot.quantityRemaining), costPerUnitCents: Number(lot.costPerUnitCents), supplierId: lot.supplierId || null, supplierLotNumber, expirationDate: new Date(lot.expirationDate).toISOString(), receivedDate: new Date(lot.receivedDate).toISOString(), location: lot.location || "", safetyStatus: lot.safetyStatus, conditionStatus: lot.conditionStatus, receiptId: receipt?.id || null, purchaseOrderId: receipt?.purchaseOrderId || null, poItemId: receipt?.poItemId || null, destinationProductId: target.id, destinationProductTitle: target.title, sourceStockQuantity: Number(source.stockQuantity), destinationStockQuantity: Number(target.stockQuantity), unitsPerCase: plan.unitsPerCase, quantityCases: plan.quantityCases };
     const reviewHash = conversionHash({ fingerprint, sourceSnapshot, plan });
     if (args.mode === "dry_run") return { success: true, committed: false, reused: false, conversionId: null, reviewHash, source: sourceSnapshot, destinations: plan.lots, totalCostCents: plan.totalCostCents, currencyCode: store.currencyCode };
     if (args.expectedReviewHash !== reviewHash) throw new Error("Physical conversion changed after review; review the current case stock again");
     const nextSourceLot = (quantityMilli(lot.quantityRemaining) - quantityMilli(plan.quantityCases)) / 1e3, nextSourceStock = (quantityMilli(source.stockQuantity) - quantityMilli(plan.quantityCases)) / 1e3;
     const nextTargetStock = (quantityMilli(target.stockQuantity) + quantityMilli(plan.destinationQuantity)) / 1e3;
-    await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextSourceLot } });
-    await tx.product.update({ where: { id: source.id }, data: { stockQuantity: nextSourceStock, inStock: nextSourceStock > 0 } });
-    await tx.product.update({ where: { id: target.id }, data: { stockQuantity: nextTargetStock, inStock: nextTargetStock > 0 } });
+    requirePrismaSuccess(await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextSourceLot } }), "inventory lot balance update");
+    requirePrismaSuccess(await tx.product.update({ where: { id: source.id }, data: { stockQuantity: nextSourceStock, inStock: nextSourceStock > 0 } }), "source product balance update");
+    requirePrismaSuccess(await tx.product.update({ where: { id: target.id }, data: { stockQuantity: nextTargetStock, inStock: nextTargetStock > 0 } }), "destination product balance update");
     const destinations = [];
     for (const [index, split] of plan.lots.entries()) {
-      const child = await tx.inventoryLot.create({ data: { storeId: store.id, productId: target.id, supplierId: lot.supplierId || null, lotNumber: `C-${idempotencyKey.slice(0, 32)}-${index}`, supplierLotNumber, expirationDate: lot.expirationDate, receivedDate: lot.receivedDate, quantity: split.quantity, quantityRemaining: split.quantity, costPerUnitCents: split.costPerUnitCents, costPerUnit: split.costPerUnitCents / 100, location: destinationLocation || lot.location || "", safetyStatus: "available", conditionStatus: "accepted", safetyReason: conditionNote } });
+      const child = requirePrismaSuccess(await tx.inventoryLot.create({ data: { storeId: store.id, productId: target.id, supplierId: lot.supplierId || null, lotNumber: `C-${idempotencyKey.slice(0, 32)}-${index}`, supplierLotNumber, expirationDate: lot.expirationDate, receivedDate: lot.receivedDate, quantity: split.quantity, quantityRemaining: split.quantity, costPerUnitCents: split.costPerUnitCents, costPerUnit: split.costPerUnitCents / 100, location: destinationLocation || lot.location || "", safetyStatus: "available", conditionStatus: "accepted", safetyReason: conditionNote } }), "destination inventory lot creation");
       destinations.push({ lotId: child.id, productId: target.id, ...split, totalCostCents: split.quantity * split.costPerUnitCents, unitOfMeasure: "each", supplierLotNumber, supplierId: lot.supplierId || null, expirationDate: sourceSnapshot.expirationDate, receivedDate: sourceSnapshot.receivedDate });
     }
-    const record2 = await tx.inventoryConversion.create({ data: { storeId: store.id, idempotencyKey, inputFingerprint: fingerprint, reviewHash, sourceInventoryLotId: lot.id, sourceProductId: source.id, destinationProductId: target.id, quantityCases: plan.quantityCases, unitsPerCase: plan.unitsPerCase, destinationQuantity: plan.destinationQuantity, totalCostCents: plan.totalCostCents, currencyCode: store.currencyCode, sourceSnapshot, destinations, actorId: context.session.itemId, reason, conditionNote, committedAt: /* @__PURE__ */ new Date() } });
+    const record2 = requirePrismaSuccess(await tx.inventoryConversion.create({ data: { storeId: store.id, idempotencyKey, inputFingerprint: fingerprint, reviewHash, sourceInventoryLotId: lot.id, sourceProductId: source.id, destinationProductId: target.id, quantityCases: plan.quantityCases, unitsPerCase: plan.unitsPerCase, destinationQuantity: plan.destinationQuantity, totalCostCents: plan.totalCostCents, currencyCode: store.currencyCode, sourceSnapshot, destinations, actorId: context.session.itemId, reason, conditionNote, committedAt: /* @__PURE__ */ new Date() } }), "inventory conversion record creation");
     await appendInventoryMovement(tx, { storeId: store.id, productId: source.id, inventoryLotId: lot.id, sourceType: "case_conversion_out", sourceId: record2.id, idempotencyKey: `conversion:${record2.id}:source`, actorId: context.session.itemId, reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextSourceLot, productStockBefore: source.stockQuantity, productStockAfter: nextSourceStock, metadata: { conversionId: record2.id, valueDeltaCents: -plan.totalCostCents, destinations, conditionNote } });
     let targetBalance = Number(target.stockQuantity);
     for (const child of destinations) {
@@ -6881,17 +8067,35 @@ async function convertInventoryCases(_root, args, context) {
 }
 
 // features/keystone/mutations/recoverGroceryPaymentCreation.ts
-var import_node_crypto8 = require("node:crypto");
+var import_node_crypto10 = require("node:crypto");
 init_access();
 init_storeScope();
 
+// features/keystone/lib/payloadHash.ts
+var import_node_crypto3 = require("node:crypto");
+function canonicalValue(value) {
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key2, entry]) => [key2, canonicalValue(entry)])
+    );
+  }
+  return value;
+}
+function canonicalPayload(payload) {
+  return JSON.stringify(canonicalValue(payload));
+}
+function payloadHash(payload) {
+  return (0, import_node_crypto3.createHash)("sha256").update(canonicalPayload(payload)).digest("hex");
+}
+
 // features/keystone/lib/checkoutIdentity.ts
-init_groceryOutbox();
 function checkoutRequestFingerprint(data) {
   if (!data || typeof data !== "object") throw new Error("Checkout request evidence is missing");
   const address = data.deliveryAddress || {};
   const ownerId = data.checkoutOwnerId || null;
-  return groceryOutboxPayloadHash({
+  return payloadHash({
     cartId: data.cartId,
     ownerId,
     sessionId: ownerId ? null : String(data.sessionId || "").trim() || null,
@@ -6902,11 +8106,13 @@ function checkoutRequestFingerprint(data) {
     pickupSlotId: data.pickupSlotId || null,
     couponCode: String(data.couponCode || "").trim().toUpperCase(),
     substitutionPreference: data.substitutionPreference,
-    deliveryInstructions: String(data.deliveryInstructions || "").trim()
+    deliveryInstructions: String(data.deliveryInstructions || "").trim(),
+    // Added only when chosen so fingerprints of untipped checkouts stay identical.
+    ...Number(data.tipCents) > 0 ? { tipCents: Number(data.tipCents) } : {}
   });
 }
 function checkoutCartFingerprint(cart) {
-  return groceryOutboxPayloadHash({ items: (cart.items || []).map((item) => ({
+  return payloadHash({ items: (cart.items || []).map((item) => ({
     id: item.id,
     quantity: item.quantity,
     productId: item.product?.id,
@@ -6916,6 +8122,40 @@ function checkoutCartFingerprint(cart) {
     pricingMethod: item.product?.pricingMethod,
     unitOfMeasure: item.product?.unitOfMeasure
   })).sort((a, b) => a.id.localeCompare(b.id)) });
+}
+function moneyCents(value) {
+  const amount = Number(value ?? 0);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : null;
+}
+function checkoutDateKey(value) {
+  if (!value) return null;
+  const date2 = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date2.getTime()) ? String(value) : date2.toISOString().slice(0, 10);
+}
+function checkoutTermsFingerprint(data) {
+  return payloadHash({
+    amountInCents: Number(data?.amountInCents ?? 0),
+    subtotalCents: moneyCents(data?.subtotal),
+    taxCents: moneyCents(data?.tax),
+    deliveryFeeCents: moneyCents(data?.deliveryFee),
+    discountCents: moneyCents(data?.discount),
+    currency: String(data?.currency || "usd").toLowerCase(),
+    captureMethod: data?.captureMethod || null,
+    taxRateBps: data?.taxRateBps ?? null,
+    commercial: data?.commercial ?? null,
+    deliveryPolicySnapshot: data?.deliveryPolicySnapshot ?? null,
+    fulfillmentMethod: data?.fulfillmentMethod ?? null,
+    fulfillmentSlot: {
+      id: data?.fulfillmentSlot?.id ?? null,
+      date: checkoutDateKey(data?.fulfillmentSlot?.date),
+      startTime: data?.fulfillmentSlot?.startTime ?? null,
+      endTime: data?.fulfillmentSlot?.endTime ?? null
+    },
+    deliverySlotId: data?.deliverySlotId ?? null,
+    pickupSlotId: data?.pickupSlotId ?? null,
+    couponCode: data?.couponCode ?? null,
+    ...Number(data?.tipCents) > 0 ? { tipCents: Number(data.tipCents) } : {}
+  });
 }
 function assertProviderCreationRetry(data, now = Date.now()) {
   if (data?.paymentIntentId) return;
@@ -7001,14 +8241,25 @@ function assertCheckoutAttemptIdentity(attempt, data, cart, session, providerPay
 }
 
 // features/keystone/mutations/recoverGroceryPaymentCreation.ts
-init_groceryOutbox();
 init_paymentProviderAdapter();
+
+// features/keystone/lib/deliveryTip.ts
+init_publicError();
+var MAX_DELIVERY_TIP_CENTS = 2e4;
+function normalizeDeliveryTipCents(value, fulfillmentMethod) {
+  if (value === void 0 || value === null || value === 0) return 0;
+  const tip = Number(value);
+  if (!Number.isSafeInteger(tip) || tip < 0 || tip > MAX_DELIVERY_TIP_CENTS) throw publicError("Choose a tip between $0 and $200.", "CHECKOUT_DETAILS");
+  if (tip > 0 && fulfillmentMethod !== "delivery") throw publicError("Tips are for delivery orders.", "CHECKOUT_DETAILS");
+  return tip;
+}
 
 // features/keystone/mutations/submitGroceryOrder.ts
 init_storeScope();
 
 // features/keystone/lib/loyaltyAccounting.ts
-var import_node_crypto4 = require("node:crypto");
+init_publicError();
+var import_node_crypto5 = require("node:crypto");
 function pointsInteger(value) {
   const valueNumber = Number(value);
   if (!Number.isSafeInteger(valueNumber) || Math.abs(valueNumber) > 2147483647) throw new Error("Loyalty points must fit an integer journal amount");
@@ -7057,7 +8308,7 @@ async function reconcileOrderLoyalty(tx, input) {
 async function validateLoyaltyCoupon(tx, couponId, userId, storeId) {
   const redemption = await tx.loyaltyRedemption.findFirst({ where: { couponId } });
   if (!redemption) return null;
-  if (!userId || redemption.storeId !== storeId || redemption.userId !== userId || redemption.status !== "issued") throw new Error("Loyalty coupon belongs to another customer or is no longer available");
+  if (!userId || redemption.storeId !== storeId || redemption.userId !== userId || redemption.status !== "issued") throw publicError("This reward coupon belongs to another account or is no longer available. Remove it to continue.", "COUPON_INVALID");
   return redemption;
 }
 async function markLoyaltyRedemptionUsed(tx, couponId, orderId, storeId) {
@@ -7078,10 +8329,9 @@ async function restoreLoyaltyRedemptionForOrder(tx, input) {
     await tx.coupon.update({ where: { id: redemption.couponId }, data: { isActive: false } });
   }
 }
-var loyaltyCouponCode = (key2) => `REWARD-${(0, import_node_crypto4.createHash)("sha256").update(key2).digest("hex").slice(0, 24).toUpperCase()}`;
+var loyaltyCouponCode = (key2) => `REWARD-${(0, import_node_crypto5.createHash)("sha256").update(key2).digest("hex").slice(0, 24).toUpperCase()}`;
 
 // features/keystone/lib/recurringOrders.ts
-init_groceryOutbox();
 init_inventoryMovements();
 function localParts(value, timezone) {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(value);
@@ -7160,7 +8410,6 @@ async function prepareSubscriptionRun(tx, subscriptionId, storeId, now = /* @__P
     const cartItem = await tx.cartItem.create({ data: { cartId: cart.id, productId: product.id, quantity: subscription.quantity, subtotalCents, subtotal: subtotalCents / 100, substitutionPreference: "contact" } });
     await tx.cart.update({ where: { id: cart.id }, data: { itemCount: subscription.quantity, subtotalCents, subtotal: subtotalCents / 100 } });
     run = await tx.subscriptionRun.update({ where: { id: run.id }, data: { cartId: cart.id, cartItemId: cartItem.id } });
-    await enqueueGroceryOutboxEvent(tx, { storeId, eventKey: `subscription.cart_ready:${run.id}`, eventType: "subscription.cart_ready", aggregateType: "SubscriptionRun", aggregateId: run.id, occurredAt: now.toISOString(), payload: { subscriptionId, runId: run.id, userId: user.id, email: user.email, cartId: cart.id, productTitle: product.title, quantity: subscription.quantity, checkoutPath: "/checkout", requiresCustomerApproval: true } });
   }
   return run;
 }
@@ -7245,6 +8494,7 @@ async function releaseOrderCoupon(tx, input) {
 }
 
 // features/keystone/lib/storeMoney.ts
+init_serializableTransaction();
 function normalizeTaxRateBps(value) {
   const rate = Number(value);
   if (!Number.isInteger(rate) || rate < 0 || rate > 1e4) {
@@ -7253,17 +8503,17 @@ function normalizeTaxRateBps(value) {
   return rate;
 }
 async function getStoreTaxRateBps(context, storeId) {
-  const settings = await context.prisma.storeSettings.findUnique({
+  const settings = requirePrismaSuccess(await context.prisma.storeSettings.findUnique({
     where: { storeId },
     select: { taxRateBps: true }
-  });
+  }), "StoreSettings.findUnique");
   if (!settings) throw new Error("Store tax settings are unavailable");
   return normalizeTaxRateBps(settings.taxRateBps);
 }
 
 // features/keystone/lib/commercialPricing.ts
 function cents(value) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Money must be nonnegative integer minor units");
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("Amounts must be zero or more, in whole cents");
   return value;
 }
 function allocateCents(amount, lines) {
@@ -7299,18 +8549,29 @@ function priceCommercialLines(lines, discountCents = 0, feeCents = 0, feeTaxRate
   const totalCents = cents(subtotalCents - discountCents + taxCents + feeCents);
   return { lines: priced, subtotalCents, discountCents, taxCents, feeCents, feeTaxCents, totalCents };
 }
+function couponList(value) {
+  if (value === null || value === void 0) return [];
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : null;
+}
+function couponRestrictionsValid(coupon) {
+  return !coupon || couponList(coupon.productCategories) !== null && couponList(coupon.excludedProducts) !== null;
+}
 function isCouponLineEligible(product, coupon) {
   if (!coupon) return true;
-  const categories = Array.isArray(coupon.productCategories) ? coupon.productCategories : [];
-  const excluded = Array.isArray(coupon.excludedProducts) ? coupon.excludedProducts : [];
-  return !!product?.id && (!categories.length || categories.includes(product.department)) && !excluded.includes(product.id);
+  const categories = couponList(coupon.productCategories);
+  const excluded = couponList(coupon.excludedProducts);
+  if (!categories || !excluded || !product?.id) return false;
+  if (excluded.includes(product.id)) return false;
+  if (!categories.length) return true;
+  const department = coupon.categoryTaxonomy === "department_handle" ? product.departmentRef?.handle ?? product.departmentHandle : product.department;
+  return Boolean(department) && categories.includes(department);
 }
 
 // features/keystone/mutations/submitGroceryOrder.ts
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto9 = require("node:crypto");
 
 // features/keystone/utils/guestOrderToken.ts
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto6 = require("node:crypto");
 var TOKEN_VERSION = "v2";
 var LEGACY_TOKEN_VERSION = "v1";
 var DEFAULT_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
@@ -7323,15 +8584,15 @@ function maxAgeSeconds() {
   return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_AGE_SECONDS;
 }
 function v2Signature(orderId, sessionId, issuedAtSeconds) {
-  return (0, import_node_crypto5.createHmac)("sha256", tokenSecret()).update(`${TOKEN_VERSION}:${orderId}:${sessionId}:${issuedAtSeconds}`).digest("base64url");
+  return (0, import_node_crypto6.createHmac)("sha256", tokenSecret()).update(`${TOKEN_VERSION}:${orderId}:${sessionId}:${issuedAtSeconds}`).digest("base64url");
 }
 function v1Signature(orderId, sessionId) {
-  return (0, import_node_crypto5.createHmac)("sha256", tokenSecret()).update(`${LEGACY_TOKEN_VERSION}:${orderId}:${sessionId}`).digest("base64url");
+  return (0, import_node_crypto6.createHmac)("sha256", tokenSecret()).update(`${LEGACY_TOKEN_VERSION}:${orderId}:${sessionId}`).digest("base64url");
 }
 function signaturesMatch(expectedSignature, suppliedSignature) {
   const expected = Buffer.from(expectedSignature);
   const supplied = Buffer.from(suppliedSignature);
-  return expected.length === supplied.length && (0, import_node_crypto5.timingSafeEqual)(expected, supplied);
+  return expected.length === supplied.length && (0, import_node_crypto6.timingSafeEqual)(expected, supplied);
 }
 function createGuestOrderToken(orderId, sessionId, issuedAtSeconds = Math.floor(Date.now() / 1e3)) {
   const normalizedSessionId = sessionId.trim();
@@ -7376,27 +8637,21 @@ function verifyGuestOrderToken(orderId, sessionId, token, nowSeconds = Math.floo
 
 // features/keystone/mutations/submitGroceryOrder.ts
 init_paymentProviderAdapter();
-init_groceryOutbox();
+init_refundRecovery();
 init_serializableTransaction();
 
 // features/keystone/lib/couponPricing.ts
+init_publicError();
 function calculateCouponDiscount(coupon, items, now = /* @__PURE__ */ new Date()) {
-  if (!coupon.isActive) throw new Error(`Coupon ${coupon.code} is inactive`);
-  if (coupon.validFrom && new Date(coupon.validFrom) > now) throw new Error(`Coupon ${coupon.code} is not yet valid`);
-  if (coupon.validTo && new Date(coupon.validTo) < now) throw new Error(`Coupon ${coupon.code} has expired`);
-  if ((coupon.maxUses || 0) > 0 && (coupon.currentUses || 0) >= (coupon.maxUses || 0)) throw new Error(`Coupon ${coupon.code} has reached its maximum uses`);
+  if (!coupon.isActive) throw publicError(`Coupon ${coupon.code} is not active. Remove it to continue.`, "COUPON_INVALID");
+  if (coupon.validFrom && new Date(coupon.validFrom) > now) throw publicError(`Coupon ${coupon.code} is not valid yet. Remove it to continue.`, "COUPON_INVALID");
+  if (coupon.validTo && new Date(coupon.validTo) < now) throw publicError(`Coupon ${coupon.code} has expired. Remove it to continue.`, "COUPON_INVALID");
+  if ((coupon.maxUses || 0) > 0 && (coupon.currentUses || 0) >= (coupon.maxUses || 0)) throw publicError(`Coupon ${coupon.code} has been fully redeemed. Remove it to continue.`, "COUPON_INVALID");
   const subtotalCents = items.reduce((sum, item) => sum + Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity, 0);
   const minPurchaseCents = Number(coupon.minPurchaseCents || Math.round(Number(coupon.minPurchase || 0) * 100));
-  if (minPurchaseCents && subtotalCents < minPurchaseCents) throw new Error(`Coupon ${coupon.code} requires a minimum purchase of ${(minPurchaseCents / 100).toFixed(2)}`);
-  const categories = Array.isArray(coupon.productCategories) ? coupon.productCategories : [];
-  const excluded = Array.isArray(coupon.excludedProducts) ? coupon.excludedProducts : [];
-  const eligible = items.filter((item) => {
-    const product = item.product;
-    if (!product?.id) return false;
-    if (categories.length && !categories.includes(product.department)) return false;
-    if (excluded.includes(product.id)) return false;
-    return true;
-  });
+  if (minPurchaseCents && subtotalCents < minPurchaseCents) throw publicError(`Coupon ${coupon.code} requires a minimum purchase of $${(minPurchaseCents / 100).toFixed(2)}.`, "COUPON_INVALID");
+  if (!couponRestrictionsValid(coupon)) throw publicError(`Coupon ${coupon.code} cannot be applied right now. Remove it or contact the store.`, "COUPON_INVALID");
+  const eligible = items.filter((item) => isCouponLineEligible(item.product, coupon));
   const eligibleSubtotalCents = eligible.reduce((sum, item) => sum + Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity, 0);
   let discountCents = 0;
   if (coupon.discountType === "percentage") discountCents = Math.round(eligibleSubtotalCents * (Number(coupon.discountValue) / 100));
@@ -7407,6 +8662,7 @@ function calculateCouponDiscount(coupon, items, now = /* @__PURE__ */ new Date()
 }
 
 // features/keystone/lib/sellableInventory.ts
+init_publicError();
 init_inventoryMovements();
 function deriveSellableQuantity(product, storeId, now = /* @__PURE__ */ new Date()) {
   if (product.store?.id !== storeId) return 0;
@@ -7423,7 +8679,7 @@ function sellableInventoryMessage(productName, sellableQuantity) {
 function assertSellableQuantity(product, storeId, requestedQuantity, now = /* @__PURE__ */ new Date()) {
   const sellableQuantity = deriveSellableQuantity(product, storeId, now);
   if (sellableQuantity < requestedQuantity) {
-    throw new Error(sellableInventoryMessage(product.title || "Product", sellableQuantity));
+    throw publicError(sellableInventoryMessage(product.title || "Product", sellableQuantity), "OUT_OF_STOCK");
   }
   return sellableQuantity;
 }
@@ -7465,7 +8721,7 @@ async function requireSellableStoreProduct(context, productId, storeId, now = /*
 }
 
 // features/keystone/utils/checkoutAttemptLease.ts
-var import_node_crypto6 = require("node:crypto");
+var import_node_crypto7 = require("node:crypto");
 var CHECKOUT_RECONCILIATION_LEASE_MS = 3e4;
 function boundedLeaseMs(value) {
   if (value === void 0) return CHECKOUT_RECONCILIATION_LEASE_MS;
@@ -7498,7 +8754,7 @@ var RETURNING = `
   ca."order" AS "orderId", ca."fencingToken", ca."leaseToken"
 `;
 async function claimCheckoutAttempt(db, attemptId, action, options = {}) {
-  const leaseToken = (0, import_node_crypto6.randomUUID)();
+  const leaseToken = (0, import_node_crypto7.randomUUID)();
   const leaseMs = boundedLeaseMs(options.leaseMs);
   const nextStatus = action === "finalize" ? "finalizing" : "compensation_processing";
   let rows;
@@ -7509,7 +8765,8 @@ async function claimCheckoutAttempt(db, attemptId, action, options = {}) {
            "leaseToken" = $2,
            "leaseExpiresAt" = NOW() + ($4 * INTERVAL '1 millisecond'),
            "fencingToken" = ca."fencingToken" + 1,
-           "attempts" = ca."attempts" + 1
+           "attempts" = ca."attempts" + 1,
+           "updatedAt" = NOW()
        FROM "Cart" c
        WHERE ca."id" = $1 AND ca."cart" = c."id" AND ca."order" IS NULL
          AND ca."status" = 'finalizing'
@@ -7530,7 +8787,8 @@ async function claimCheckoutAttempt(db, attemptId, action, options = {}) {
            "leaseToken" = $3,
            "leaseExpiresAt" = NOW() + ($4 * INTERVAL '1 millisecond'),
            "fencingToken" = ca."fencingToken" + 1,
-           "attempts" = ca."attempts" + 1
+           "attempts" = ca."attempts" + 1,
+           "updatedAt" = NOW()
        FROM "Cart" c
        WHERE ca."id" = $1 AND ca."cart" = c."id" AND ca."order" IS NULL
          AND ca."status" IN ('pending', 'settled_pending_finalize', 'finalizing')
@@ -7548,7 +8806,8 @@ async function claimCheckoutAttempt(db, attemptId, action, options = {}) {
            "leaseToken" = $3,
            "leaseExpiresAt" = NOW() + ($4 * INTERVAL '1 millisecond'),
            "fencingToken" = ca."fencingToken" + 1,
-           "attempts" = ca."attempts" + 1
+           "attempts" = ca."attempts" + 1,
+           "updatedAt" = NOW()
        FROM "Cart" c
        WHERE ca."id" = $1 AND ca."cart" = c."id" AND ca."order" IS NULL
          AND ca."status" IN ('compensation_required', 'compensation_processing')
@@ -7576,7 +8835,7 @@ async function assertFinalizationLease(db, lease) {
 async function refreshFinalizationSettlement(db, lease, amountCents, currencyCode) {
   const rows = await db.$queryRawUnsafe(
     `UPDATE "CheckoutAttempt"
-     SET "amountCents" = $2, "currencyCode" = $3, "settledAt" = COALESCE("settledAt", NOW())
+     SET "amountCents" = $2, "currencyCode" = $3, "settledAt" = COALESCE("settledAt", NOW()), "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'finalizing' AND "order" IS NULL
        AND "leaseToken" = $4 AND "fencingToken" = $5
      RETURNING "id"`,
@@ -7592,7 +8851,7 @@ async function finalizeCheckoutAttempt(db, lease, orderId) {
   const rows = await db.$queryRawUnsafe(
     `UPDATE "CheckoutAttempt"
      SET "status" = 'finalized', "finalizedAt" = NOW(), "order" = $2,
-         "leaseToken" = NULL, "leaseExpiresAt" = NULL
+         "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'finalizing' AND "order" IS NULL
        AND "leaseToken" = $3 AND "fencingToken" = $4
      RETURNING "id"`,
@@ -7620,7 +8879,7 @@ async function completeCompensation(db, lease, status, message) {
     `UPDATE "CheckoutAttempt"
      SET "status" = $2::"CheckoutAttemptStatusType",
          "compensationAt" = CASE WHEN $2 = 'compensated' THEN NOW() ELSE "compensationAt" END,
-         "lastError" = $3, "leaseToken" = NULL, "leaseExpiresAt" = NULL
+         "lastError" = $3, "leaseToken" = NULL, "leaseExpiresAt" = NULL, "updatedAt" = NOW()
      WHERE "id" = $1 AND "status" = 'compensation_processing' AND "order" IS NULL
        AND "leaseToken" = $4 AND "fencingToken" = $5
      RETURNING "id"`,
@@ -7633,7 +8892,59 @@ async function completeCompensation(db, lease, status, message) {
   return Boolean(rows[0]);
 }
 
+// features/lib/checkoutContact.ts
+var MAX_FIELD = 200;
+var EMAIL_MAX = 254;
+function text61(value) {
+  return typeof value === "string" ? value : "";
+}
+function checkoutContactProblem(input) {
+  const email = text61(input.email).trim();
+  if (!email || email.length > EMAIL_MAX || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "Enter a valid email address.";
+  const address = input.deliveryAddress || {};
+  const firstName = text61(address.firstName), lastName = text61(address.lastName), phone = text61(address.phone);
+  if (!firstName.trim() || firstName.length > MAX_FIELD || lastName.length > MAX_FIELD) return "Enter your name (up to 200 characters).";
+  if (phone.replace(/\D/g, "").length < 3 || phone.length > MAX_FIELD) return "Enter a phone number the store can reach you on.";
+  if (input.fulfillmentMethod === "delivery") {
+    for (const value of [address.address1, address.city, address.province, address.postalCode]) {
+      if (!text61(value).trim() || text61(value).length > MAX_FIELD) return "Enter the full delivery address: street, city, state and postal code.";
+    }
+  }
+  return null;
+}
+
+// features/keystone/lib/materialInformation.ts
+var import_node_crypto8 = require("node:crypto");
+var MATERIAL_INFORMATION_FIELDS = "allergens nutrition variantLabel packBaseUnitsMilli informationSource";
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key2) => [key2, canonical(value[key2])]));
+  return value ?? null;
+}
+function materialInformationSnapshot(product, versionId) {
+  const content = {
+    allergens: Array.isArray(product?.allergens) ? product.allergens : [],
+    nutrition: product?.nutrition ?? null,
+    variantLabel: String(product?.variantLabel || ""),
+    packBaseUnitsMilli: Number(product?.packBaseUnitsMilli ?? 1e3),
+    informationSource: String(product?.informationSource || "")
+  };
+  return { ...content, versionId, fingerprint: (0, import_node_crypto8.createHash)("sha256").update(JSON.stringify(canonical(content))).digest("hex") };
+}
+async function latestInformationVersionIds(prisma, productIds) {
+  const versions = productIds.length ? await prisma.productInformationVersion.findMany({
+    where: { productId: { in: productIds } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { id: true, productId: true }
+  }) : [];
+  const latest = /* @__PURE__ */ new Map();
+  for (const version of versions) if (version.productId && !latest.has(version.productId)) latest.set(version.productId, version.id);
+  return latest;
+}
+
 // features/keystone/mutations/submitGroceryOrder.ts
+init_publicError();
+init_stripeEnabled();
 async function ensureCheckoutAttempt(context, data, cart, session, providerPaymentId) {
   return context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
@@ -7647,7 +8958,7 @@ async function ensureCheckoutAttempt(context, data, cart, session, providerPayme
        ON CONFLICT ("idempotencyKey") DO UPDATE
          SET "idempotencyKey" = "CheckoutAttempt"."idempotencyKey"
        RETURNING "id", "status"::text AS "status", "order" AS "orderId"`,
-      (0, import_node_crypto7.randomUUID)(),
+      (0, import_node_crypto9.randomUUID)(),
       idempotencyKey,
       session.paymentProvider.code,
       providerPaymentId,
@@ -7668,7 +8979,7 @@ async function markCheckoutAttemptSettled(context, attemptId, settled) {
     const rows = await transactionContext.prisma.$queryRawUnsafe(
       `UPDATE "CheckoutAttempt"
        SET "status" = 'settled_pending_finalize', "amountCents" = $2, "currencyCode" = $3,
-           "settledAt" = COALESCE("settledAt", NOW())
+           "settledAt" = COALESCE("settledAt", NOW()), "updatedAt" = NOW()
        WHERE "id" = $1 AND "order" IS NULL
          AND "status" IN ('pending', 'settled_pending_finalize')
        RETURNING "id", "status", "order" AS "orderId"`,
@@ -7701,15 +9012,8 @@ function assertCartOwnership(cart, data, sessionUserId) {
   }
 }
 function assertFulfillmentInput(data) {
-  if (!/^\S+@\S+\.\S+$/.test(data.email.trim()) || data.email.length > 320) throw new Error("A valid checkout email is required");
-  for (const [label, value] of [["first name", data.deliveryAddress.firstName], ["last name", data.deliveryAddress.lastName], ["phone", data.deliveryAddress.phone]]) {
-    if (value.trim().length < 2 || value.length > 200) throw new Error(`A valid delivery ${label} is required`);
-  }
-  if (data.fulfillmentMethod === "delivery") {
-    for (const [label, value] of [["address", data.deliveryAddress.address1], ["city", data.deliveryAddress.city], ["province", data.deliveryAddress.province], ["postal code", data.deliveryAddress.postalCode]]) {
-      if (value.trim().length < 2 || value.length > 200) throw new Error(`A valid delivery ${label} is required`);
-    }
-  }
+  const contactProblem = checkoutContactProblem({ email: data.email, fulfillmentMethod: data.fulfillmentMethod === "pickup" ? "pickup" : "delivery", deliveryAddress: data.deliveryAddress });
+  if (contactProblem) throw publicError(contactProblem, "CHECKOUT_DETAILS");
   if (data.fulfillmentMethod === "delivery" && !data.deliverySlotId) {
     throw new Error("Delivery orders require a delivery slot");
   }
@@ -7742,6 +9046,12 @@ async function loadCart(sudoContext, cartId) {
           pricingMethod
           unitOfMeasure
           department
+          departmentRef { handle }
+          allergens
+          nutrition
+          variantLabel
+          packBaseUnitsMilli
+          informationSource
           imageUrl
           status
           store { id }
@@ -7773,15 +9083,6 @@ async function compensateFailedCheckout({
       expected: finalizationLease
     });
     if (!claimed) return null;
-    await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-      storeId: claimed.storeId,
-      eventKey: `checkout.compensation:${claimed.paymentSessionId}:requested`,
-      eventType: "checkout.compensation.requested",
-      aggregateType: "CheckoutAttempt",
-      aggregateId: claimed.id,
-      occurredAt: (/* @__PURE__ */ new Date()).toISOString(),
-      payload: { paymentSessionId: claimed.paymentSessionId, cartId: claimed.cartId, providerPaymentId: claimed.providerPaymentId, amountCents: claimed.amountCents }
-    });
     return claimed;
   });
   if (!claim) return { claimed: false, status: "not_claimed" };
@@ -7790,23 +9091,60 @@ async function compensateFailedCheckout({
     where: { id: claim.paymentSessionId },
     select: { data: true }
   });
-  const fullRefund = forceFullRefund === true || paymentSessionBeforeRefund?.data?.compensationFullRefund === true;
+  const sessionData = paymentSessionBeforeRefund?.data || {};
+  const fullRefund = forceFullRefund === true || sessionData.compensationFullRefund === true;
+  const store = await context.prisma.store.findUnique({ where: { id: claim.storeId }, select: { currencyCode: true } });
+  const currency = String(store?.currencyCode || "").toLowerCase();
+  const prior = sessionData.compensationReversal || null;
+  const reversalSessionId = claim.paymentSessionId;
+  async function recordReversal(patch) {
+    const current = await context.prisma.paymentSession.findUnique({ where: { id: reversalSessionId }, select: { data: true } });
+    const data = current?.data || {};
+    await context.prisma.paymentSession.update({ where: { id: reversalSessionId }, data: { data: { ...data, compensationReversal: { ...data.compensationReversal || {}, ...patch } } } });
+  }
   let compensation;
   try {
     const noCharge = noChargeCheckoutState({ id: claim.paymentSessionId, amountCents: claim.amountCents, data: paymentSessionBeforeRefund?.data });
-    const state = noCharge || await getPaymentStatus({ provider, paymentId: claim.providerPaymentId });
-    const isAuthorization = ["requires_capture", "authorized", "canceled", "cancelled"].includes(state.status);
-    const result = noCharge ? { status: "succeeded", amount: 0, data: { id: claim.providerPaymentId } } : isAuthorization ? await cancelPayment({ provider, paymentId: claim.providerPaymentId, idempotencyKey: eventKey }) : await refundPayment({
-      provider,
-      paymentId: claim.providerPaymentId,
-      amount: fullRefund ? void 0 : claim.amountCents,
-      idempotencyKey: eventKey
-    });
-    compensation = {
-      status: ["succeeded", "canceled", "cancelled"].includes(result.status) ? "refunded" : "refund_required",
-      providerRefundId: result.data?.id,
-      refundedAmountCents: Number.isInteger(Number(result.amount)) ? Number(result.amount) : void 0
-    };
+    const knownRefundId = prior?.providerRefundId || (typeof sessionData.compensationProviderRefundId === "string" ? sessionData.compensationProviderRefundId : null);
+    if (noCharge) {
+      compensation = { status: "refunded", refundedAmountCents: 0 };
+    } else if (knownRefundId) {
+      const expectedAmountCents = prior?.expectedAmountCents ?? (fullRefund ? null : Number(claim.amountCents));
+      if (expectedAmountCents === null) throw new Error("Known compensation refund needs operator reconciliation of its expected amount");
+      const refund = normalizeProviderRefund(await getRefundStatus({ provider, refundId: knownRefundId }), {
+        amountCents: expectedAmountCents,
+        currencyCode: prior?.currency || currency,
+        providerPaymentId: claim.providerPaymentId,
+        providerRefundId: knownRefundId
+      });
+      compensation = refund.status === "succeeded" ? { status: "refunded", providerRefundId: refund.id, refundedAmountCents: expectedAmountCents } : { status: "refund_required", providerRefundId: refund.id, error: `Compensation refund is ${refund.status}; it is polled, never re-created` };
+    } else {
+      const state = await getPaymentStatus({ provider, paymentId: claim.providerPaymentId });
+      if (!currency || String(state.currency || "").toLowerCase() !== currency) throw new Error("Provider payment currency does not match the Store");
+      const statePaymentId = state.data?.id ?? state.id;
+      if (statePaymentId && statePaymentId !== claim.providerPaymentId) throw new Error("Provider payment identity does not match the checkout");
+      if (["requires_capture", "authorized", "canceled", "cancelled"].includes(state.status)) {
+        if (!prior) await recordReversal({ requestKey: eventKey, firstRequestedAt: (/* @__PURE__ */ new Date()).toISOString(), expectedAmountCents: 0, currency, kind: "void" });
+        const result = ["canceled", "cancelled"].includes(state.status) ? state : await cancelPayment({ provider, paymentId: claim.providerPaymentId, idempotencyKey: prior?.requestKey || eventKey });
+        const resultPaymentId = result.data?.id ?? result.id;
+        const proven = ["canceled", "cancelled"].includes(result.status) && Number(result.capturedAmountCents ?? result.amountCents ?? result.amount) === 0 && String(result.currency || "").toLowerCase() === currency && (!resultPaymentId || resultPaymentId === claim.providerPaymentId);
+        compensation = proven ? { status: "refunded", refundedAmountCents: 0 } : { status: "refund_required", error: "Provider did not prove an uncaptured authorization void" };
+      } else {
+        const capturedCents2 = Number(state.capturedAmountCents ?? state.amountCents ?? state.amount);
+        const expectedAmountCents = fullRefund ? capturedCents2 : Number(claim.amountCents);
+        if (!Number.isSafeInteger(expectedAmountCents) || expectedAmountCents < 1 || !Number.isSafeInteger(capturedCents2) || expectedAmountCents > capturedCents2) {
+          throw new Error("Captured amount does not support the compensation refund");
+        }
+        const firstRequestedAt = prior?.firstRequestedAt || (/* @__PURE__ */ new Date()).toISOString();
+        assertRefundCreationWindow(firstRequestedAt, null);
+        const requestKey2 = prior?.requestKey || eventKey;
+        if (!prior) await recordReversal({ requestKey: requestKey2, firstRequestedAt, expectedAmountCents, currency, kind: "refund" });
+        const result = await refundPayment({ provider, paymentId: claim.providerPaymentId, amount: fullRefund ? void 0 : expectedAmountCents, idempotencyKey: requestKey2 });
+        const refund = normalizeProviderRefund(result, { amountCents: prior?.expectedAmountCents ?? expectedAmountCents, currencyCode: currency, providerPaymentId: claim.providerPaymentId });
+        await recordReversal({ providerRefundId: refund.id });
+        compensation = refund.status === "succeeded" ? { status: "refunded", providerRefundId: refund.id, refundedAmountCents: expectedAmountCents } : { status: "refund_required", providerRefundId: refund.id, error: `Compensation refund is ${refund.status}` };
+      }
+    }
   } catch (refundError) {
     compensation = { status: "refund_required", error: refundError instanceof Error ? refundError.message : "Compensation refund failed" };
   }
@@ -7824,15 +9162,6 @@ async function compensateFailedCheckout({
       compensationAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     await transactionContext.prisma.paymentSession.update({ where: { id: claim.paymentSessionId }, data: { data } });
-    await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-      storeId: claim.storeId,
-      eventKey: `${eventKey}:recorded:${compensation.status}:${compensation.providerRefundId || "none"}:${claim.fencingToken}`,
-      eventType: "checkout.compensation.recorded",
-      aggregateType: "PaymentSession",
-      aggregateId: claim.paymentSessionId,
-      occurredAt: (/* @__PURE__ */ new Date()).toISOString(),
-      payload: { cartId: claim.cartId, providerPaymentId: claim.providerPaymentId, amountCents: fullRefund ? null : claim.amountCents, fullRefund, compensation }
-    });
     return true;
   });
   return { claimed: recorded, status: recorded ? compensation.status === "refunded" ? "compensated" : "compensation_required" : "fenced" };
@@ -7848,7 +9177,7 @@ async function loadPaymentSession(sudoContext, paymentSessionId) {
       isInitiated
       reservedOrderDisplayId
       data
-      paymentProvider { id code isInstalled }
+      paymentProvider { id code isInstalled publicCheckout supportsIdempotentCapture captureIdempotencyEvidence credentials metadata createPaymentFunction capturePaymentFunction refundPaymentFunction getPaymentStatusFunction getRefundStatusFunction cancelPaymentFunction generatePaymentLinkFunction handleWebhookFunction }
       cart { id }
     `
   });
@@ -7896,7 +9225,7 @@ function fulfillmentWindow(startTime) {
   if (startHour < 18) return "time_16_18";
   return "time_18_20";
 }
-function calculateTotals(cart, deliverySlot, fulfillmentMethod, taxRateBps, discount = 0, coupon = null, feeTaxRateBasisPoints = 0) {
+function calculateTotals(cart, deliverySlot, fulfillmentMethod, taxRateBps, discount = 0, coupon = null, feeTaxRateBasisPoints = 0, tipCents = 0) {
   const subtotalCents = cart.items.reduce(
     (sum, item) => sum + Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity,
     0
@@ -7911,8 +9240,9 @@ function calculateTotals(cart, deliverySlot, fulfillmentMethod, taxRateBps, disc
   })), discountCents, feeCents, feeTaxRateBasisPoints);
   const taxCents = commercial.taxCents;
   const deliveryFeeCents = fulfillmentMethod === "delivery" ? Number(deliverySlot?.deliveryFee || 0) : 0;
-  const totalCents = Math.max(0, subtotalCents + taxCents + deliveryFeeCents - discountCents);
+  const totalCents = Math.max(0, subtotalCents + taxCents + deliveryFeeCents - discountCents) + tipCents;
   return {
+    ...tipCents ? { tipCents } : {},
     commercialLines: commercial.lines,
     subtotal: subtotalCents / 100,
     subtotalCents,
@@ -7929,6 +9259,8 @@ function calculateTotals(cart, deliverySlot, fulfillmentMethod, taxRateBps, disc
 async function commitGroceryOrder(data, context, settledPayment, attemptId, sessionUserIdOverride, finalizationLease) {
   const sessionUserId = sessionUserIdOverride === void 0 ? context.session?.itemId || null : sessionUserIdOverride;
   const fulfillmentMethod = data.fulfillmentMethod === "pickup" ? "pickup" : "delivery";
+  const contactProblem = checkoutContactProblem({ email: data.email, fulfillmentMethod, deliveryAddress: data.deliveryAddress });
+  if (contactProblem) throw publicError(contactProblem, "CHECKOUT_DETAILS");
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await lockCheckoutRows(transactionContext, data, finalizationLease, sessionUserId);
@@ -7985,10 +9317,7 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
     let coupon = null;
     let discount = 0;
     if (data.couponCode?.trim()) {
-      coupon = await sudoContext.query.Coupon.findOne({
-        where: { code: data.couponCode.trim().toUpperCase() },
-        query: "id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts store { id }"
-      });
+      coupon = await findStoreCouponByCode(sudoContext, data.couponCode, storeId, "id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts categoryTaxonomy store { id }");
       if (!coupon || coupon.store?.id !== storeId) throw new Error("Coupon is not available for this store");
       await validateLoyaltyCoupon(tx, coupon.id, sessionUserId, storeId);
       discount = calculateCouponDiscount(coupon, cart.items);
@@ -7997,7 +9326,8 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
     const goodsCents = cart.items.reduce((sum, item) => sum + Number(item.product.priceCents) * item.quantity, 0);
     const service = evaluateDeliveryPolicy(storeSettings.deliveryPolicy, fulfillmentMethod, data.deliveryAddress.postalCode, goodsCents - Math.round(discount * 100));
     const pricedSlot = deliverySlot ? { ...deliverySlot, deliveryFee: Number(deliverySlot.deliveryFee || 0) + service.feeCents } : null;
-    const totals = calculateTotals(cart, pricedSlot, fulfillmentMethod, taxRateBps, discount, coupon, service.feeTaxRateBasisPoints);
+    const tipCents = normalizeDeliveryTipCents(data.tipCents, fulfillmentMethod);
+    const totals = calculateTotals(cart, pricedSlot, fulfillmentMethod, taxRateBps, discount, coupon, service.feeTaxRateBasisPoints, tipCents);
     if (Math.round(Number(data.expectedTotal) * 100) !== totals.totalCents) {
       throw new Error("Order total changed before checkout. Please review your cart and fulfillment slot.");
     }
@@ -8027,7 +9357,7 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
     }
     const paymentProvider = selectedSession.paymentProvider;
     const providerPaymentId = selectedSession.data?.paymentIntentId || data.paymentIntentId;
-    if (!paymentProvider?.isInstalled || paymentProvider.code !== settledPayment.providerCode) {
+    if (!paymentProvider || !isPaymentProviderInstalled(paymentProvider) || paymentProvider.code !== settledPayment.providerCode) {
       throw new Error("Payment provider does not match the settled payment");
     }
     if (!providerPaymentId || providerPaymentId !== settledPayment.providerPaymentId) {
@@ -8075,7 +9405,9 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
         taxCents: totals.taxCents,
         deliveryFeeCents: totals.deliveryFeeCents,
         discountCents: totals.discountCents,
-        totalCents: totals.totalCents,
+        // The driver tip rides on the payment, not the order: the order total stays
+        // goods + tax + fee - discount (DB check Order_totalCents_matches_components).
+        totalCents: totals.totalCents - (totals.tipCents || 0),
         taxRate: taxRateBps / 1e4,
         deliveryDate: new Date(selectedSlot.date).toISOString(),
         deliveryTimeWindow: fulfillmentWindow(selectedSlot.startTime),
@@ -8090,7 +9422,7 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
           deliverySlotId: data.deliverySlotId || null,
           pickupSlotId: data.pickupSlotId || null,
           ...totals,
-          coupon: coupon ? { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discount, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents } : null,
+          coupon: coupon ? { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discount, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, categoryTaxonomy: coupon.categoryTaxonomy, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents } : null,
           lineItemsSnapshot,
           selectedFulfillmentSlot: selectedSlot ? { date: selectedSlot.date, startTime: selectedSlot.startTime, endTime: selectedSlot.endTime } : null
         },
@@ -8100,6 +9432,7 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
         shippingAddress: { connect: { id: address.id } }
       }
     });
+    const informationVersions = await latestInformationVersionIds(tx, cart.items.map((item) => item.product?.id).filter(Boolean));
     for (const item of cart.items) {
       const product = item.product;
       const plannedAllocations = planSellableLotAllocation(
@@ -8110,17 +9443,17 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
         inventoryCutoff
       );
       const inventoryAllocations = [];
-      let physicalQuantity = Number(product.stockQuantity);
+      let physicalQuantity2 = Number(product.stockQuantity);
       for (const { lot, quantity } of plannedAllocations) {
         await sudoContext.db.InventoryLot.updateOne({
           where: { id: lot.id },
           data: { quantityRemaining: String((Math.round(Number(lot.quantityRemaining || 0) * 1e3) - Math.round(quantity * 1e3)) / 1e3) }
         });
-        const physicalAfter = (Math.round(physicalQuantity * 1e3) - Math.round(quantity * 1e3)) / 1e3;
+        const physicalAfter = (Math.round(physicalQuantity2 * 1e3) - Math.round(quantity * 1e3)) / 1e3;
         if (physicalAfter < 0) throw new Error("Physical stock cache requires an inventory count before checkout");
         await tx.product.update({ where: { id: product.id }, data: { stockQuantity: physicalAfter } });
-        await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lot.id, orderId: order.id, sourceType: "checkout_allocation", sourceId: order.id, idempotencyKey: `checkout:${order.id}:${item.id}:${lot.id}`, actorId: sessionUserId || void 0, reason: "Reserve ordered goods", quantityBefore: Number(lot.quantityRemaining), quantityAfter: (Math.round(Number(lot.quantityRemaining) * 1e3) - Math.round(quantity * 1e3)) / 1e3, productStockBefore: physicalQuantity, productStockAfter: physicalAfter, metadata: { cartItemId: item.id } });
-        physicalQuantity = physicalAfter;
+        await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lot.id, orderId: order.id, sourceType: "checkout_allocation", sourceId: order.id, idempotencyKey: `checkout:${order.id}:${item.id}:${lot.id}`, actorId: sessionUserId || void 0, reason: "Reserve ordered goods", quantityBefore: Number(lot.quantityRemaining), quantityAfter: (Math.round(Number(lot.quantityRemaining) * 1e3) - Math.round(quantity * 1e3)) / 1e3, productStockBefore: physicalQuantity2, productStockAfter: physicalAfter, metadata: { cartItemId: item.id } });
+        physicalQuantity2 = physicalAfter;
         inventoryAllocations.push({ lotId: lot.id, quantity });
       }
       const createdLineItem = await sudoContext.db.OrderLineItem.createOne({
@@ -8142,7 +9475,8 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
               unitOfMeasure: product.unitOfMeasure
             },
             substitutionPreference: item.substitutionPreference || null,
-            inventoryAllocations
+            inventoryAllocations,
+            materialInformation: materialInformationSnapshot(product, informationVersions.get(product.id) || null)
           }
         }
       });
@@ -8162,7 +9496,7 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
         where: { id: product.id },
         // Physical balance changes above follow each lot journal entry; public
         // availability remains derived from currently eligible lots.
-        data: { stockQuantity: String(physicalQuantity), inStock: nextSellableQuantity > 0 }
+        data: { stockQuantity: String(physicalQuantity2), inStock: nextSellableQuantity > 0 }
       });
     }
     if (deliverySlot && data.deliverySlotId) {
@@ -8189,7 +9523,8 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
         store: { connect: { id: storeId } },
         amount: totals.orderTotal.toFixed(2),
         amountCents: totals.totalCents,
-        deliveryTipCents: 0,
+        deliveryTipCents: totals.tipCents || 0,
+        deliveryTipAmount: ((totals.tipCents || 0) / 100).toFixed(2),
         status: ["requires_capture", "authorized"].includes(settledPayment.status) ? "authorized" : "succeeded",
         paymentMethod: "credit_card",
         providerPaymentId,
@@ -8229,7 +9564,6 @@ async function commitGroceryOrder(data, context, settledPayment, attemptId, sess
     } else if (attemptId) {
       throw new Error("Checkout attempt finalization requires an exclusive reconciliation lease");
     }
-    await enqueueGroceryOutboxEvent(tx, { storeId, eventKey: `order.confirmed:${order.id}`, eventType: "order.confirmed", aggregateType: "Order", aggregateId: order.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { orderId: order.id } });
     return {
       orderId: order.id,
       displayId: order.displayId,
@@ -8272,7 +9606,7 @@ async function submitGroceryOrder(_root, { data }, context) {
   }
   assertCartOwnership(cart, data, sessionUserId);
   const paymentProvider = selectedSession.paymentProvider;
-  if (!paymentProvider?.isInstalled) throw new Error("Payment provider missing from payment session");
+  if (!paymentProvider || !isPaymentProviderInstalled(paymentProvider)) throw new Error("Payment provider missing from payment session");
   const providerPaymentId = selectedSession.data?.paymentIntentId || data.paymentIntentId;
   if (!providerPaymentId) throw new Error("Payment session is missing provider payment id");
   const attempt = await ensureCheckoutAttempt(context, data, cart, selectedSession, providerPaymentId);
@@ -8315,7 +9649,8 @@ async function submitGroceryOrder(_root, { data }, context) {
 
 // features/keystone/mutations/recoverGroceryPaymentCreation.ts
 init_payment();
-var defaults = { requireFreshCapability, requireSessionStore, getPaymentStatus, ensureCheckoutAttempt, now: Date.now, token: import_node_crypto8.randomUUID };
+init_stripeEnabled();
+var defaults = { requireFreshCapability, requireSessionStore, getPaymentStatus, ensureCheckoutAttempt, now: Date.now, token: import_node_crypto10.randomUUID };
 var reviewMessage = "Payment remains held. The provider reference could not be safely attached; review its original metadata and checkout evidence.";
 async function recoverPaymentCreationWithDependencies(_root, input, context, ports = defaults) {
   const args = { paymentSessionId: input.paymentSessionId.trim(), providerPaymentId: input.providerPaymentId.trim(), reason: input.reason.trim() };
@@ -8342,7 +9677,7 @@ async function recoverPaymentCreationWithDependencies(_root, input, context, por
     await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentSession" WHERE "id"=$1 FOR UPDATE', args.paymentSessionId);
     const session = await tx.paymentSession.findUnique({ where: { id: args.paymentSessionId }, include: { cart: true, paymentProvider: true } });
     if (!session?.cart || session.cart.id !== identity2.cart.id || session.cart.storeId !== store.id || session.cart.customerId !== ownerId) throw new Error("Checkout ownership changed during recovery");
-    if (session.data?.noCharge || session.paymentProvider?.code !== STRIPE_PROVIDER_CODE || !session.paymentProvider?.isInstalled) throw new Error("Checkout provider is unavailable for reference recovery");
+    if (session.data?.noCharge || session.paymentProvider?.code !== STRIPE_PROVIDER_CODE || !isPaymentProviderInstalled(session.paymentProvider)) throw new Error("Checkout provider is unavailable for reference recovery");
     return session;
   }
   const claim = await context.transaction(async (tc) => {
@@ -8386,7 +9721,7 @@ async function recoverPaymentCreationWithDependencies(_root, input, context, por
     if ((await authorize(tc)).id !== store.id) throw new Error("Active Store changed during recovery");
     const current = await locked(tc);
     const data = current.data || {};
-    if (data.creationClaimToken !== token || data.creationRecovery?.token !== token || data.status === "completed" || data.compensationStatus || (current.cart.customerId || null) !== (claim.session.cart.customerId || null) || !current.cart.customerId && current.cart.sessionId !== claim.session.cart.sessionId || current.paymentProvider.id !== claim.session.paymentProvider.id || data.creationBindingVersion !== 1 || data.checkoutFingerprint !== claim.session.data.checkoutFingerprint || data.cartFingerprint !== claim.session.data.cartFingerprint || current.amountCents !== claim.session.amountCents || groceryOutboxPayloadHash(data.recoveryRequest) !== groceryOutboxPayloadHash(claim.draft) || data.paymentIntentId && data.paymentIntentId !== args.providerPaymentId) throw new Error("Checkout recovery claim changed; retry after the active operation completes");
+    if (data.creationClaimToken !== token || data.creationRecovery?.token !== token || data.status === "completed" || data.compensationStatus || (current.cart.customerId || null) !== (claim.session.cart.customerId || null) || !current.cart.customerId && current.cart.sessionId !== claim.session.cart.sessionId || current.paymentProvider.id !== claim.session.paymentProvider.id || data.creationBindingVersion !== 1 || data.checkoutFingerprint !== claim.session.data.checkoutFingerprint || data.cartFingerprint !== claim.session.data.cartFingerprint || current.amountCents !== claim.session.amountCents || payloadHash(data.recoveryRequest) !== payloadHash(claim.draft) || data.paymentIntentId && data.paymentIntentId !== args.providerPaymentId) throw new Error("Checkout recovery claim changed; retry after the active operation completes");
     if (failure) {
       await tc.prisma.paymentSession.update({ where: { id: current.id }, data: { data: {
         ...data,
@@ -8445,7 +9780,6 @@ async function assertOrderHandoffPayment(tx, order) {
 }
 
 // features/keystone/lib/deliveryReschedule.ts
-init_groceryOutbox();
 function normalizeReturnedDeliveryReschedule(input) {
   const result = Object.fromEntries(["orderId", "deliverySlotId", "customerApproval", "conditionEvidence", "idempotencyKey"].map((key2) => [key2, String(input[key2] || "").trim()]));
   if (!result.orderId || !result.deliverySlotId) throw new Error("Order and new delivery slot are required");
@@ -8477,7 +9811,7 @@ function rescheduleSlotDecision(order, slot, store, settings, now = /* @__PURE__
 }
 async function rescheduleReturnedDeliveryInTransaction(tx, actor, rawInput, now = /* @__PURE__ */ new Date()) {
   const input = normalizeReturnedDeliveryReschedule(rawInput);
-  const fingerprint = groceryOutboxPayloadHash(input);
+  const fingerprint = payloadHash(input);
   await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id"=$1 FOR UPDATE', input.orderId);
   const order = await tx.order.findUnique({ where: { id: input.orderId } });
   if (!order || order.storeId !== actor.storeId) throw new Error("Order not found in active store");
@@ -8522,6 +9856,7 @@ async function rescheduleReturnedDeliveryInTransaction(tx, actor, rawInput, now 
   const event = { ...input, actorId: actor.userId, customerId: order.userId || null, occurredAt: now.toISOString(), fingerprint, before, after };
   await tx.deliverySlot.update({ where: { id: oldSlotId }, data: { currentBookings: oldSlot.currentBookings - 1 } });
   await tx.deliverySlot.update({ where: { id: newSlot.id }, data: { currentBookings: newSlot.currentBookings + 1 } });
+  assertTransition(ORDER_TRANSITIONS, "Order", order.status, "packed");
   await tx.order.update({ where: { id: order.id }, data: {
     status: "packed",
     deliverySlotId: newSlot.id,
@@ -8535,15 +9870,6 @@ async function rescheduleReturnedDeliveryInTransaction(tx, actor, rawInput, now 
       deliveryOutcome: { status: "rescheduled", custody: "store", occurredAt: event.occurredAt, reason: "Customer-approved later delivery window", retryAt: decision.startsAt.toISOString() }
     }
   } });
-  await enqueueGroceryOutboxEvent(tx, {
-    storeId: actor.storeId,
-    eventKey: `order.rescheduled:${groceryOutboxPayloadHash({ orderId: order.id, key: input.idempotencyKey })}`,
-    eventType: "order.rescheduled",
-    aggregateType: "Order",
-    aggregateId: order.id,
-    occurredAt: now.toISOString(),
-    payload: { orderId: order.id, before, after }
-  });
   return { success: true, orderId: order.id, deliverySlotId: newSlot.id, promiseEndsAt: after.promiseEndsAt, reused: false };
 }
 
@@ -8580,18 +9906,39 @@ async function groceryDeliveryRescheduleSlots(_root, { orderId }, context) {
 // features/keystone/mutations/groceryRecurringOverview.ts
 init_access();
 init_storeScope();
-async function groceryRecurringOverview(_root, { page = 1, customerOnly = true }, context) {
+var WAITING = ["awaiting_checkout", "blocked_cart", "blocked_stock"];
+async function groceryRecurringOverview(_root, { page = 1, customerOnly = true, search, outcome, schedule }, context) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 1e6) throw new Error("Invalid recurring history page");
   if (!customerOnly) await requireFreshCapability(context, "canManageOrders");
   const store = await requireSessionStore(context), where = { storeId: store.id, ...customerOnly ? { userId: context.session.itemId } : {} }, take = 25, skip = (page - 1) * take;
-  const [subscriptions, runs, subscriptionCount, runCount, program] = await Promise.all([
-    context.prisma.subscription.findMany({ where, take, skip, orderBy: [{ createdAt: "desc" }, { id: "asc" }], select: { id: true, product: true, quantity: true, frequency: true, nextDeliveryDate: true, status: true, scheduleTimezone: true, pausedUntil: true, productRef: { select: { id: true, title: true } }, user: { select: { id: true, email: true } } } }),
-    context.prisma.subscriptionRun.findMany({ where, take, skip, orderBy: [{ createdAt: "desc" }, { id: "asc" }], select: { id: true, dueAt: true, status: true, failureReason: true, productTitle: true, quantity: true, user: { select: { id: true, email: true } }, order: { select: { id: true } }, subscription: { select: { id: true } } } }),
-    context.prisma.subscription.count({ where }),
-    context.prisma.subscriptionRun.count({ where }),
-    context.prisma.loyaltyProgram.findFirst({ where: { storeId: store.id }, orderBy: [{ createdAt: "desc" }, { id: "asc" }], select: { id: true, name: true, isActive: true, earnPointsPer100Cents: true, redeemPointsPer100Cents: true, minimumRedemptionPoints: true } })
+  const text63 = customerOnly ? "" : String(search || "").trim().slice(0, 100);
+  const like = { contains: text63, mode: "insensitive" };
+  const runSearch = text63 ? { OR: [{ productTitle: like }, { user: { email: like } }] } : {};
+  const scheduleSearch = text63 ? { OR: [{ product: like }, { productRef: { title: like } }, { user: { email: like } }] } : {};
+  const outcomeViews = { waiting: { status: { in: WAITING } }, ordered: { status: "ordered" }, closed: { status: { in: ["skipped", "cancelled"] } } };
+  const scheduleViews = { active: { status: "active" }, paused: { status: "paused" }, cancelled: { status: "cancelled" } };
+  const runOutcome = customerOnly ? "all" : outcomeViews[outcome || ""] || outcome === "all" ? outcome || "waiting" : "waiting";
+  const scheduleView = customerOnly ? "all" : scheduleViews[schedule || ""] || schedule === "all" ? schedule || "active" : "active";
+  const runScope = (view) => ({ ...where, AND: [runSearch, outcomeViews[view] || {}] });
+  const scheduleScope = (view) => ({ ...where, AND: [scheduleSearch, scheduleViews[view] || {}] });
+  const scheduleOrder = customerOnly ? [{ createdAt: "desc" }, { id: "asc" }] : [{ nextDeliveryDate: "asc" }, { id: "asc" }];
+  const [subscriptions, runs, subscriptionCount, runCount, program, runCounts, scheduleCounts, dueThisWeek] = await Promise.all([
+    context.prisma.subscription.findMany({ where: scheduleScope(scheduleView), take, skip, orderBy: scheduleOrder, select: { id: true, product: true, quantity: true, frequency: true, nextDeliveryDate: true, status: true, scheduleTimezone: true, pausedUntil: true, productRef: { select: { id: true, title: true } }, user: { select: { id: true, email: true } } } }),
+    context.prisma.subscriptionRun.findMany({ where: runScope(runOutcome), take, skip, orderBy: [{ createdAt: "desc" }, { id: "asc" }], select: { id: true, dueAt: true, status: true, failureReason: true, productTitle: true, quantity: true, user: { select: { id: true, email: true } }, order: { select: { id: true, displayId: true } }, subscription: { select: { id: true } } } }),
+    context.prisma.subscription.count({ where: scheduleScope(scheduleView) }),
+    context.prisma.subscriptionRun.count({ where: runScope(runOutcome) }),
+    context.prisma.loyaltyProgram.findFirst({ where: { storeId: store.id }, orderBy: [{ createdAt: "desc" }, { id: "asc" }], select: { id: true, name: true, isActive: true, earnPointsPer100Cents: true, redeemPointsPer100Cents: true, minimumRedemptionPoints: true } }),
+    customerOnly ? Promise.resolve([]) : Promise.all(["waiting", "ordered", "closed", "all", "blocked"].map(async (view) => [view, await context.prisma.subscriptionRun.count({ where: view === "blocked" ? { ...where, AND: [runSearch, { status: { in: ["blocked_cart", "blocked_stock"] } }] } : runScope(view) })])),
+    customerOnly ? Promise.resolve([]) : Promise.all(["active", "paused", "cancelled", "all"].map(async (view) => [view, await context.prisma.subscription.count({ where: scheduleScope(view) })])),
+    customerOnly ? Promise.resolve(0) : context.prisma.subscription.count({ where: { ...where, status: "active", nextDeliveryDate: { lte: new Date(Date.now() + 7 * 864e5) } } })
   ]);
-  return { subscriptions, runs, program, pagination: { page, pageSize: take, collections: { subscriptions: { total: subscriptionCount, totalPages: Math.max(1, Math.ceil(subscriptionCount / take)) }, runs: { total: runCount, totalPages: Math.max(1, Math.ceil(runCount / take)) } } } };
+  return {
+    subscriptions,
+    runs,
+    program,
+    ...customerOnly ? {} : { search: text63, outcome: runOutcome, schedule: scheduleView, runCounts: Object.fromEntries(runCounts), scheduleCounts: Object.fromEntries(scheduleCounts), dueThisWeek },
+    pagination: { page, pageSize: take, collections: { subscriptions: { total: subscriptionCount, totalPages: Math.max(1, Math.ceil(subscriptionCount / take)) }, runs: { total: runCount, totalPages: Math.max(1, Math.ceil(runCount / take)) } } }
+  };
 }
 
 // features/keystone/mutations/groceryPaymentWebhookRecovery.ts
@@ -8603,7 +9950,8 @@ async function groceryPaymentWebhookRecovery(_root, { page = 1 }, context) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 1e6) throw new Error("Invalid recovery page");
   const where = { storeId: store.id, status: { in: ["unmatched", "processing"] } };
   const [total, events] = await Promise.all([context.prisma.paymentWebhookEvent.count({ where }), context.prisma.paymentWebhookEvent.findMany({ where, orderBy: [{ createdAt: "asc" }, { id: "asc" }], skip: (page - 1) * 25, take: 25, select: { id: true, providerCode: true, providerEventId: true, eventType: true, status: true, processingAttempts: true, nextAttemptAt: true, deadLetterAt: true, lastProcessingError: true } })]);
-  return { page, total, totalPages: Math.max(1, Math.ceil(total / 25)), events };
+  const safeEvents = events.map((event) => ({ ...event, lastProcessingError: event.lastProcessingError ? "Reconciliation details are withheld; review payment/refund evidence before replay." : "" }));
+  return { page, total, totalPages: Math.max(1, Math.ceil(total / 25)), events: safeEvents };
 }
 
 // features/keystone/mutations/importGroceryCatalog.ts
@@ -8611,9 +9959,9 @@ init_access();
 init_storeScope();
 
 // features/keystone/lib/catalogImport.ts
-var import_node_crypto9 = require("node:crypto");
+var import_node_crypto11 = require("node:crypto");
 var CATALOG_IMPORT_COLUMNS = ["sku", "title", "priceCents", "unitOfMeasure", "pricingMethod", "departmentId", "supplierId", "taxRateBasisPoints"];
-var catalogHash = (value) => (0, import_node_crypto9.createHash)("sha256").update(JSON.stringify(value)).digest("hex");
+var catalogHash = (value) => (0, import_node_crypto11.createHash)("sha256").update(JSON.stringify(value)).digest("hex");
 function parseCatalogCsv(csv, schemaVersion) {
   if (schemaVersion !== 1) throw new Error("Unsupported catalog schemaVersion; use version 1");
   if (typeof csv !== "string" || Buffer.byteLength(csv, "utf8") > 1e6) throw new Error("Catalog CSV must be at most 1 MB");
@@ -8716,9 +10064,9 @@ async function importGroceryCatalog(_root, args, context) {
   const sourceSystem = args.sourceSystem?.trim(), sourceBatchId = args.sourceBatchId?.trim(), requestKey2 = args.idempotencyKey?.trim();
   if (!sourceSystem || sourceSystem.length > 100 || !sourceBatchId || sourceBatchId.length > 150 || !requestKey2 || requestKey2.length < 12 || requestKey2.length > 150) throw new Error("Source system, source batch and a stable request identity are required");
   const rows = parseCatalogCsv(args.csv, args.schemaVersion);
-  const payloadHash = catalogHash({ storeId: store.id, schemaVersion: args.schemaVersion, sourceSystem, sourceBatchId, csv: args.csv });
+  const payloadHash2 = catalogHash({ storeId: store.id, schemaVersion: args.schemaVersion, sourceSystem, sourceBatchId, csv: args.csv });
   const identityKey = catalogHash([store.id, sourceSystem, sourceBatchId]), idempotencyKey = catalogHash([store.id, requestKey2]);
-  if (args.mode === "commit" && args.expectedPayloadHash !== payloadHash) throw new Error("The exact catalog payload must be reviewed before commit");
+  if (args.mode === "commit" && args.expectedPayloadHash !== payloadHash2) throw new Error("The exact catalog payload must be reviewed before commit");
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     if (args.mode === "commit") {
@@ -8726,17 +10074,17 @@ async function importGroceryCatalog(_root, args, context) {
       for (const sku of rows.map((row) => row.sku).sort()) await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-catalog-sku'), hashtext($1))", `${store.id}:${sku}`);
     }
     const [existingBatch, existingRequest] = await Promise.all([tx.catalogImport.findUnique({ where: { identityKey } }), tx.catalogImport.findUnique({ where: { idempotencyKey } })]);
-    if (existingRequest && (existingRequest.identityKey !== identityKey || existingRequest.payloadHash !== payloadHash)) throw new Error("Catalog request identity was reused for different content or source batch");
+    if (existingRequest && (existingRequest.identityKey !== identityKey || existingRequest.payloadHash !== payloadHash2)) throw new Error("Catalog request identity was reused for different content or source batch");
     if (existingBatch) {
-      if (existingBatch.storeId !== store.id || existingBatch.payloadHash !== payloadHash) throw new Error("Source batch already committed with a different payload");
-      return { valid: true, committed: true, reused: true, importId: existingBatch.id, payloadHash, reviewHash: existingBatch.reviewHash, currencyCode: existingBatch.currencyCode, issues: [], plan: existingBatch.result };
+      if (existingBatch.storeId !== store.id || existingBatch.payloadHash !== payloadHash2) throw new Error("Source batch already committed with a different payload");
+      return { valid: true, committed: true, reused: true, importId: existingBatch.id, payloadHash: payloadHash2, reviewHash: existingBatch.reviewHash, currencyCode: existingBatch.currencyCode, issues: [], plan: existingBatch.result };
     }
     if (args.mode === "commit") {
       const matches = await tx.product.findMany({ where: { storeId: store.id, sku: { in: rows.map((row) => row.sku) } }, select: { id: true } });
       for (const product of matches.sort((a, b) => a.id.localeCompare(b.id))) await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', product.id);
     }
     const planned = await planCatalogImport(tx, store.id, rows);
-    if (args.mode === "dry_run" || planned.issues.length) return { valid: !planned.issues.length, committed: false, reused: false, importId: null, payloadHash, currencyCode: store.currencyCode, ...planned };
+    if (args.mode === "dry_run" || planned.issues.length) return { valid: !planned.issues.length, committed: false, reused: false, importId: null, payloadHash: payloadHash2, currencyCode: store.currencyCode, ...planned };
     if (args.expectedReviewHash !== planned.reviewHash) throw new Error("Catalog changed after review; run a fresh dry run before committing");
     const result = [];
     const productDb = transactionContext.sudo().db.Product;
@@ -8757,20 +10105,20 @@ async function importGroceryCatalog(_root, args, context) {
       else {
         if (!next.departmentId) delete data.departmentRef;
         if (!next.supplierId) delete data.supplier;
-        product = await productDb.createOne({ data: { ...data, status: "draft", handle: `import-${catalogHash([store.id, next.sku]).slice(0, 32)}` } });
+        product = await productDb.createOne({ data: { ...data, store: { connect: { id: store.id } }, status: "draft", handle: `import-${catalogHash([store.id, next.sku]).slice(0, 32)}` } });
       }
       const persisted = await tx.product.findUnique({ where: { id: product.id } });
       if (!persisted || persisted.storeId !== store.id || Number(persisted.priceCents) !== next.priceCents) throw new Error("Product source hooks did not preserve imported Store and price authority");
       result.push({ ...item, productId: product.id, persisted: catalogProductSnapshot(persisted) });
     }
-    const record2 = await tx.catalogImport.create({ data: { identityKey, idempotencyKey, sourceSystem, sourceBatchId, schemaVersion: args.schemaVersion, payloadHash, reviewHash: planned.reviewHash, storeId: store.id, currencyCode: store.currencyCode, rowCount: rows.length, rows, result, committedAt: /* @__PURE__ */ new Date(), actorId: context.session.itemId } });
-    return { valid: true, committed: true, reused: false, importId: record2.id, payloadHash, reviewHash: planned.reviewHash, currencyCode: store.currencyCode, issues: [], plan: result };
+    const record2 = await tx.catalogImport.create({ data: { identityKey, idempotencyKey, sourceSystem, sourceBatchId, schemaVersion: args.schemaVersion, payloadHash: payloadHash2, reviewHash: planned.reviewHash, storeId: store.id, currencyCode: store.currencyCode, rowCount: rows.length, rows, result, committedAt: /* @__PURE__ */ new Date(), actorId: context.session.itemId } });
+    return { valid: true, committed: true, reused: false, importId: record2.id, payloadHash: payloadHash2, reviewHash: planned.reviewHash, currencyCode: store.currencyCode, issues: [], plan: result };
   }, { isolationLevel: "Serializable" }));
 }
 
 // features/keystone/mutations/handlePaymentProviderWebhook.ts
 init_refundAllocations();
-var import_node_crypto10 = require("node:crypto");
+var import_node_crypto12 = require("node:crypto");
 init_access();
 init_paymentProviderAdapter();
 
@@ -8823,27 +10171,41 @@ function paymentEventOrderFromProviderData(providerData) {
 
 // features/keystone/mutations/handlePaymentProviderWebhook.ts
 init_refundRecovery();
-init_groceryOutbox();
 init_serializableTransaction();
 init_storeScope();
-function normalizePaymentId(resource) {
-  const value = resource?.payment_intent || resource?.id;
-  return typeof value === "string" ? value : value?.id || null;
+init_stripeEnabled();
+function providerId(value) {
+  if (typeof value === "string" && value.trim()) return value;
+  const nested = value?.id;
+  return typeof nested === "string" && nested.trim() ? nested : null;
+}
+var REFUND_EVENT_TYPES = ["refund.succeeded", "refund.processing", "refund.created", "refund.updated", "refund.failed", "refund.canceled", "refund.cancelled"];
+function normalizePaymentId(resource, eventType) {
+  if (eventType && REFUND_EVENT_TYPES.includes(eventType)) return providerId(resource?.payment_intent) || providerId(resource?.paymentId);
+  return providerId(resource?.payment_intent) || providerId(resource?.paymentId) || providerId(resource?.id);
 }
 function normalizePaymentStatus(eventType) {
-  if (eventType === "payment_intent.succeeded" || eventType === "charge.succeeded") return "succeeded";
-  if (eventType === "payment_intent.processing" || eventType === "charge.pending") return "processing";
-  if (eventType === "payment_intent.payment_failed" || eventType === "charge.failed") return "failed";
-  if (eventType === "payment_intent.canceled" || eventType === "payment_intent.cancelled") return "cancelled";
+  if (["payment.succeeded", "payment_intent.succeeded", "charge.succeeded"].includes(eventType)) return "succeeded";
+  if (["payment.processing", "payment_intent.processing", "charge.pending"].includes(eventType)) return "processing";
+  if (["payment.failed", "payment_intent.payment_failed", "charge.failed"].includes(eventType)) return "failed";
+  if (["payment.cancelled", "payment.canceled", "payment_intent.canceled", "payment_intent.cancelled"].includes(eventType)) return "cancelled";
   return null;
 }
+function paymentEventMatchesFinancials(eventType, resource, payment, currencyCode) {
+  const amountCents = Number.isSafeInteger(resource?.amountCents) ? resource.amountCents : eventType === "payment_intent.succeeded" ? resource?.amount_received : eventType === "charge.succeeded" ? resource?.amount_captured ?? (resource?.captured === true ? resource?.amount : void 0) : resource?.amount;
+  const currencies = [resource?.currencyCode, resource?.currency].filter((value) => value !== void 0 && value !== null);
+  if (!Number.isSafeInteger(amountCents) || amountCents < 0 || amountCents !== payment.amountCents || currencies.length === 0) return false;
+  if (currencies.some((value) => typeof value !== "string" || !value.trim())) return false;
+  const normalizedCurrencies = currencies.map((value) => value.trim().toLowerCase());
+  return normalizedCurrencies.every((value) => value === currencyCode.trim().toLowerCase());
+}
 function normalizeRefundStatus(eventType, resource) {
-  if (!["refund.created", "refund.updated", "refund.failed", "refund.canceled", "refund.cancelled", "charge.refunded"].includes(eventType)) return null;
+  if (!["refund.succeeded", "refund.processing", "refund.created", "refund.updated", "refund.failed", "refund.canceled", "refund.cancelled", "charge.refunded"].includes(eventType)) return null;
   const providerStatus = String(resource?.status || "").toLowerCase();
   if (providerStatus === "canceled" || providerStatus === "cancelled" || eventType === "refund.canceled" || eventType === "refund.cancelled") return "canceled";
   if (providerStatus === "failed" || eventType === "refund.failed") return "failed";
-  if (providerStatus === "succeeded" || providerStatus === "paid" || eventType === "charge.refunded") return "succeeded";
-  if (providerStatus === "pending" || providerStatus === "processing" || eventType === "refund.created" || eventType === "refund.updated") return "processing";
+  if (providerStatus === "succeeded" || providerStatus === "paid" || eventType === "refund.succeeded" || eventType === "charge.refunded") return "succeeded";
+  if (providerStatus === "pending" || providerStatus === "processing" || eventType === "refund.processing" || eventType === "refund.created" || eventType === "refund.updated") return "processing";
   return null;
 }
 function providerEventOrder(event, resource, eventId) {
@@ -8854,24 +10216,55 @@ function providerEventOrder(event, resource, eventId) {
 }
 async function processPaymentProviderWebhook({ providerCode, rawBody, headers }, context) {
   if (!rawBody) throw new Error("Payment webhook raw body is required");
-  const verified = await verifyPaymentWebhook({
-    providerCode,
-    rawBody,
-    headers: headers || {}
-  });
+  const provider = requirePrismaSuccess(await context.prisma.paymentProvider.findUnique({
+    where: { code: providerCode },
+    select: {
+      id: true,
+      code: true,
+      isInstalled: true,
+      publicCheckout: true,
+      supportsIdempotentCapture: true,
+      captureIdempotencyEvidence: true,
+      credentials: true,
+      metadata: true,
+      createPaymentFunction: true,
+      capturePaymentFunction: true,
+      refundPaymentFunction: true,
+      getPaymentStatusFunction: true,
+      getRefundStatusFunction: true,
+      cancelPaymentFunction: true,
+      generatePaymentLinkFunction: true,
+      handleWebhookFunction: true
+    }
+  }), "payment provider configuration lookup");
+  if (!provider || !isPaymentProviderInstalled(provider)) throw new Error(`Payment provider ${providerCode} not found or not installed`);
+  const verified = await verifyPaymentWebhook({ provider, rawBody, headers: headers || {} });
+  if (verified.isValid !== true) throw new Error("Payment webhook signature is invalid");
+  if (providerCode === "pp_stripe_default" && verified.resource?.metadata?.source !== "openfront-grocery") {
+    const paymentId = normalizePaymentId(verified.resource, verified.type);
+    const owned = paymentId && await context.prisma.payment.findFirst({
+      where: { providerPaymentId: paymentId, paymentProviderId: provider.id },
+      select: { id: true }
+    });
+    if (!owned) return { success: true, ignored: true };
+  }
   const createdSeconds = Number(verified.event?.created || 0);
-  if (createdSeconds && Math.abs(Date.now() - createdSeconds * 1e3) > 7 * 24 * 60 * 60 * 1e3) throw new Error("Payment webhook event is outside the replay window");
-  return processVerifiedPaymentEvent(providerCode, verified, (0, import_node_crypto10.createHash)("sha256").update(rawBody).digest("hex"), context);
+  if (createdSeconds && createdSeconds * 1e3 - Date.now() > 60 * 60 * 1e3) throw new Error("Payment webhook event time is invalid");
+  const historic = Boolean(createdSeconds && Date.now() - createdSeconds * 1e3 > 7 * 24 * 60 * 60 * 1e3);
+  return processVerifiedPaymentEvent(providerCode, verified, (0, import_node_crypto12.createHash)("sha256").update(rawBody).digest("hex"), context, void 0, { historic });
 }
-async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, context, expectedStoreId) {
+function isSupportedEventType(eventType) {
+  return normalizePaymentStatus(eventType) !== null || REFUND_EVENT_TYPES.includes(eventType) || eventType === "charge.refunded";
+}
+async function processVerifiedPaymentEvent(providerCode, verified, payloadHash2, context, expectedStoreId, options = {}) {
   const eventType = verified.type;
   const providerEventId = verified.eventId;
   if (!providerEventId) throw new Error("Payment webhook event id is required");
-  const paymentId = normalizePaymentId(verified.resource);
+  const paymentId = normalizePaymentId(verified.resource, eventType);
   const status = eventType === "charge.succeeded" && verified.resource?.captured === false ? null : normalizePaymentStatus(eventType);
   const refundStatus = normalizeRefundStatus(eventType, verified.resource);
   const replayKey = `${providerCode}:${providerEventId}`;
-  const claimToken = (0, import_node_crypto10.randomUUID)();
+  const claimToken = (0, import_node_crypto12.randomUUID)();
   const refundEventOrder = providerEventOrder(verified.event, verified.resource, providerEventId);
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
@@ -8879,7 +10272,7 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
       where: { code: providerCode },
       select: { id: true, code: true, isInstalled: true }
     });
-    if (!provider?.isInstalled) {
+    if (!provider || !isPaymentProviderInstalled(provider)) {
       throw new Error(`Payment provider ${providerCode} not found or not installed`);
     }
     if (paymentId) await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "providerPaymentId" = $1 FOR UPDATE', paymentId);
@@ -8902,7 +10295,7 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
         providerCreatedAt: refundEventOrder.createdAtMs ? new Date(refundEventOrder.createdAtMs) : null,
         providerVersion: refundEventOrder.version,
         eventType,
-        payloadHash,
+        payloadHash: payloadHash2,
         verifiedPayload: { event: verified.event, eventId: providerEventId, type: eventType, resource: verified.resource },
         claimToken,
         status: "processing",
@@ -8910,7 +10303,7 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
       },
       select: { id: true, claimToken: true, status: true, paymentRecordId: true, payloadHash: true, storeId: true, deadLetterAt: true }
     });
-    if (eventRecord.payloadHash !== payloadHash) throw new Error("Webhook event ID was reused with a different payload");
+    if (eventRecord.payloadHash !== payloadHash2) throw new Error("Webhook event ID was reused with a different payload");
     if (eventRecord.storeId !== store.id) throw new Error("Verified event Store does not match its payment Store");
     if (eventRecord.deadLetterAt || eventRecord.claimToken !== claimToken && !(eventRecord.status === "unmatched" && knownPayment)) {
       return {
@@ -8923,39 +10316,47 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
         message: "Payment webhook event was already claimed."
       };
     }
+    if (eventRecord.claimToken === claimToken && options.historic) {
+      await tx.paymentWebhookEvent.update({ where: { id: eventRecord.id }, data: { status: "unmatched", deadLetterAt: /* @__PURE__ */ new Date(), nextAttemptAt: null, lastProcessingError: "Event is older than seven days; retained for operator review", processedAt: /* @__PURE__ */ new Date() } });
+      return { success: true, duplicate: false, retained: true, providerCode: provider.code, eventType, paymentId, updatedPaymentId: null, message: "Historic payment webhook retained for review." };
+    }
     let updatedPaymentId = null;
-    let eventProcessingStatus = "unmatched";
+    let eventProcessingStatus = isSupportedEventType(eventType) ? "unmatched" : "ignored";
     if (knownPayment && status) {
       updatedPaymentId = knownPayment.id;
-      const currentPaymentOrder = paymentEventOrderFromProviderData(knownPayment.providerData);
-      const apply = shouldApplyPaymentTransition(
-        knownPayment.status,
-        status,
-        currentPaymentOrder,
-        refundEventOrder
-      );
-      if (apply) {
-        await tx.payment.update({
-          where: { id: knownPayment.id },
-          data: {
-            status,
-            providerData: {
-              ...knownPayment.providerData || {},
-              paymentWebhook: {
-                eventId: providerEventId,
-                eventType,
-                status,
-                createdAtMs: refundEventOrder.createdAtMs,
-                version: refundEventOrder.version,
-                payloadHash,
-                receivedAt: (/* @__PURE__ */ new Date()).toISOString()
+      if (paymentEventMatchesFinancials(eventType, verified.resource, knownPayment, store.currencyCode)) {
+        const currentPaymentOrder = paymentEventOrderFromProviderData(knownPayment.providerData);
+        const apply = shouldApplyPaymentTransition(
+          knownPayment.status,
+          status,
+          currentPaymentOrder,
+          refundEventOrder
+        );
+        if (apply) {
+          await tx.payment.update({
+            where: { id: knownPayment.id },
+            data: {
+              status,
+              providerData: {
+                ...knownPayment.providerData || {},
+                paymentWebhook: {
+                  eventId: providerEventId,
+                  eventType,
+                  status,
+                  amountCents: verified.resource?.amountCents ?? verified.resource?.amount_received ?? verified.resource?.amount_captured ?? verified.resource?.amount,
+                  currencyCode: verified.resource?.currencyCode ?? verified.resource?.currency,
+                  createdAtMs: refundEventOrder.createdAtMs,
+                  version: refundEventOrder.version,
+                  payloadHash: payloadHash2,
+                  receivedAt: (/* @__PURE__ */ new Date()).toISOString()
+                }
               }
             }
-          }
-        });
-        eventProcessingStatus = "processed";
-      } else {
-        eventProcessingStatus = "ignored";
+          });
+          eventProcessingStatus = "processed";
+        } else {
+          eventProcessingStatus = "ignored";
+        }
       }
     }
     if (knownPayment && refundStatus) {
@@ -8971,7 +10372,7 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
         const refundId = resource?.id;
         let candidate = null;
         try {
-          normalizeProviderRefund({ ...resource, paymentId: resource?.payment_intent || paymentId }, {
+          normalizeProviderRefund({ ...resource, paymentId: providerId(resource?.payment_intent) || providerId(resource?.paymentId) || paymentId }, {
             amountCents,
             currencyCode: store.currencyCode.toLowerCase(),
             providerPaymentId: paymentId
@@ -9026,7 +10427,6 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
             const aggregate = await tx.paymentRefund.aggregate({ where: { paymentId: knownPayment.id, status: "succeeded" }, _sum: { amountCents: true } });
             const refundedCents = Number(aggregate._sum.amountCents || 0);
             await tx.payment.update({ where: { id: knownPayment.id }, data: { status: refundedCents >= knownPayment.amountCents ? "refunded" : "partially_refunded", providerData: { ...knownPayment.providerData || {}, refundedAmountCents: refundedCents } } });
-            await enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `payment-refund:${refund.id}:completed:v1`, eventType: "payment.refunded", aggregateType: "payment", aggregateId: knownPayment.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { paymentId: knownPayment.id, refundId: refund.id, amountCents, cumulativeRefundedCents: refundedCents, providerCode, providerPaymentId: paymentId, providerRefundId: refundId } });
           }
         }
         updatedPaymentId = knownPayment.id;
@@ -9049,14 +10449,30 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash, 
       eventType,
       paymentId,
       updatedPaymentId,
-      message: updatedPaymentId ? "Payment webhook processed." : "Payment webhook accepted; no matching payment was updated."
+      message: eventProcessingStatus === "processed" ? "Payment webhook processed." : eventProcessingStatus === "ignored" ? "Payment webhook was older than the current provider state and was ignored." : updatedPaymentId ? "Payment webhook retained for reconciliation; amount or currency did not match the local payment." : "Payment webhook accepted; no matching payment was updated."
     };
   }, { isolationLevel: "Serializable" }));
 }
-var VERIFIED_REFUND_TYPES = ["refund.created", "refund.updated", "refund.failed", "refund.canceled", "refund.cancelled", "charge.refunded"];
+var VERIFIED_REFUND_TYPES = [
+  ...REFUND_EVENT_TYPES,
+  "charge.refunded",
+  "payment.succeeded",
+  "payment_intent.succeeded",
+  "charge.succeeded",
+  "payment.processing",
+  "payment_intent.processing",
+  "charge.pending",
+  "payment.failed",
+  "payment_intent.payment_failed",
+  "charge.failed",
+  "payment.cancelled",
+  "payment.canceled",
+  "payment_intent.canceled",
+  "payment_intent.cancelled"
+];
 var VERIFIED_EVENT_MAX_ATTEMPTS = 5;
 async function reconcileOneVerifiedEvent(context, storeId, eventId) {
-  const token = (0, import_node_crypto10.randomUUID)();
+  const token = (0, import_node_crypto12.randomUUID)();
   const claim = await context.transaction(async (tc) => {
     const tx = tc.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', eventId);
@@ -9070,8 +10486,8 @@ async function reconcileOneVerifiedEvent(context, storeId, eventId) {
     const verified = claim.verifiedPayload;
     if (!verified?.eventId || verified.eventId !== claim.providerEventId || verified.event?.id !== claim.providerEventId || verified.type !== claim.eventType || !VERIFIED_REFUND_TYPES.includes(claim.eventType)) throw new Error("Persisted verified envelope identity is invalid");
     await processVerifiedPaymentEvent(claim.providerCode, verified, claim.payloadHash, context, storeId);
-  } catch (cause) {
-    error = cause instanceof Error ? cause.message : "Verified event reconciliation failed";
+  } catch {
+    error = "Verified event reconciliation failed; raw diagnostic details are withheld.";
   }
   return context.transaction(async (tc) => {
     const tx = tc.prisma;
@@ -9103,8 +10519,8 @@ async function replayPaymentWebhookEvent(_root, args, context) {
     const tx = tc.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', args.eventId);
     const event2 = await tx.paymentWebhookEvent.findUnique({ where: { id: args.eventId } });
-    if (!event2 || event2.storeId !== store.id || event2.status !== "unmatched" || !event2.deadLetterAt || !VERIFIED_REFUND_TYPES.includes(event2.eventType)) throw new Error("Only dead-lettered unmatched refunds in the active Store can be replayed");
-    await tx.paymentWebhookEvent.update({ where: { id: event2.id }, data: { processingAttempts: 0, nextAttemptAt: null, deadLetterAt: null, lastProcessingError: "", replayAudit: [...Array.isArray(event2.replayAudit) ? event2.replayAudit : [], { actorId: context.session.itemId, reason, replayedAt: (/* @__PURE__ */ new Date()).toISOString(), previousAttempts: event2.processingAttempts, previousError: event2.lastProcessingError }] } });
+    if (!event2 || event2.storeId !== store.id || event2.status !== "unmatched" || !event2.deadLetterAt || !VERIFIED_REFUND_TYPES.includes(event2.eventType)) throw new Error("Only dead-lettered unmatched payment events in the active Store can be replayed");
+    await tx.paymentWebhookEvent.update({ where: { id: event2.id }, data: { processingAttempts: 0, nextAttemptAt: null, deadLetterAt: null, lastProcessingError: "", replayAudit: [...Array.isArray(event2.replayAudit) ? event2.replayAudit : [], { actorId: context.session.itemId, reason, replayedAt: (/* @__PURE__ */ new Date()).toISOString(), previousAttempts: event2.processingAttempts, previousError: event2.lastProcessingError ? "Previous reconciliation details are withheld." : "" }] } });
   });
   const reconciled = await reconcileOneVerifiedEvent(context, store.id, args.eventId);
   const event = await context.prisma.paymentWebhookEvent.findUnique({ where: { id: args.eventId }, select: { status: true, processingAttempts: true, nextAttemptAt: true, deadLetterAt: true, lastProcessingError: true } });
@@ -9116,16 +10532,15 @@ async function handlePaymentProviderWebhook(_root, args, context) {
 }
 
 // features/keystone/mutations/manageCustomerPrivacy.ts
-var import_node_crypto11 = require("node:crypto");
+var import_node_crypto13 = require("node:crypto");
 init_access();
-init_groceryOutbox();
 init_storeScope();
 
 // features/keystone/lib/privacyPolicy.ts
 var CUSTOMER_PRIVACY_POLICY = {
   version: "grocery-retention-v1",
   commerceRetentionDays: 2555,
-  description: "Commerce evidence is retained for 2,555 days after the latest order. Account erasure is deferred while an order is active or within this period; afterward identity/contact fields are pseudonymized while financial, inventory and audit facts remain."
+  description: "Order and payment records are kept for 7 years after your latest order. Your account can be erased once no order is active and that period has passed; your name and contact details are then removed, while the store keeps the financial and inventory records it is required to keep."
 };
 function privacyErasureEligibility(orders, now = /* @__PURE__ */ new Date()) {
   if (orders.some((order) => !["delivered", "cancelled"].includes(order.status))) return { eligible: false, eligibleAt: null, reason: "An order is still active or awaiting resolution" };
@@ -9152,8 +10567,8 @@ function scrubOrderContactMetadata(metadata) {
 // features/keystone/mutations/manageCustomerPrivacy.ts
 async function privacyCustomer(context) {
   if (!context.session?.itemId) throw new Error("Sign in to manage your privacy requests");
-  const user = await context.prisma.user.findUnique({ where: { id: context.session.itemId }, include: { store: true } });
-  if (!user || !user.store?.isActive || user.roleId || user.privacyErasedAt) throw new Error("An active customer account is required");
+  const user = await context.prisma.user.findUnique({ where: { id: context.session.itemId }, include: { store: true, _count: { select: { staffAccessEvents: true } } } });
+  if (!user || !user.store?.isActive || user.roleId || user._count?.staffAccessEvents || user.privacyErasedAt) throw new Error("An active customer account is required");
   return user;
 }
 async function groceryCustomerPrivacy(_root, args, context) {
@@ -9176,7 +10591,7 @@ async function requestGroceryCustomerPrivacy(_root, { kind }, context) {
     return { success: true, requestId: request.id, status: request.status, reused: false };
   });
 }
-var EXPORT_COLLECTIONS = ["orders", "orderLines", "actuals", "substitutions", "settlements", "payments", "refunds", "lineRefunds", "addresses", "notificationPreferences", "substitutionPreferences", "shoppingLists", "shoppingListItems", "favorites", "priceAlerts", "stockAlerts", "coupons", "loyalty", "redemptions", "subscriptions", "subscriptionRuns", "messages", "carts", "cartItems", "privacyRequests"];
+var EXPORT_COLLECTIONS = ["orders", "orderLines", "actuals", "substitutions", "settlements", "payments", "refunds", "lineRefunds", "addresses", "notificationPreferences", "substitutionPreferences", "shoppingLists", "shoppingListItems", "favorites", "priceAlerts", "stockAlerts", "coupons", "loyalty", "redemptions", "subscriptions", "subscriptionRuns", "messages", "carts", "cartItems", "privacyRequests", "contactMessages"];
 var pick = (value, keys) => Object.fromEntries(keys.filter((key2) => value?.[key2] !== void 0).map((key2) => [key2, value[key2]]));
 var publicEvents = (value) => (Array.isArray(value) ? value : []).map((event) => pick(event, ["action", "at", "nextDeliveryDate", "timezone", "status", "reason"]));
 async function exportGroceryCustomerData(_root, args, context) {
@@ -9221,10 +10636,12 @@ async function exportGroceryCustomerData(_root, args, context) {
     redemptions: { model: "loyaltyRedemption", where: own, fields: ["id", "orderId", "points", "discountCents", "status", "usedAt", "createdAt"] },
     subscriptions: { model: "subscription", where: own, fields: ["id", "product", "quantity", "frequency", "nextDeliveryDate", "scheduleTimezone", "status", "isActive", "pausedUntil", "createdAt", "consent", "events"], map: (row) => ({ ...row, consent: pick(row.consent, ["approveEachOrder", "at", "policy"]), events: publicEvents(row.events) }) },
     subscriptionRuns: { model: "subscriptionRun", where: own, fields: ["id", "subscriptionId", "dueAt", "status", "productTitle", "quantity", "priceCents", "orderId", "failureReason", "events"], map: (row) => ({ ...row, events: publicEvents(row.events) }) },
-    messages: { model: "customerMessage", where: own, fields: ["id", "orderId", "recipient", "subject", "body", "channel", "status", "attempts", "sentAt", "createdAt"], map: (row) => ({ ...row, body: String(row.body || "").replace(/https?:\/\/\S+\/order-access#\S+/g, "[Private access link omitted]") }) },
     carts: { model: "cart", where: { customerId: user.id, storeId: user.storeId }, fields: ["id", "subtotalCents", "itemCount", "createdAt", "updatedAt"] },
     cartItems: { model: "cartItem", where: { cart: { customerId: user.id, storeId: user.storeId } }, fields: ["id", "cartId", "productId", "quantity", "subtotalCents", "substitutionPreference", "addedAt"] },
-    privacyRequests: { model: "customerPrivacyRequest", where: own, fields: ["id", "kind", "status", "policyVersion", "reviewReason", "createdAt", "reviewedAt", "eligibleAt", "completedAt"] }
+    privacyRequests: { model: "customerPrivacyRequest", where: own, fields: ["id", "kind", "status", "policyVersion", "reviewReason", "createdAt", "reviewedAt", "eligibleAt", "completedAt"] },
+    // Messages the signed-in customer sent to the store. Internal staff notes are never exported;
+    // messages sent while signed out are not linked to the account and are not included.
+    contactMessages: { model: "contactMessage", where: { customerId: user.id, storeId: user.storeId }, fields: ["id", "reference", "subject", "topic", "orderNumber", "name", "email", "phone", "message", "status", "createdAt"] }
   };
   const config2 = configuration[collection], afterId = args.afterId || (collection === "orders" ? args.afterOrderId : void 0);
   const rows = await tx[config2.model].findMany({ where: { ...config2.where, ...afterId ? { id: { gt: afterId } } : {} }, orderBy: { id: "asc" }, take: 101, select: Object.fromEntries(config2.fields.map((field) => [field, true])) });
@@ -9252,17 +10669,12 @@ async function reviewGroceryCustomerErasure(_root, args, context) {
     if (!request || request.storeId !== store.id || request.kind !== "erasure") throw new Error("Erasure request not found in active Store");
     if (request.status === "completed") return { success: true, status: "completed", reused: true };
     await tx.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id" = $1 FOR UPDATE', request.userId);
-    const user = await tx.user.findUnique({ where: { id: request.userId } });
-    if (!user || user.storeId !== store.id || user.roleId) throw new Error("Staff identities require staff lifecycle administration");
+    const user = await tx.user.findUnique({ where: { id: request.userId }, include: { _count: { select: { staffAccessEvents: true } } } });
+    if (!user || user.storeId !== store.id || user.roleId || user._count?.staffAccessEvents) throw new Error("Staff identities require staff lifecycle administration");
     const review = { reviewedById: context.session.itemId, reviewedAt: /* @__PURE__ */ new Date(), reviewReason: reason, policyVersion: CUSTOMER_PRIVACY_POLICY.version };
     if (!args.approve) {
       await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: "rejected" } });
       return { success: true, status: "rejected" };
-    }
-    const activeDelivery = await tx.customerMessage.findFirst({ where: { userId: user.id, storeId: store.id, deliveryLeaseExpiresAt: { gt: /* @__PURE__ */ new Date() } } });
-    if (activeDelivery) {
-      await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: "deferred", resultSummary: { reason: "An authorized message or external event delivery is in progress" } } });
-      return { success: true, status: "deferred", message: "Wait for the active communication delivery to finish before erasure" };
     }
     let orders = await tx.order.findMany({ where: { userId: user.id, storeId: store.id }, orderBy: { id: "asc" } });
     const carts = await tx.cart.findMany({ where: { customerId: user.id, storeId: store.id }, select: { id: true }, orderBy: { id: "asc" } });
@@ -9314,14 +10726,7 @@ async function reviewGroceryCustomerErasure(_root, args, context) {
     await tx.checkoutAttempt.updateMany({ where: { storeId: store.id, OR: [{ cart: { customerId: user.id } }, { requestData: { path: ["checkoutOwnerId"], equals: user.id } }, { order: { userId: user.id } }] }, data: { requestData: { privacy: { pseudonymized: true, policyVersion: CUSTOMER_PRIVACY_POLICY.version } } } });
     const sessions = await tx.paymentSession.findMany({ where: { OR: [{ cartId: { in: carts.map((cart) => cart.id) } }, { checkoutAttempts: { some: { orderId: { in: orderIds } } } }] } });
     for (const session of sessions) await tx.paymentSession.update({ where: { id: session.id }, data: { data: scrubOrderContactMetadata(session.data) } });
-    const outbox = await tx.groceryOutboxEvent.findMany({ where: { storeId: store.id, OR: [{ aggregateId: { in: [user.id, ...orderIds, ...paymentRows.map((payment) => payment.id)] } }, { payload: { path: ["userId"], equals: user.id } }, ...orderIds.map((orderId) => ({ payload: { path: ["orderId"], equals: orderId } }))] } });
-    const redactedEventHashes = [];
-    for (const event of outbox) {
-      const payload = scrubOrderContactMetadata(event.payload);
-      redactedEventHashes.push({ eventId: event.id, originalPayloadHash: event.payloadHash });
-      await tx.groceryOutboxEvent.update({ where: { id: event.id }, data: { payload, payloadHash: groceryOutboxPayloadHash(payload), status: "suppressed", claimToken: "", lastError: "Suppressed after approved privacy retention review" } });
-    }
-    await tx.customerMessage.updateMany({ where: { storeId: store.id, OR: [{ userId: user.id }, { orderId: { in: orderIds } }, { recipient: user.email }] }, data: { recipient: "[erased]", subject: "[erased]", body: "[erased]", status: "suppressed", failureMessage: "", providerEvidence: { privacy: { pseudonymized: true } } } });
+    await tx.contactMessage.updateMany({ where: { storeId: store.id, customerId: user.id }, data: { name: "Erased customer", email: `erased-${user.id}@invalid.local`, phone: "", message: "[erased at customer request]", sourcePath: "", subject: "[erased]" } });
     const subscriptions = await tx.subscription.findMany({ where: { userId: user.id, storeId: store.id } });
     for (const row of subscriptions) await tx.subscription.update({ where: { id: row.id }, data: { status: "cancelled", isActive: false, consent: scrubOrderContactMetadata(row.consent), events: (Array.isArray(row.events) ? row.events : []).map(scrubOrderContactMetadata) } });
     const recurringRuns = await tx.subscriptionRun.findMany({ where: { userId: user.id, storeId: store.id } });
@@ -9340,14 +10745,14 @@ async function reviewGroceryCustomerErasure(_root, args, context) {
     await tx.shoppingListItem.deleteMany({ where: { listId: { in: lists.map((list65) => list65.id) } } });
     await tx.shoppingList.deleteMany({ where: { userId: user.id } });
     await tx.cartItem.deleteMany({ where: { cartId: { in: carts.map((cart) => cart.id) } } });
-    for (const cart of carts) await tx.cart.update({ where: { id: cart.id }, data: { customerId: null, sessionId: (0, import_node_crypto11.randomBytes)(32).toString("hex"), subtotal: 0, subtotalCents: 0, itemCount: 0 } });
+    for (const cart of carts) await tx.cart.update({ where: { id: cart.id }, data: { customerId: null, sessionId: (0, import_node_crypto13.randomBytes)(32).toString("hex"), subtotal: 0, subtotalCents: 0, itemCount: 0 } });
     await tx.notificationPreference.deleteMany({ where: { userId: user.id } });
     await tx.favoriteProduct.deleteMany({ where: { userId: user.id } });
     await tx.priceAlert.deleteMany({ where: { userId: user.id } });
     await tx.backInStockAlert.deleteMany({ where: { userId: user.id } });
-    await transactionContext.sudo().db.User.updateOne({ where: { id: user.id }, data: { name: "Erased customer", email: `erased-${user.id}@invalid.local`, password: (0, import_node_crypto11.randomBytes)(48).toString("base64url") } });
+    await transactionContext.sudo().db.User.updateOne({ where: { id: user.id }, data: { name: "Erased customer", email: `erased-${user.id}@invalid.local`, password: (0, import_node_crypto13.randomBytes)(48).toString("base64url") } });
     await tx.user.update({ where: { id: user.id }, data: { privacyErasedAt: /* @__PURE__ */ new Date() } });
-    await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: "completed", completedAt: /* @__PURE__ */ new Date(), resultSummary: { retained: "Pseudonymous transaction, inventory and audit identifiers; monetary records unchanged", erased: "Account identity, addresses, nested order/fulfillment/delivery contact, checkout data, message content, reusable lists and notification preferences", redactedEventHashes, policyVersion: CUSTOMER_PRIVACY_POLICY.version } } });
+    await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: "completed", completedAt: /* @__PURE__ */ new Date(), resultSummary: { retained: "Pseudonymous transaction, inventory and audit identifiers; monetary records unchanged", erased: "Account identity, addresses, nested order/fulfillment/delivery contact, checkout data, message content, reusable lists and notification preferences", policyVersion: CUSTOMER_PRIVACY_POLICY.version } } });
     return { success: true, status: "completed" };
   });
 }
@@ -9355,48 +10760,6 @@ async function reviewGroceryCustomerErasure(_root, args, context) {
 // features/keystone/mutations/manageGroceryStaff.ts
 init_access();
 init_storeScope();
-init_groceryOutbox();
-
-// features/keystone/lib/staffInvitations.ts
-var import_node_crypto12 = require("node:crypto");
-var STAFF_CAPABILITIES = ["canManageProducts", "canManageOrders", "canManageInventory", "canManageSuppliers", "canManageDelivery", "canManageUsers", "canManagePayments", "canManageOnboarding", "canAccessDashboard"];
-function normalizeStaffCapabilities(input, actor) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("An explicit capability map is required");
-  if (Object.keys(input).some((key2) => !STAFF_CAPABILITIES.includes(key2))) throw new Error("Unknown staff capability");
-  const result = {};
-  for (const key2 of STAFF_CAPABILITIES) {
-    const value = input[key2] ?? false;
-    if (typeof value !== "boolean") throw new Error("Capabilities must be boolean");
-    if (value && actor[key2] !== true) throw new Error(`Cannot grant capability not currently held: ${key2}`);
-    result[key2] = value;
-  }
-  if (Object.values(result).some(Boolean) && !result.canAccessDashboard) throw new Error("Staff capabilities require dashboard access");
-  return result;
-}
-function staffInvitationHash(token) {
-  return (0, import_node_crypto12.createHash)("sha256").update(token).digest("hex");
-}
-function verifyStaffInvitationToken(token, hash) {
-  if (!/^[A-Za-z0-9_-]{43}$/.test(token) || !/^[a-f0-9]{64}$/.test(hash)) return false;
-  return (0, import_node_crypto12.timingSafeEqual)(Buffer.from(staffInvitationHash(token), "hex"), Buffer.from(hash, "hex"));
-}
-function encryptionKey(secret2) {
-  return (0, import_node_crypto12.createHash)("sha256").update(`grocery-staff-invitation:v1:${secret2}`).digest();
-}
-function encryptStaffInvitationToken(token, secret2 = getSessionSecret()) {
-  const nonce = (0, import_node_crypto12.randomBytes)(12);
-  const cipher = (0, import_node_crypto12.createCipheriv)("aes-256-gcm", encryptionKey(secret2), nonce);
-  const encrypted = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
-  return Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString("base64url");
-}
-function createStaffInvitationToken() {
-  return (0, import_node_crypto12.randomBytes)(32).toString("base64url");
-}
-function assertLastManagerSafe(target, next, managerCount) {
-  if (target?.role?.canManageUsers && target.role.canAccessDashboard && !(next.canManageUsers && next.canAccessDashboard) && managerCount <= 1) throw new Error("The last staff administrator cannot be revoked or downgraded");
-}
-
-// features/keystone/mutations/manageGroceryStaff.ts
 async function lockedStaffActor(tx, actorId, storeId) {
   await tx.$queryRawUnsafe('SELECT "id" FROM "Store" WHERE "id" = $1 FOR UPDATE', storeId);
   await tx.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id" = $1 FOR UPDATE', actorId);
@@ -9411,8 +10774,14 @@ async function groceryStaffDirectory(_root, args, context) {
   const page = Math.max(1, Math.trunc(Number(args?.page) || 1));
   const pageSize = Math.max(1, Math.min(100, Math.trunc(Number(args?.pageSize) || 25)));
   const skip = (page - 1) * pageSize;
-  const staffWhere = { storeId: store.id, OR: [{ roleId: { not: null } }, { staffAccessEvents: { some: { storeId: store.id } } }] };
-  const [staff, invitations, events, privacyRequests, staffCount, invitationCount, eventCount, privacyCount] = await Promise.all([
+  const search = String(args?.search || "").trim().slice(0, 100);
+  const staffBase = { storeId: store.id, OR: [{ roleId: { not: null } }, { staffAccessEvents: { some: { storeId: store.id } } }] };
+  const staffSearch = search ? { OR: [{ name: { contains: search, mode: "insensitive" } }, { email: { contains: search, mode: "insensitive" } }] } : {};
+  const accessViews = { active: { roleId: { not: null } }, revoked: { roleId: null } };
+  const access = accessViews[args?.access || ""] ? args.access : "all";
+  const staffScope = (view) => ({ ...staffBase, AND: [staffSearch, accessViews[view] || {}] });
+  const staffWhere = staffScope(access);
+  const [staff, invitations, events, privacyRequests, staffCount, invitationCount, eventCount, privacyCount, accessCounts] = await Promise.all([
     tx.user.findMany({ where: staffWhere, select: { id: true, name: true, email: true, role: true }, orderBy: [{ name: "asc" }, { id: "asc" }], take: pageSize, skip }),
     tx.staffInvitation.findMany({ where: { storeId: store.id, status: "pending" }, select: { id: true, email: true, name: true, status: true, capabilities: true, expiresAt: true }, orderBy: { createdAt: "desc" }, take: pageSize, skip }),
     tx.staffAccessEvent.findMany({ where: { storeId: store.id }, select: { id: true, action: true, reason: true, createdAt: true, subject: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: pageSize, skip }),
@@ -9420,9 +10789,10 @@ async function groceryStaffDirectory(_root, args, context) {
     tx.user.count({ where: staffWhere }),
     tx.staffInvitation.count({ where: { storeId: store.id, status: "pending" } }),
     tx.staffAccessEvent.count({ where: { storeId: store.id } }),
-    tx.customerPrivacyRequest.count({ where: { storeId: store.id, status: { in: ["requested", "deferred"] } } })
+    tx.customerPrivacyRequest.count({ where: { storeId: store.id, status: { in: ["requested", "deferred"] } } }),
+    Promise.all(["all", "active", "revoked"].map(async (view) => [view, await tx.user.count({ where: staffScope(view) })]))
   ]);
-  return { staff, invitations, events, privacyRequests, pagination: { page, pageSize, totalPages: Math.max(1, Math.ceil(Math.max(staffCount, invitationCount, eventCount, privacyCount) / pageSize)), counts: { staffCount, invitationCount, eventCount, privacyCount } } };
+  return { staff, invitations, events, privacyRequests, search, access, accessCounts: Object.fromEntries(accessCounts), pagination: { page, pageSize, totalPages: Math.max(1, Math.ceil(Math.max(staffCount, invitationCount, eventCount, privacyCount) / pageSize)), counts: { staffCount, invitationCount, eventCount, privacyCount } } };
 }
 async function inviteGroceryStaff(_root, args, context) {
   await requireFreshCapability(context, "canManageUsers");
@@ -9430,7 +10800,6 @@ async function inviteGroceryStaff(_root, args, context) {
   const email = args.email.trim().toLowerCase(), name = args.name.trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || name.length < 2 || name.length > 120) throw new Error("A valid name and email are required");
   const token = createStaffInvitationToken();
-  const encryptedToken = encryptStaffInvitationToken(token);
   return context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     const actor = await lockedStaffActor(tx, context.session.itemId, store.id);
@@ -9439,9 +10808,8 @@ async function inviteGroceryStaff(_root, args, context) {
     const pending = await tx.staffInvitation.findFirst({ where: { email, storeId: store.id, status: "pending", expiresAt: { gt: /* @__PURE__ */ new Date() } } });
     if (pending) throw new Error("A pending invitation already exists; revoke it before replacing it");
     const invitation = await tx.staffInvitation.create({ data: { storeId: store.id, name, email, tokenHash: staffInvitationHash(token), capabilities, expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1e3), invitedById: actor.id, status: "pending" } });
-    await tx.staffAccessEvent.create({ data: { storeId: store.id, actorId: actor.id, invitationId: invitation.id, action: "invited", reason: "Staff invitation", after: capabilities } });
-    await enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `staff-invitation:${invitation.id}`, eventType: "staff.invited", aggregateType: "StaffInvitation", aggregateId: invitation.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { invitationId: invitation.id, encryptedToken } });
-    return { success: true, invitationId: invitation.id, expiresAt: invitation.expiresAt };
+    await tx.staffAccessEvent.create({ data: { storeId: store.id, actorId: actor.id, invitationId: invitation.id, action: "invited", reason: "Staff invitation \xB7 link handed over by inviter", after: capabilities } });
+    return { success: true, invitationId: invitation.id, expiresAt: invitation.expiresAt, acceptPath: `/staff/accept#${new URLSearchParams({ token })}` };
   });
 }
 async function acceptGroceryStaffInvitation(_root, args, context) {
@@ -9476,8 +10844,10 @@ async function updateGroceryStaffAccess(_root, args, context) {
     const next = normalizeStaffCapabilities(args.capabilities, actor.role);
     const target = await tx.user.findUnique({ where: { id: args.userId }, include: { role: true } });
     if (!target || target.storeId !== store.id || target.privacyErasedAt || !target.role && !await tx.staffAccessEvent.count({ where: { storeId: store.id, subjectId: target.id } })) throw new Error("Staff identity not found in active Store");
-    const managers = await tx.user.count({ where: { storeId: store.id, role: { canManageUsers: true, canAccessDashboard: true } } });
+    const managers = await tx.user.count({ where: { storeId: store.id, privacyErasedAt: null, role: { canManageUsers: true, canAccessDashboard: true } } });
     assertLastManagerSafe(target, next, managers);
+    const activeStaff = await tx.user.findMany({ where: { storeId: store.id, privacyErasedAt: null, roleId: { not: null } }, select: { id: true, role: true }, take: 1e3 });
+    assertCapabilitiesRecoverable(activeStaff, target.id, next);
     const role = Object.values(next).some(Boolean) ? await tx.role.create({ data: { name: `${target.name} staff`, storeId: store.id, ...next } }) : null;
     await tx.user.update({ where: { id: target.id }, data: { roleId: role?.id || null } });
     await tx.staffAccessEvent.create({ data: { storeId: store.id, actorId: actor.id, subjectId: target.id, action: role ? "access_changed" : "access_revoked", reason, before: Object.fromEntries(STAFF_CAPABILITIES.map((key2) => [key2, Boolean(target.role?.[key2])])), after: next } });
@@ -9500,44 +10870,48 @@ async function revokeGroceryStaffInvitation(_root, args, context) {
 }
 
 // features/keystone/mutations/voidGroceryPaymentAuthorization.ts
-var import_node_crypto13 = require("node:crypto");
+var import_node_crypto14 = require("node:crypto");
 init_access();
 init_storeScope();
 init_paymentProviderAdapter();
 init_managePaymentRefund();
 init_serializableTransaction();
-init_groceryOutbox();
+init_stripeEnabled();
+init_publicError();
 var LEASE_MS = 3e4;
 async function voidGroceryPaymentAuthorization(_root, args, context) {
   await requireFreshCapability(context, "canManagePayments");
   const store = await requireSessionStore(context);
+  return voidGroceryPaymentAuthorizationForStore(args, context, store, context.session.itemId);
+}
+async function voidGroceryPaymentAuthorizationForStore(args, context, store, actorId) {
   const reason = args.reason.trim();
   const key2 = args.idempotencyKey.trim();
-  if (reason.length < 3 || reason.length > 470 || key2.length < 12 || key2.length > 180) throw new Error("A reason and stable authorization void key are required");
-  const token = (0, import_node_crypto13.randomUUID)();
+  if (reason.length < 3 || reason.length > 470 || key2.length < 12 || key2.length > 180) throw publicError("A reason and stable authorization void key are required", "VOID_REFUSED");
+  const token = (0, import_node_crypto14.randomUUID)();
   const claim = await withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     const identity2 = await tx.payment.findUnique({ where: { id: args.paymentId }, select: { orderId: true, storeId: true } });
-    if (!identity2 || identity2.storeId !== store.id) throw new Error("Payment not found in active Store");
+    if (!identity2 || identity2.storeId !== store.id) throw publicError("Payment not found in active Store", "VOID_REFUSED");
     if (identity2.orderId) await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', identity2.orderId);
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', args.paymentId);
     const payment = await tx.payment.findUnique({ where: { id: args.paymentId }, include: { paymentProvider: true } });
-    if (!payment || payment.storeId !== store.id) throw new Error("Payment not found in active Store");
+    if (!payment || payment.storeId !== store.id) throw publicError("Payment not found in active Store", "VOID_REFUSED");
     const noCharge = noChargeOrderPaymentState(payment);
-    if (payment.providerPaymentId?.startsWith("grocery_no_charge:") && !noCharge) throw new Error("Invalid server no-charge checkout evidence");
-    if (noCharge && noCharge.currency !== store.currencyCode.toLowerCase()) throw new Error("Original no-charge currency does not match the active Store");
+    if (payment.providerPaymentId?.startsWith("grocery_no_charge:") && !noCharge) throw publicError("Invalid server no-charge checkout evidence", "VOID_REFUSED");
+    if (noCharge && noCharge.currency !== store.currencyCode.toLowerCase()) throw publicError("Original no-charge currency does not match the active Store", "VOID_REFUSED");
     const old = payment.providerData?.authorizationVoid;
-    if (old && (old.key !== key2 || old.reason !== reason)) throw new Error("Authorization void key or reason conflicts with existing request");
+    if (old && (old.key !== key2 || old.reason !== reason)) throw publicError("Authorization void key or reason conflicts with existing request", "VOID_REFUSED");
     if (old?.status === "completed" && (["cancelled", "refunded"].includes(payment.status) || noCharge && payment.status === "succeeded")) return { payment, noCharge, reused: true, execute: false };
     const settlement = identity2.orderId ? await tx.orderSettlement.findFirst({ where: { orderId: identity2.orderId, status: { in: ["processing", "requires_customer_authorization"] } } }) : null;
-    if (settlement?.status === "processing") throw new Error("A final sale is processing; resolve it before voiding authorization");
-    if (!["authorized", "pending"].includes(payment.status) && !(settlement && ["succeeded", "partially_refunded", "refunded"].includes(payment.status))) throw new Error("Only an active authorization or unresolved revised sale can be voided");
-    if (settlement?.providerEvidence?.authorizationInitiatedAt && !settlement.providerEvidence?.reauthorization?.paymentIntentId) throw new Error("Recover the revised authorization identity before abandoning this sale");
-    if (settlement?.providerEvidence?.finalizationLease?.expiresAt && new Date(settlement.providerEvidence.finalizationLease.expiresAt).getTime() > Date.now()) throw new Error("Finalization is in flight");
-    if (settlement?.providerEvidence?.authorizationCreationLease?.expiresAt && new Date(settlement.providerEvidence.authorizationCreationLease.expiresAt).getTime() > Date.now()) throw new Error("Revised authorization creation is in flight");
+    if (settlement?.status === "processing") throw publicError("A final sale is processing; resolve it before voiding authorization", "VOID_REFUSED");
+    if (!["authorized", "pending"].includes(payment.status) && !(settlement && ["succeeded", "partially_refunded", "refunded"].includes(payment.status))) throw publicError("Only an active authorization or unresolved revised sale can be voided", "VOID_REFUSED");
+    if (settlement?.providerEvidence?.authorizationInitiatedAt && !settlement.providerEvidence?.reauthorization?.paymentIntentId) throw publicError("Recover the revised authorization identity before abandoning this sale", "VOID_REFUSED");
+    if (settlement?.providerEvidence?.finalizationLease?.expiresAt && new Date(settlement.providerEvidence.finalizationLease.expiresAt).getTime() > Date.now()) throw publicError("Finalization is in flight", "VOID_REFUSED");
+    if (settlement?.providerEvidence?.authorizationCreationLease?.expiresAt && new Date(settlement.providerEvidence.authorizationCreationLease.expiresAt).getTime() > Date.now()) throw publicError("Revised authorization creation is in flight", "VOID_REFUSED");
     if (old?.leaseExpiresAt && new Date(old.leaseExpiresAt).getTime() > Date.now()) return { payment, noCharge, reused: true, execute: false };
-    if (!payment.providerPaymentId || !payment.paymentProvider?.isInstalled) throw new Error("Authorization provider is unavailable");
-    await tx.payment.update({ where: { id: payment.id }, data: { providerData: { ...payment.providerData || {}, authorizationVoid: { ...old || {}, key: key2, reason, status: "processing", actorId: context.session.itemId, requestedAt: old?.requestedAt || (/* @__PURE__ */ new Date()).toISOString(), token, leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString() } } } });
+    if (!payment.providerPaymentId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw publicError("Authorization provider is unavailable", "VOID_REFUSED");
+    await tx.payment.update({ where: { id: payment.id }, data: { providerData: { ...payment.providerData || {}, authorizationVoid: { ...old || {}, key: key2, reason, status: "processing", actorId, requestedAt: old?.requestedAt || (/* @__PURE__ */ new Date()).toISOString(), token, leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString() } } } });
     if (settlement) await tx.orderSettlement.update({ where: { id: settlement.id }, data: { providerEvidence: { ...settlement.providerEvidence || {}, abandonment: { token, key: key2, reason, status: "processing", leaseExpiresAt: new Date(Date.now() + LEASE_MS).toISOString() } } } });
     return { payment, noCharge, settlement, reused: Boolean(old), execute: true };
   }, { isolationLevel: "ReadCommitted" }));
@@ -9553,24 +10927,24 @@ async function voidGroceryPaymentAuthorization(_root, args, context) {
     if (revisedId) {
       const revised = await getPaymentStatus({ provider: claim.payment.paymentProvider, paymentId: revisedId });
       const voided = ["canceled", "cancelled"].includes(revised.status) ? revised : await cancelPayment({ provider: claim.payment.paymentProvider, paymentId: revisedId, idempotencyKey: `${key2}:revised` });
-      if (!["canceled", "cancelled"].includes(voided.status) || Number(voided.capturedAmountCents ?? voided.amountCents ?? voided.amount) !== 0 || String(voided.currency || "").toLowerCase() !== store.currencyCode.toLowerCase()) throw new Error("Revised authorization void is not confirmed");
+      if (!["canceled", "cancelled"].includes(voided.status) || Number(voided.capturedAmountCents ?? voided.amountCents ?? voided.amount) !== 0 || String(voided.currency || "").toLowerCase() !== store.currencyCode.toLowerCase()) throw publicError("Revised authorization void is not confirmed", "VOID_REFUSED");
     }
     const current = claim.noCharge || await getPaymentStatus({ provider: claim.payment.paymentProvider, paymentId: claim.payment.providerPaymentId });
     if (claim.noCharge) {
       result = current;
     } else if (["succeeded", "captured"].includes(current.status)) {
-      if (String(current.currency || "").toLowerCase() !== store.currencyCode.toLowerCase() || Number(current.capturedAmountCents ?? current.amountCents ?? current.amount) !== claim.payment.amountCents) throw new Error("Original captured amount or currency does not match the local payment");
+      if (String(current.currency || "").toLowerCase() !== store.currencyCode.toLowerCase() || Number(current.capturedAmountCents ?? current.amountCents ?? current.amount) !== claim.payment.amountCents) throw publicError("Original captured amount or currency does not match the local payment", "VOID_REFUSED");
       const tx = context.prisma;
       const successful = await tx.paymentRefund.aggregate({ where: { paymentId: args.paymentId, status: "succeeded" }, _sum: { amountCents: true } });
       const remaining = claim.payment.amountCents - Number(successful._sum.amountCents || 0);
       if (remaining > 0) {
         const refund = await refundPaymentForOrder(null, { paymentId: args.paymentId, amountCents: remaining, reason: `Abandoned revised sale: ${reason}`, idempotencyKey: `${key2}:original-refund` }, context);
-        if (refund.status !== "succeeded") throw new Error("Original payment refund is unresolved");
+        if (refund.status !== "succeeded") throw publicError("Original payment refund is unresolved", "VOID_REFUSED");
       }
       result = { status: "refunded", currency: store.currencyCode, capturedAmountCents: 0 };
     } else {
       result = ["canceled", "cancelled"].includes(current.status) ? current : await cancelPayment({ provider: claim.payment.paymentProvider, paymentId: claim.payment.providerPaymentId, idempotencyKey: key2 });
-      if (!["canceled", "cancelled"].includes(result.status) || Number(result.capturedAmountCents ?? result.amountCents ?? result.amount) !== 0 || String(result.currency || "").toLowerCase() !== store.currencyCode.toLowerCase()) throw new Error("Provider did not confirm an uncaptured authorization void");
+      if (!["canceled", "cancelled"].includes(result.status) || Number(result.capturedAmountCents ?? result.amountCents ?? result.amount) !== 0 || String(result.currency || "").toLowerCase() !== store.currencyCode.toLowerCase()) throw publicError("Provider did not confirm an uncaptured authorization void", "VOID_REFUSED");
     }
   } catch (error) {
     await context.transaction(async (transactionContext) => {
@@ -9587,13 +10961,13 @@ async function voidGroceryPaymentAuthorization(_root, args, context) {
     if (claim.payment.orderId) await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', claim.payment.orderId);
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', args.paymentId);
     const current = await tx.payment.findUnique({ where: { id: args.paymentId } });
-    if (current?.providerData?.authorizationVoid?.token !== token) throw new Error("Authorization void completion was fenced; retry the same request");
-    const unchangedNoCharge = Boolean(claim.noCharge && noChargeOrderPaymentState(current) && current.status === "succeeded" && claim.payment.status === "succeeded" && current.storeId === claim.payment.storeId && current.orderId === claim.payment.orderId && current.providerPaymentId === claim.payment.providerPaymentId && current.providerData.checkoutFingerprint === claim.payment.providerData.checkoutFingerprint && current.providerData.cartFingerprint === claim.payment.providerData.cartFingerprint && groceryOutboxPayloadHash(current.providerData.noCharge) === groceryOutboxPayloadHash(claim.payment.providerData.noCharge));
-    if (claim.noCharge && !unchangedNoCharge || !["authorized", "pending", "cancelled", "refunded"].includes(current.status) && !unchangedNoCharge) throw new Error("Financial state changed before authorization void completion");
+    if (current?.providerData?.authorizationVoid?.token !== token) throw publicError("Authorization void completion was fenced; retry the same request", "VOID_REFUSED");
+    const unchangedNoCharge = Boolean(claim.noCharge && noChargeOrderPaymentState(current) && current.status === "succeeded" && claim.payment.status === "succeeded" && current.storeId === claim.payment.storeId && current.orderId === claim.payment.orderId && current.providerPaymentId === claim.payment.providerPaymentId && current.providerData.checkoutFingerprint === claim.payment.providerData.checkoutFingerprint && current.providerData.cartFingerprint === claim.payment.providerData.cartFingerprint && payloadHash(current.providerData.noCharge) === payloadHash(claim.payment.providerData.noCharge));
+    if (claim.noCharge && !unchangedNoCharge || !["authorized", "pending", "cancelled", "refunded"].includes(current.status) && !unchangedNoCharge) throw publicError("Financial state changed before authorization void completion", "VOID_REFUSED");
     const status = unchangedNoCharge ? "succeeded" : result.status === "refunded" ? "refunded" : "cancelled";
     if (claim.settlement) {
       const settlement = await tx.orderSettlement.findUnique({ where: { id: claim.settlement.id } });
-      if (settlement?.providerEvidence?.abandonment?.token !== token) throw new Error("Settlement abandonment was fenced");
+      if (settlement?.providerEvidence?.abandonment?.token !== token) throw publicError("Settlement abandonment was fenced", "VOID_REFUSED");
       await tx.orderSettlement.update({ where: { id: settlement.id }, data: { status: "abandoned", providerEvidence: { ...settlement.providerEvidence || {}, abandonment: { ...settlement.providerEvidence.abandonment, status: "completed", leaseExpiresAt: null, completedAt: (/* @__PURE__ */ new Date()).toISOString() } } } });
     }
     await tx.payment.update({ where: { id: args.paymentId }, data: { status, providerData: { ...current.providerData || {}, authorizationVoid: { ...current.providerData.authorizationVoid, status: "completed", leaseExpiresAt: null, completedAt: (/* @__PURE__ */ new Date()).toISOString(), providerStatus: unchangedNoCharge ? null : result.status, ...unchangedNoCharge ? { noChargeVerified: true } : {} } } } });
@@ -9602,10 +10976,10 @@ async function voidGroceryPaymentAuthorization(_root, args, context) {
 }
 
 // features/keystone/mutations/refundGroceryOrderLines.ts
-var import_node_crypto14 = require("node:crypto");
+init_publicError();
+var import_node_crypto15 = require("node:crypto");
 init_access();
 init_storeScope();
-init_groceryOutbox();
 init_refundAllocations();
 init_inventoryMovements();
 init_serializableTransaction();
@@ -9618,12 +10992,12 @@ async function recordReturnCustody(tx, allocations, storeId, orderId, actorId) {
   for (const entry of returns) {
     const lot = await tx.inventoryLot.findUnique({ where: { id: entry.lotId } });
     const product = await tx.product.findUnique({ where: { id: entry.line.productId } });
-    if (!lot || !product || lot.storeId !== storeId || product.storeId !== storeId || lot.productId !== product.id) throw new Error("Returned lot is outside the refunded product and store");
-    if (entry.line.disposition === "return_to_stock" && !isInventoryLotEligible(lot)) throw new Error("Unsafe or expired returned goods require quarantine or waste");
+    if (!lot || !product || lot.storeId !== storeId || product.storeId !== storeId || lot.productId !== product.id) throw publicError("Returned lot is outside the refunded product and store");
+    if (entry.line.disposition === "return_to_stock" && !isInventoryLotEligible(lot)) throw publicError("Unsafe or expired returned goods require quarantine or waste");
     const delta = entry.line.disposition === "waste" ? 0 : entry.quantityMilli;
     const nextLot = (quantityMilli(lot.quantityRemaining) + delta) / 1e3;
     const nextProduct = (quantityMilli(product.stockQuantity) + delta) / 1e3;
-    if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, storeId, lot)) throw new Error("Returned stock exceeds original received quantity remaining after conversions");
+    if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, storeId, lot)) throw publicError("Returned stock exceeds original received quantity remaining after conversions");
     await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot, ...entry.line.disposition === "quarantine" && lot.safetyStatus !== "recalled" ? { safetyStatus: "quarantined", safetyReason: entry.line.conditionNote } : {} } });
     await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextProduct, inStock: nextProduct > 0 } });
     await appendInventoryMovement(tx, { storeId, orderId, productId: product.id, inventoryLotId: lot.id, sourceType: `line_refund_${entry.line.disposition}`, sourceId: entry.line.id, idempotencyKey: `line-return:${entry.line.id}:${lot.id}`, actorId, reason: entry.line.conditionNote || entry.line.reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextProduct, metadata: { orderLineRefundId: entry.line.id, quantityMilli: entry.quantityMilli, disposition: entry.line.disposition, custodyAcceptedAt: (/* @__PURE__ */ new Date()).toISOString(), paymentOutcomeIndependent: true } });
@@ -9634,31 +11008,34 @@ async function refundGroceryOrderLinesWithDependencies(args, context, dependenci
   await requireFreshCapability(context, "canManageOrders");
   const store = await requireSessionStore(context);
   const reason = args.reason?.trim(), requestKey2 = args.idempotencyKey?.trim();
-  if (!reason || reason.length < 3 || reason.length > 500 || !requestKey2 || requestKey2.length < 12 || requestKey2.length > 150 || !Array.isArray(args.lines)) throw new Error("Line refund requires a reason, idempotency key and explicit lines");
-  const fingerprint = canonicalGroceryOutboxPayload({ orderId: args.orderId, paymentId: args.paymentId, reason, lines: [...args.lines].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map((line) => ({ ...line, conditionNote: line.conditionNote?.trim() || "", returnedLots: [...line.returnedLots || []].sort((a, b) => a.lotId.localeCompare(b.lotId)) })) });
-  const providerRefundKey = `line-refund:${(0, import_node_crypto14.createHash)("sha256").update(`${store.id}:${args.orderId}:${requestKey2}`).digest("hex")}`;
+  if (!reason || reason.length < 3 || reason.length > 500 || !requestKey2 || requestKey2.length < 12 || requestKey2.length > 150 || !Array.isArray(args.lines)) throw publicError("Line refund requires a reason, idempotency key and explicit lines");
+  const fingerprint = canonicalPayload({ orderId: args.orderId, paymentId: args.paymentId, reason, lines: [...args.lines].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map((line) => ({ ...line, conditionNote: line.conditionNote?.trim() || "", returnedLots: [...line.returnedLots || []].sort((a, b) => a.lotId.localeCompare(b.lotId)) })) });
+  const providerRefundKey = `line-refund:${(0, import_node_crypto15.createHash)("sha256").update(`${store.id}:${args.orderId}:${requestKey2}`).digest("hex")}`;
   const claim = await withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', args.orderId);
     const order = await tx.order.findUnique({ where: { id: args.orderId } });
-    if (!order || order.storeId !== store.id) throw new Error("Refund order not found in active store");
+    if (!order || order.storeId !== store.id) throw publicError("Refund order not found in active store");
     const existing = await tx.orderLineRefund.findMany({ where: { providerRefundKey }, orderBy: { lineItemId: "asc" } });
     if (existing.length) {
-      if (existing.some((row) => row.storeId !== store.id || row.inputFingerprint !== fingerprint || row.paymentId !== args.paymentId)) throw new Error("Line refund replay differs from original allocations or owner");
+      if (existing.some((row) => row.storeId !== store.id || row.inputFingerprint !== fingerprint || row.paymentId !== args.paymentId)) throw publicError("Line refund replay differs from original allocations or owner");
       return { allocations: existing, amountCents: existing.reduce((sum, row) => sum + row.totalCents, 0), reused: true };
     }
-    if (order.status === "cancelled" && args.lines.some((line) => line.disposition !== "refund_only")) throw new Error("Cancelled goods already have custody disposition; a new physical return would duplicate it");
+    if (order.status === "cancelled" && args.lines.some((line) => line.disposition !== "refund_only")) throw publicError("Cancelled goods already have custody disposition; a new physical return would duplicate it");
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id" = $1 FOR UPDATE', args.paymentId);
     const payment = await tx.payment.findUnique({ where: { id: args.paymentId } });
-    if (!payment || payment.storeId !== store.id || payment.orderId !== order.id || !["succeeded", "partially_refunded"].includes(payment.status)) throw new Error("Select a settled payment belonging to this order and store");
-    if (!order.currencyCode || payment.currencyCode !== order.currencyCode) throw new Error("Refund payment currency differs from the finalized order");
+    if (!payment || payment.storeId !== store.id || payment.orderId !== order.id || !["succeeded", "partially_refunded"].includes(payment.status)) throw publicError("Select a settled payment belonging to this order and store");
+    const settlement = order.metadata?.finalSale?.settlementId ? await tx.orderSettlement.findUnique({ where: { id: order.metadata.finalSale.settlementId } }) : null;
+    const settledCurrency = String(settlement?.providerEvidence?.currency || settlement?.snapshot?.currency || "").toUpperCase();
+    if (!settlement || settlement.orderId !== order.id || settlement.status !== "finalized" || payment.providerData?.finalSettlementId !== settlement.id && settlement.providerEvidence?.originalPaymentId !== payment.id) throw publicError("Finalize the actual sale and select its settled payment before refunding items");
+    if (!order.currencyCode || settledCurrency !== String(order.currencyCode).toUpperCase()) throw publicError("Refund payment currency differs from the finalized order");
     const prior = await tx.orderLineRefund.findMany({ where: { orderId: order.id }, orderBy: { createdAt: "asc" } });
     const allocations = allocateFinalSaleRefund(order.metadata?.finalSale, args.lines, prior);
     const amountCents = allocations.reduce((sum, line) => sum + line.totalCents, 0);
-    if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 2147483647) throw new Error("Selected line quantities must allocate a positive supported refund amount");
+    if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 2147483647) throw publicError("Selected line quantities must allocate a positive supported refund amount");
     const existingRefunds = await tx.paymentRefund.aggregate({ where: { paymentId: payment.id, status: { in: ["processing", "succeeded"] } }, _sum: { amountCents: true } });
     const pendingLineCents = await unlinkedLineRefundReservedCents(tx, payment.id, providerRefundKey);
-    if (Number(existingRefunds._sum.amountCents || 0) + pendingLineCents + amountCents > Number(payment.amountCents)) throw new Error("Line refund exceeds unreserved settled payment balance; review other goodwill and pending refunds");
+    if (Number(existingRefunds._sum.amountCents || 0) + pendingLineCents + amountCents > Number(payment.amountCents)) throw publicError("Line refund exceeds unreserved settled payment balance; review other goodwill and pending refunds");
     const records = [];
     for (const allocation of allocations) records.push(await tx.orderLineRefund.create({ data: { ...allocation, storeId: store.id, orderId: order.id, paymentId: payment.id, idempotencyKey: `${providerRefundKey}:${allocation.lineItemId}`, requestKey: requestKey2, providerRefundKey, inputFingerprint: fingerprint, currencyCode: order.currencyCode || store.currencyCode, reason, requestedBy: context.session.itemId, status: "reserved", events: [{ action: "reserved", actorId: context.session.itemId, at: (/* @__PURE__ */ new Date()).toISOString(), quantityMilli: allocation.quantityMilli, disposition: allocation.disposition }] } }));
     await recordReturnCustody(tx, records, store.id, order.id, context.session.itemId);
@@ -9693,7 +11070,7 @@ async function getGroceryOrderRefundLines(_root, { orderId }, context) {
   const store = await requireSessionStore(context);
   const tx = context.prisma;
   const order = await tx.order.findUnique({ where: { id: orderId }, select: { id: true, storeId: true, currencyCode: true, metadata: true } });
-  if (!order || order.storeId !== store.id) throw new Error("Order not found in active store");
+  if (!order || order.storeId !== store.id) throw publicError("Order not found in active store");
   const finalSale = order.metadata?.finalSale;
   if (finalSale?.status !== "finalized") return { orderId, currencyCode: order.currencyCode, lines: [], requests: [], message: "Finalize actual goods before issuing a line refund." };
   const prior = await tx.orderLineRefund.findMany({ where: { orderId }, orderBy: { createdAt: "asc" } });
@@ -9707,10 +11084,19 @@ async function updateGroceryNotificationPreferences(_root, args, context) {
   const userId = context.session.itemId;
   return context.transaction(async (tx) => {
     await tx.prisma.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-preferences'),hashtext($1))", userId);
+    await lockCurrentCustomer(tx);
     const existing = await tx.prisma.notificationPreference.findFirst({ where: { userId }, orderBy: { updatedAt: "desc" } });
-    const data = { orderUpdates: args.orderUpdates, deliveryAlerts: args.deliveryAlerts, backInStock: args.backInStock, channels: ["email"] };
+    const rawChannels = existing?.channels;
+    const currentChannels = Array.isArray(rawChannels) ? rawChannels.filter((value) => typeof value === "string") : ["email"];
+    const channels = typeof args.emailEnabled === "boolean" ? args.emailEnabled ? [.../* @__PURE__ */ new Set([...currentChannels, "email"])] : currentChannels.filter((channel) => channel !== "email") : currentChannels;
+    const data = { orderUpdates: args.orderUpdates, deliveryAlerts: args.deliveryAlerts, backInStock: args.backInStock, channels };
     if (existing) await tx.prisma.notificationPreference.update({ where: { id: existing.id }, data });
     else await tx.prisma.notificationPreference.create({ data: { ...data, userId } });
+    const stockEmailNowOn = args.backInStock && channels.includes("email");
+    const stockEmailWasOn = Boolean(!existing || existing.backInStock !== false && currentChannels.includes("email"));
+    if (stockEmailNowOn && !stockEmailWasOn) {
+      await tx.prisma.backInStockAlert.updateMany({ where: { userId, isActive: true }, data: { isActive: true } });
+    }
     return true;
   });
 }
@@ -9752,7 +11138,7 @@ async function redeemGroceryLoyalty(_root, args, context) {
     const balance = await loyaltyBalance(tx, store.id, userId);
     if (balance < args.points) throw new Error("Insufficient available loyalty points; refund debt must be recovered first");
     const discountCents = Number(BigInt(args.points) * BigInt(100) / BigInt(program.redeemPointsPer100Cents));
-    if (!Number.isSafeInteger(discountCents) || discountCents <= 0 || discountCents > 2147483647 || BigInt(args.points) * BigInt(100) % BigInt(program.redeemPointsPer100Cents) !== BigInt(0)) throw new Error("Choose a point amount that converts to exact currency minor units");
+    if (!Number.isSafeInteger(discountCents) || discountCents <= 0 || discountCents > 2147483647 || BigInt(args.points) * BigInt(100) % BigInt(program.redeemPointsPer100Cents) !== BigInt(0)) throw new Error("Choose a point amount that converts to an exact amount in cents");
     const coupon = await tx.coupon.create({ data: { storeId: store.id, code: loyaltyCouponCode(`${store.id}:${userId}:${args.idempotencyKey}`), discountType: "fixed", discountValue: discountCents / 100, discountValueCents: discountCents, minPurchase: discountCents / 100, minPurchaseCents: discountCents, maxUses: 1, currentUses: 0, isActive: true, validFrom: /* @__PURE__ */ new Date(), productCategories: [], excludedProducts: [] } });
     const redemption = await tx.loyaltyRedemption.create({ data: { storeId: store.id, userId, programId: program.id, couponId: coupon.id, points: args.points, discountCents, status: "issued", idempotencyKey: args.idempotencyKey, events: [{ action: "issued", at: (/* @__PURE__ */ new Date()).toISOString(), userId, points: args.points, discountCents }] } });
     const journal = await appendLoyaltyEntry(tx, { storeId: store.id, userId, programId: program.id, idempotencyKey: `redeem:${args.idempotencyKey}`, sourceId: redemption.id, sourceType: "loyalty_redemption", actorId: userId, points: -args.points, type: "redeemed_discount", description: "Points exchanged for a retailer-funded customer-owned single-use reward", metadata: { redemptionId: redemption.id, couponId: coupon.id, discountCents, retailerFunded: true } });
@@ -9774,8 +11160,7 @@ init_access();
 init_storeScope();
 
 // features/keystone/lib/reportingClose.ts
-var import_node_crypto15 = require("node:crypto");
-init_groceryOutbox();
+var import_node_crypto16 = require("node:crypto");
 init_inventoryMovements();
 function closePeriod(startDate, endDate, timezone, cutoff = /* @__PURE__ */ new Date()) {
   function dateKey(value) {
@@ -9792,22 +11177,22 @@ function closePeriod(startDate, endDate, timezone, cutoff = /* @__PURE__ */ new 
   return { startDate, endDate, timezone, start, end, cutoff };
 }
 function csvCell(value) {
-  let text60 = value == null ? "" : String(value);
-  if (typeof value !== "number" && /^[\s]*[=+\-@\t\r]/.test(text60)) text60 = `'${text60}`;
-  return `"${text60.replaceAll('"', '""')}"`;
+  let text63 = value == null ? "" : String(value);
+  if (typeof value !== "number" && /^[\s]*[=+\-@\t\r]/.test(text63)) text63 = `'${text63}`;
+  return `"${text63.replaceAll('"', '""')}"`;
 }
 function rowsToCsv(rows) {
   const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   return [columns.map(csvCell).join(","), ...rows.map((row) => columns.map((column) => csvCell(row[column])).join(","))].join("\r\n");
 }
-function parseCsv(text60) {
-  if (text60.length > 1e6) throw new Error("Statement must be at most 1 MB");
+function parseCsv(text63) {
+  if (text63.length > 1e6) throw new Error("Statement must be at most 1 MB");
   const rows = [];
   let row = [], value = "", quoted = false;
-  for (let index = 0; index < text60.length; index++) {
-    const char = text60[index];
+  for (let index = 0; index < text63.length; index++) {
+    const char = text63[index];
     if (char === '"') {
-      if (quoted && text60[index + 1] === '"') {
+      if (quoted && text63[index + 1] === '"') {
         value += '"';
         index++;
       } else quoted = !quoted;
@@ -9815,7 +11200,7 @@ function parseCsv(text60) {
       row.push(value);
       value = "";
     } else if (!quoted && (char === "\n" || char === "\r")) {
-      if (char === "\r" && text60[index + 1] === "\n") index++;
+      if (char === "\r" && text63[index + 1] === "\n") index++;
       row.push(value);
       if (row.some(Boolean)) rows.push(row);
       row = [];
@@ -9895,6 +11280,8 @@ function compileFinancialClose(storeId, currencyCode, period, sources) {
     refundedGoodsCents: 0,
     refundedTaxCents: 0,
     reversedDiscountCents: 0,
+    allocatedReversalCents: 0,
+    netCommercialTotalCents: 0,
     netTaxCents: 0,
     capturedCents: 0,
     refundedCents: 0,
@@ -10015,6 +11402,7 @@ function compileFinancialClose(storeId, currencyCode, period, sources) {
       totals.refundedGoodsCents += Number(reversal.netGoodsCents);
       totals.refundedTaxCents += Number(reversal.taxCents);
       totals.reversedDiscountCents += Number(reversal.discountCents);
+      totals.allocatedReversalCents += amount;
       for (const line of reversal.lines || []) rows.push({ sourceType: "refund_line", sourceId: line.id, refundId: refund.id, orderId: refund.payment.orderId, lineItemId: line.lineItemId, quantityMilli: line.quantityMilli, netGoodsReversedCents: line.netGoodsCents, taxReversedCents: line.taxCents, discountReversedCents: line.discountCents, refundedCents: line.totalCents, disposition: line.disposition, currency: currencyCode });
     }
     if (amount && !refund.providerData?.commercialAdjustments) exceptions.push({ sourceType: "refund", sourceId: refund.id, reason: "Cash refund has no item/tax allocation snapshot; tax reversal requires review" });
@@ -10084,7 +11472,13 @@ function compileFinancialClose(storeId, currencyCode, period, sources) {
   for (const clipped of sources.coupons) {
     owns(clipped.user, "Coupon customer");
     const coupon = clipped.coupon;
-    if (new Date(clipped.clippedAt) >= asOf || clipped.usedAt && new Date(clipped.usedAt) < asOf || coupon.validTo && new Date(coupon.validTo) < asOf) continue;
+    if (new Date(clipped.clippedAt) >= asOf) continue;
+    const changedAfterCutoff = (value) => value && new Date(value).getTime() > asOf.getTime();
+    if (changedAfterCutoff(clipped.updatedAt) || changedAfterCutoff(coupon.updatedAt)) {
+      exceptions.push({ sourceType: "coupon_exposure", sourceId: clipped.id, reason: "Offer or clip changed after the cutoff; its state at the cutoff is unknown and needs review" });
+      continue;
+    }
+    if (clipped.usedAt && new Date(clipped.usedAt) < asOf || coupon.validTo && new Date(coupon.validTo) < asOf) continue;
     const amount = coupon.discountType === "fixed" ? Number(coupon.discountValueCents || 0) : null;
     if (amount === null) totals.percentageCouponCount++;
     else totals.fixedCouponExposureCents += amount;
@@ -10100,10 +11494,11 @@ function compileFinancialClose(storeId, currencyCode, period, sources) {
   }
   totals.netTaxCents = totals.taxCents - totals.refundedTaxCents;
   totals.netPaymentsCents = totals.capturedCents - totals.refundedCents;
-  if (totals.actualTotalCents !== totals.netPaymentsCents) exceptions.push({
+  totals.netCommercialTotalCents = totals.actualTotalCents - totals.allocatedReversalCents;
+  if (totals.netCommercialTotalCents !== totals.netPaymentsCents) exceptions.push({
     sourceType: "period",
     sourceId: `${period.startDate}:${period.endDate}`,
-    reason: `Final sales and period net cash differ by ${totals.actualTotalCents - totals.netPaymentsCents} cents; review capture/refund timing and order exceptions`
+    reason: `Final sales net of allocated refunds and period net cash differ by ${totals.netCommercialTotalCents - totals.netPaymentsCents} cents; review capture/refund timing and order exceptions`
   });
   if (totals.netPaymentsCents - totals.providerFeesCents !== totals.statementNetCents) exceptions.push({
     sourceType: "period",
@@ -10128,7 +11523,7 @@ function compileFinancialClose(storeId, currencyCode, period, sources) {
     exceptions
   };
 }
-var reportHash = (value) => (0, import_node_crypto15.createHash)("sha256").update(canonicalGroceryOutboxPayload(value)).digest("hex");
+var reportHash = (value) => (0, import_node_crypto16.createHash)("sha256").update(canonicalPayload(value)).digest("hex");
 
 // features/keystone/mutations/groceryFinancialClose.ts
 init_serializableTransaction();
@@ -10158,7 +11553,7 @@ async function createCloseInTransaction(tx, actor, input, now = /* @__PURE__ */ 
     readReportRows(tx.settlementMatch, { where: { storeId: actor.store.id, settledAt: range, createdAt: { lte: now } } }),
     readReportRows(tx.inventoryMovement, { where: { storeId: actor.store.id, createdAt: { lt: new Date(Math.min(period.end.getTime(), now.getTime())) } }, select: { id: true, storeId: true, inventoryLotId: true, orderId: true, sequence: true, quantityDelta: true, quantityAfter: true, createdAt: true, reason: true } }),
     readReportRows(tx.inventoryLot, { where: { storeId: actor.store.id, createdAt: { lte: now } }, select: { id: true, storeId: true, createdAt: true, costPerUnitCents: true } }),
-    readReportRows(tx.userCoupon, { where: { user: { storeId: actor.store.id }, clippedAt: { lte: now } }, select: { id: true, clippedAt: true, usedAt: true, user: { select: { storeId: true } }, coupon: { select: { id: true, code: true, discountType: true, discountValueCents: true, validTo: true } } } })
+    readReportRows(tx.userCoupon, { where: { user: { storeId: actor.store.id }, clippedAt: { lte: now } }, select: { id: true, clippedAt: true, usedAt: true, updatedAt: true, user: { select: { storeId: true } }, coupon: { select: { id: true, code: true, discountType: true, discountValueCents: true, validTo: true, updatedAt: true } } } })
   ]);
   const capturedOrderIds = [...new Set(payments.map((payment) => payment.orderId).filter(Boolean))].filter((id) => !orders.some((order) => order.id === id));
   if (capturedOrderIds.length) orders.push(...await readReportRows(tx.order, { where: { storeId: actor.store.id, id: { in: capturedOrderIds } }, select: { id: true, storeId: true, createdAt: true, status: true, subtotalCents: true, metadata: true } }));
@@ -10274,7 +11669,7 @@ async function groceryFinancialCloses(_root, args, context) {
   const actor = await financialActor(context), page = args.page || 1, pageSize = args.pageSize || 25;
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new Error("Invalid report page");
   const tx = context.prisma;
-  const [closes, total, exceptions, totalExceptions] = await Promise.all([
+  const [closes, total, exceptions, totalExceptions, latestClose] = await Promise.all([
     tx.financialClose.findMany({
       where: { storeId: actor.store.id },
       orderBy: [{ cutoff: "desc" }, { id: "asc" }],
@@ -10290,9 +11685,11 @@ async function groceryFinancialCloses(_root, args, context) {
       skip: (page - 1) * pageSize,
       select: { id: true, statementReference: true, entryReference: true, paymentReference: true, amountCents: true, currencyCode: true, payoutReference: true, reason: true }
     }),
-    tx.settlementMatch.count({ where: { storeId: actor.store.id, status: "unresolved" } })
+    tx.settlementMatch.count({ where: { storeId: actor.store.id, status: "unresolved" } }),
+    // The latest close is global, whichever page of closes is being viewed.
+    tx.financialClose.findFirst({ where: { storeId: actor.store.id }, orderBy: [{ cutoff: "desc" }, { id: "asc" }], select: { id: true, periodStart: true, periodEnd: true, timezone: true, cutoff: true, status: true } })
   ]);
-  return { closes, total, page, pageSize, exceptions, totalExceptions, currencyCode: actor.store.currencyCode, timezone: actor.store.timezone };
+  return { closes, total, page, pageSize, exceptions, totalExceptions, latestClose, currencyCode: actor.store.currencyCode, timezone: actor.store.timezone };
 }
 async function groceryFinancialCloseExport(_root, { closeId }, context) {
   const actor = await financialActor(context);
@@ -10325,13 +11722,12 @@ async function groceryFinancialCloseExport(_root, { closeId }, context) {
 // features/keystone/mutations/manageGrocerySubscriptions.ts
 init_access();
 init_storeScope();
-init_groceryOutbox();
 init_serializableTransaction();
 async function manageGrocerySubscription(_root, args, context) {
   const store = await requireSessionStore(context);
   const userId = context.session.itemId;
   if (!["create", "pause", "resume", "skip", "cancel", "prepare"].includes(args.action) || args.idempotencyKey?.trim().length < 12) throw new Error("Valid recurring order action and idempotency key required");
-  const fingerprint = canonicalGroceryOutboxPayload({ ...args, idempotencyKey: void 0 });
+  const fingerprint = canonicalPayload({ ...args, idempotencyKey: void 0 });
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-subscription'), hashtext($1))", args.subscriptionId || args.idempotencyKey);
@@ -10412,10 +11808,9 @@ async function processDueGrocerySubscriptions(_root, args, context) {
 }
 
 // features/keystone/mutations/manageSupplierSettlement.ts
-var import_node_crypto16 = require("node:crypto");
+var import_node_crypto17 = require("node:crypto");
 init_access();
 init_storeScope();
-init_groceryOutbox();
 init_inventoryMovements();
 
 // features/keystone/lib/supplierMatching.ts
@@ -10423,7 +11818,7 @@ init_inventoryMovements();
 function supplierAmountCents(value, label = "Amount") {
   if (value == null || value === "") throw new Error(`${label} is required`);
   const cents3 = Number(value);
-  if (!Number.isSafeInteger(cents3) || cents3 < 0 || cents3 > 2147483647) throw new Error(`${label} must be a non-negative integer amount in minor units`);
+  if (!Number.isSafeInteger(cents3) || cents3 < 0 || cents3 > 2147483647) throw new Error(`${label} must be zero or more, in whole cents`);
   return cents3;
 }
 function supplierLineCents(quantity, unitCostCents) {
@@ -10455,7 +11850,7 @@ function supplierMatchedQuantity(receiptId, invoices, cutoff = /* @__PURE__ */ n
 
 // features/keystone/mutations/manageSupplierSettlement.ts
 init_serializableTransaction();
-var identity = (...parts) => (0, import_node_crypto16.createHash)("sha256").update(JSON.stringify(parts)).digest("hex");
+var identity = (...parts) => (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify(parts)).digest("hex");
 var requiredText = (value, label) => {
   if (typeof value !== "string" || !value.trim() || value.length > 1e3) throw new Error(`${label} is required`);
   return value.trim();
@@ -10479,7 +11874,7 @@ async function manageSupplierSettlement(_root, args, context) {
   const store = await requireSessionStore(context);
   if (args.idempotencyKey?.trim().length < 12) throw new Error("Supplier operation idempotency key is required");
   const input = args.input || {};
-  const fingerprint = canonicalGroceryOutboxPayload({ action: args.action, input, invoiceId: args.invoiceId || null, creditId: args.creditId || null });
+  const fingerprint = canonicalPayload({ action: args.action, input, invoiceId: args.invoiceId || null, creditId: args.creditId || null });
   const event = { action: args.action, idempotencyKey: args.idempotencyKey.trim(), fingerprint, actorId: context.session.itemId, at: (/* @__PURE__ */ new Date()).toISOString(), input };
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
@@ -10596,7 +11991,6 @@ async function manageSupplierSettlement(_root, args, context) {
 }
 
 // features/keystone/mutations/manageDeliveryRoutes.ts
-init_groceryOutbox();
 init_access();
 init_storeScope();
 init_serializableTransaction();
@@ -10698,6 +12092,7 @@ async function resolveDeliveryStopInTransaction(tx, actor, rawInput, now = /* @_
   await sudo.db.DeliveryRoute.updateOne({ where: { id: route.id }, data: { stops } });
   const nextStatus = input.status === "failed" ? "delivery_failed" : input.status === "refused" ? "delivery_refused" : input.status === "rescheduled" ? "out_for_delivery" : input.status;
   const previousMetadata = order.metadata || {};
+  assertTransition(ORDER_TRANSITIONS, "Order", order.status, nextStatus);
   await sudo.db.Order.updateOne({ where: { id: order.id }, data: {
     status: nextStatus,
     ...input.status === "returned" ? { deliveryRoute: { disconnect: true } } : {},
@@ -10726,6 +12121,7 @@ async function resolveDeliveryStopInTransaction(tx, actor, rawInput, now = /* @_
 }
 
 // features/keystone/mutations/manageDeliveryRoutes.ts
+init_publicError();
 async function assertCanManageDelivery(context) {
   await requireFreshCapability(context, "canManageDelivery");
 }
@@ -10986,7 +12382,7 @@ async function updateDeliveryRouteWorkflow(root, { routeId, status }, context) {
     });
     if (status === "in_progress") {
       for (const order of orders) {
-        await enqueueGroceryOutboxEvent(transactionContext.prisma, { storeId: store.id, eventKey: `order.dispatched:${order.id}:${routeId}`, eventType: "order.dispatched", aggregateType: "Order", aggregateId: order.id, occurredAt: now, payload: { orderId: order.id, routeId } });
+        assertTransition(ORDER_TRANSITIONS, "Order", order.status, "out_for_delivery");
         await sudoContext.query.Order.updateOne({
           where: { id: order.id },
           data: {
@@ -11005,9 +12401,21 @@ async function updateDeliveryRouteWorkflow(root, { routeId, status }, context) {
     };
   }, { isolationLevel: "ReadCommitted" }));
 }
-async function resolveDeliveryStop(_root, input, context) {
+async function resolveDeliveryStop(_root, { retryLocalTime, ...rawInput }, context) {
   await assertCanManageDelivery(context);
   const store = await requireSessionStore(context);
+  let input = rawInput;
+  if (retryLocalTime) {
+    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/.exec(retryLocalTime.trim());
+    if (!match) throw publicError("Enter the retry date and time.");
+    let instant;
+    try {
+      instant = zonedDateTimeForDateKey(match[1], match[2], store.timezone);
+    } catch {
+      throw publicError(`That time does not exist in ${store.timezone} (a daylight-saving change). Choose another time.`);
+    }
+    input = { ...rawInput, retryAt: instant.toISOString() };
+  }
   return withSerializableRetry(() => context.transaction(
     (tx) => resolveDeliveryStopInTransaction(tx, { storeId: store.id, userId: context.session.itemId }, input),
     { isolationLevel: "ReadCommitted" }
@@ -11017,7 +12425,6 @@ async function resolveDeliveryStop(_root, input, context) {
 // features/keystone/mutations/updateProductInformation.ts
 init_access();
 init_storeScope();
-init_groceryOutbox();
 async function updateProductInformation(_root, { productId, input, idempotencyKey }, context) {
   await requireFreshCapability(context, "canManageProducts");
   const store = await requireSessionStore(context);
@@ -11029,7 +12436,7 @@ async function updateProductInformation(_root, { productId, input, idempotencyKe
     if (!product || product.storeId !== store.id) throw new Error("Product not found in active store");
     const existing = await tc.prisma.productInformationVersion.findUnique({ where: { idempotencyKey } });
     if (existing) {
-      if (existing.productId !== productId || groceryOutboxPayloadHash(existing.snapshot.input) !== groceryOutboxPayloadHash(normalized)) throw new Error("Request key was reused with different product information");
+      if (existing.productId !== productId || payloadHash(existing.snapshot.input) !== payloadHash(normalized)) throw new Error("Request key was reused with different product information");
       return { success: true, reused: true, versionId: existing.id };
     }
     if (normalized.variantOfId) {
@@ -11045,11 +12452,13 @@ async function updateProductInformation(_root, { productId, input, idempotencyKe
 }
 
 // features/keystone/mutations/authorizeOrderAdjustment.ts
-var import_node_crypto17 = require("node:crypto");
+var import_node_crypto18 = require("node:crypto");
+init_payment();
 init_paymentProviderAdapter();
 init_serializableTransaction();
+init_stripeEnabled();
 function adjustmentFingerprint(settlement, payment) {
-  return (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify([
+  return (0, import_node_crypto18.createHash)("sha256").update(JSON.stringify([
     settlement.id,
     settlement.actualsHash,
     settlement.totalCents,
@@ -11059,7 +12468,7 @@ function adjustmentFingerprint(settlement, payment) {
     payment.paymentProviderId
   ])).digest("hex");
 }
-var defaults2 = { createPayment, verifyGuestOrderToken, now: () => Date.now(), token: import_node_crypto17.randomUUID };
+var defaults2 = { createPayment, verifyGuestOrderToken, now: () => Date.now(), token: import_node_crypto18.randomUUID };
 function makeAuthorizeOrderAdjustment(overrides = {}) {
   const deps = { ...defaults2, ...overrides };
   return async function authorizeOrderAdjustment2(_root, { orderId, sessionId, token }, context) {
@@ -11079,7 +12488,8 @@ function makeAuthorizeOrderAdjustment(overrides = {}) {
       if (!evidence.originalPaymentId) throw new Error("Original payment identity is missing");
       await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id"=$1 FOR UPDATE', evidence.originalPaymentId);
       const payment = await tx.payment.findUnique({ where: { id: evidence.originalPaymentId }, include: { paymentProvider: true } });
-      if (!payment || payment.orderId !== orderId || payment.storeId !== order.storeId || !payment.paymentProvider?.isInstalled) throw new Error("Original payment provider is unavailable");
+      if (!payment || payment.orderId !== orderId || payment.storeId !== order.storeId || !payment.paymentProvider || !isPaymentProviderInstalled(payment.paymentProvider)) throw new Error("Original payment provider is unavailable");
+      assertIdempotentCaptureProvider(payment.paymentProvider);
       if (["processing", "unknown"].includes(payment.providerData?.authorizationVoid?.status)) throw new Error("Original authorization void requires reconciliation");
       const fingerprint = adjustmentFingerprint(settlement, payment);
       if (evidence.customerApproval && evidence.customerApproval.fingerprint !== fingerprint) throw new Error("Customer approval no longer matches the frozen sale");
@@ -11096,7 +12506,17 @@ function makeAuthorizeOrderAdjustment(overrides = {}) {
         ...evidence,
         authorizationInitiatedAt: initiatedAt,
         authorizationCreationLease: lease,
-        customerApproval: { userId: context.session?.itemId || null, at: initiatedAt, totalCents: settlement.totalCents, actualsHash: settlement.actualsHash, fingerprint }
+        customerApproval: { userId: context.session?.itemId || null, at: initiatedAt, totalCents: settlement.totalCents, actualsHash: settlement.actualsHash, fingerprint },
+        reauthorizationRequest: evidence.reauthorizationRequest || {
+          requestKey: `${settlement.idempotencyKey}:revised-authorization`,
+          storeId: order.storeId,
+          orderId,
+          settlementId: settlement.id,
+          fingerprint,
+          amountCents: settlement.totalCents,
+          currency: settlement.snapshot.currency,
+          requestedAt: initiatedAt
+        }
       } } });
       return { settlement, payment, fingerprint, ready: null };
     }));
@@ -11106,7 +12526,8 @@ function makeAuthorizeOrderAdjustment(overrides = {}) {
       amount: claim.settlement.totalCents,
       currency: claim.settlement.snapshot.currency,
       captureMethod: "manual",
-      idempotencyKey: `${claim.settlement.idempotencyKey}:revised-authorization`
+      idempotencyKey: `${claim.settlement.idempotencyKey}:revised-authorization`,
+      order: { id: orderId, revisedAuthorization: { storeId: claim.payment.storeId, settlementId: claim.settlement.id, fingerprint: claim.fingerprint } }
     });
     if (!created.paymentIntentId || !created.clientSecret || created.paymentIntentId === claim.payment.providerPaymentId) throw new Error("Provider did not return a distinct revised authorization");
     const ready = await withSerializableRetry(() => context.transaction(async (tc) => {
@@ -11117,7 +12538,7 @@ function makeAuthorizeOrderAdjustment(overrides = {}) {
       const current = await tx.orderSettlement.findUnique({ where: { id: claim.settlement.id } });
       await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "id"=$1 FOR UPDATE', claim.payment.id);
       const currentPayment = await tx.payment.findUnique({ where: { id: claim.payment.id }, include: { paymentProvider: true } });
-      if (!current || order.status !== "picking" || current.orderId !== orderId || current.status !== "requires_customer_authorization" || current.providerEvidence?.abandonment || current.providerEvidence?.originalPaymentId !== claim.payment.id || order.storeId !== claim.payment.storeId || String(order.currencyCode).toLowerCase() !== current.snapshot?.currency || !currentPayment || currentPayment.orderId !== orderId || currentPayment.storeId !== order.storeId || !currentPayment.paymentProvider?.isInstalled || ["processing", "unknown"].includes(currentPayment.providerData?.authorizationVoid?.status) || adjustmentFingerprint(current, currentPayment) !== claim.fingerprint || current.providerEvidence?.customerApproval?.fingerprint !== claim.fingerprint) throw new Error("Order or approval changed during authorization; provider intent needs reconciliation");
+      if (!current || order.status !== "picking" || current.orderId !== orderId || current.status !== "requires_customer_authorization" || current.providerEvidence?.abandonment || current.providerEvidence?.originalPaymentId !== claim.payment.id || order.storeId !== claim.payment.storeId || String(order.currencyCode).toLowerCase() !== current.snapshot?.currency || !currentPayment || currentPayment.orderId !== orderId || currentPayment.storeId !== order.storeId || !currentPayment.paymentProvider || !isPaymentProviderInstalled(currentPayment.paymentProvider) || ["processing", "unknown"].includes(currentPayment.providerData?.authorizationVoid?.status) || adjustmentFingerprint(current, currentPayment) !== claim.fingerprint || current.providerEvidence?.customerApproval?.fingerprint !== claim.fingerprint) throw new Error("Order or approval changed during authorization; provider intent needs reconciliation");
       const existing = current.providerEvidence?.reauthorization;
       if (existing && (existing.paymentIntentId !== created.paymentIntentId || existing.fingerprint !== claim.fingerprint)) throw new Error("Provider retry returned conflicting authorization evidence");
       const priorPayment = await tx.payment.findUnique({ where: { providerPaymentId: created.paymentIntentId } });
@@ -11131,22 +12552,6 @@ function makeAuthorizeOrderAdjustment(overrides = {}) {
 }
 var authorizeOrderAdjustment = makeAuthorizeOrderAdjustment();
 
-// features/keystone/mutations/requestGuestOrderAccess.ts
-var import_node_crypto18 = require("node:crypto");
-init_storeScope();
-init_groceryOutbox();
-async function requestGuestOrderAccess(_root, { orderId, email }, context) {
-  if (orderId.length > 200 || email.length > 320 || !/^\S+@\S+\.\S+$/.test(email)) return true;
-  const store = await publicStore(context);
-  const order = await context.prisma.order.findFirst({ where: { id: orderId, storeId: store.id, email: { equals: email.trim(), mode: "insensitive" }, userId: null }, select: { id: true } });
-  if (order) await context.transaction(async (tc) => {
-    const bucket = Math.floor(Date.now() / 3e5);
-    const key2 = (0, import_node_crypto18.createHash)("sha256").update(`${order.id}:${bucket}`).digest("hex");
-    await enqueueGroceryOutboxEvent(tc.prisma, { storeId: store.id, eventKey: `order.access:${key2}`, eventType: "order.access.requested", aggregateType: "Order", aggregateId: order.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { orderId: order.id } });
-  });
-  return true;
-}
-
 // features/keystone/mutations/resumeGroceryCheckout.ts
 async function resumeGroceryCheckout(_root, { paymentSessionId, sessionId }, context) {
   const attempt = await context.prisma.checkoutAttempt.findUnique({ where: { idempotencyKey: `checkout:${paymentSessionId}` } });
@@ -11156,11 +12561,496 @@ async function resumeGroceryCheckout(_root, { paymentSessionId, sessionId }, con
   return submitGroceryOrder(null, { data: { ...request, sessionId: userId ? void 0 : sessionId } }, context);
 }
 
+// features/keystone/mutations/restartGroceryCheckout.ts
+init_storeScope();
+
+// features/keystone/mutations/initiatePaymentSession.ts
+var import_node_crypto19 = require("node:crypto");
+init_storeScope();
+init_payment();
+init_paymentProviderAdapter();
+init_publicError();
+init_stripeEnabled();
+function fulfillmentWindow2(startTime) {
+  const hour = Number.parseInt(startTime.slice(0, 2), 10);
+  if (hour < 10) return "time_8_10";
+  if (hour < 12) return "time_10_12";
+  if (hour < 14) return "time_12_14";
+  if (hour < 16) return "time_14_16";
+  if (hour < 18) return "time_16_18";
+  return "time_18_20";
+}
+function isTerminalRestartReplay(existing, source, amountCents, checkoutFingerprint, cartFingerprint, termsFingerprint) {
+  if (!source || !existing) return false;
+  const data = existing.data || {};
+  return data.checkoutRestartOfPaymentSessionId === source.paymentSessionId && data.checkoutRestartTermsFingerprint === source.termsFingerprint && data.checkoutFingerprint === checkoutFingerprint && data.cartFingerprint === cartFingerprint && Number(existing.amountCents) === amountCents && termsFingerprint === source.termsFingerprint && (data.status === "completed" || Boolean(data.compensationStatus));
+}
+async function bindRestartChild(tx, source, childPaymentSessionId) {
+  if (!source) return;
+  await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentSession" WHERE "id" = $1 FOR UPDATE', source.paymentSessionId);
+  const parent = await tx.paymentSession.findUnique({ where: { id: source.paymentSessionId }, select: { data: true } });
+  const parentData = parent?.data && typeof parent.data === "object" ? parent.data : {};
+  if (parentData.compensationStatus !== "refunded") throw new Error("Checkout compensation is no longer confirmed");
+  if (parentData.checkoutRestartPaymentSessionId && parentData.checkoutRestartPaymentSessionId !== childPaymentSessionId) {
+    throw new Error("A different fresh checkout is already bound to this compensated attempt");
+  }
+  if (!parentData.checkoutRestartPaymentSessionId) {
+    await tx.paymentSession.update({
+      where: { id: source.paymentSessionId },
+      data: { data: { ...parentData, checkoutRestartPaymentSessionId: childPaymentSessionId } }
+    });
+  }
+}
+async function initiatePaymentSessionWithDependencies(root, { cartId, paymentProviderId, deliverySlotId, pickupSlotId, sessionId, couponCode, recovery }, context, dependencies = { createPayment, ensureCheckoutAttempt }, restartSource) {
+  if (paymentProviderId === TEST_PROVIDER_CODE) assertIdempotentCaptureProvider(paymentProviderId);
+  if (context.session?.itemId) await requireSessionStore(context);
+  const sudoContext = context.sudo();
+  if (Boolean(deliverySlotId) === Boolean(pickupSlotId)) {
+    throw publicError("Choose one delivery or pickup time.", "CHECKOUT_DETAILS");
+  }
+  const requestedFulfillmentMethod = pickupSlotId ? "pickup" : "delivery";
+  const contactProblem = checkoutContactProblem({ email: recovery?.email, fulfillmentMethod: requestedFulfillmentMethod, deliveryAddress: recovery?.deliveryAddress });
+  if (contactProblem) throw publicError(contactProblem, "CHECKOUT_DETAILS");
+  if (!["call_me", "best_match", "refund"].includes(recovery.substitutionPreference)) {
+    throw publicError("Choose what to do if an item is unavailable.", "CHECKOUT_DETAILS");
+  }
+  const tipCents = normalizeDeliveryTipCents(recovery.tipCents, requestedFulfillmentMethod);
+  const cart = await sudoContext.query.Cart.findOne({
+    where: { id: cartId },
+    query: `
+      id
+      store { id timezone isActive }
+      sessionId
+      expiresAt
+      customer { id }
+      subtotal
+      subtotalCents
+      items { id quantity substitutionPreference product { id title price priceCents taxRateBasisPoints pricingMethod unitOfMeasure department departmentRef { handle } status store { id } inventoryLots { id expirationDate quantityRemaining safetyStatus conditionStatus store { id } } } }
+      paymentSessions {
+        id
+        isSelected
+        isInitiated
+        amount
+        idempotencyKey
+        paymentProvider {
+          id
+          code
+        }
+        data
+      }
+    `
+  });
+  if (!cart) {
+    throw new Error("Cart not found");
+  }
+  if (context.session?.itemId) {
+    if (cart.customer?.id !== context.session.itemId) {
+      throw new Error("You do not have access to this cart");
+    }
+  } else if (!sessionId?.trim() || cart.customer?.id || cart.sessionId !== sessionId.trim()) {
+    throw new Error("You do not have access to this cart");
+  }
+  if (!cart.store?.isActive) throw new Error("Cart store is unavailable");
+  if (!context.session?.itemId && cart.expiresAt && new Date(cart.expiresAt).getTime() <= Date.now()) {
+    throw publicError("Your basket session has expired. Add your items again to continue.", "CART_EXPIRED");
+  }
+  if (!cart.items?.length) throw publicError("Your basket is empty.", "CART_EMPTY");
+  const provider = await sudoContext.query.PaymentProvider.findOne({
+    where: { code: paymentProviderId },
+    query: "id code isInstalled publicCheckout supportsIdempotentCapture captureIdempotencyEvidence credentials metadata createPaymentFunction capturePaymentFunction refundPaymentFunction getPaymentStatusFunction getRefundStatusFunction cancelPaymentFunction generatePaymentLinkFunction handleWebhookFunction"
+  });
+  if (!provider || !isPaymentProviderInstalled(provider)) {
+    throw new Error(`Payment provider ${paymentProviderId} not found or not installed`);
+  }
+  assertPublicPaymentProvider(provider);
+  assertIdempotentCaptureProvider(provider);
+  const deliverySlot = deliverySlotId ? await sudoContext.query.DeliverySlot.findOne({
+    where: { id: deliverySlotId },
+    query: "id date startTime endTime deliveryFee capacity currentBookings isActive store { id }"
+  }) : null;
+  const pickupSlot = pickupSlotId ? await sudoContext.query.PickupSlot.findOne({
+    where: { id: pickupSlotId },
+    query: "id date startTime endTime maxOrders currentOrders isActive isAvailable store { id }"
+  }) : null;
+  if (deliverySlotId && (!deliverySlot || deliverySlot.store?.id !== cart.store?.id)) {
+    throw publicError("That delivery time is no longer offered. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  if (pickupSlotId && (!pickupSlot || pickupSlot.store?.id !== cart.store?.id)) {
+    throw publicError("That pickup time is no longer offered. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  const selectedSlot = deliverySlot || pickupSlot;
+  if (!selectedSlot || !isLiveFulfillmentSlot(selectedSlot, cart.store.timezone)) {
+    throw publicError("That time has passed. Choose a later time.", "SLOT_UNAVAILABLE");
+  }
+  const storeSettings = await context.prisma.storeSettings.findFirst({
+    where: { storeId: cart.store.id, isActive: true },
+    select: { hours: true, deliveryPolicy: true }
+  });
+  const windowDecision = evaluateFulfillmentWindow({
+    hours: storeSettings?.hours,
+    timeZone: cart.store.timezone,
+    date: selectedSlot.date,
+    startTime: selectedSlot.startTime,
+    endTime: selectedSlot.endTime
+  });
+  if (!storeSettings || !windowDecision.allowed) {
+    throw publicError("That time is past the order cutoff or outside store hours. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  if (deliverySlot && !deliverySlot.isActive) {
+    throw publicError("That delivery time is no longer available. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  if (pickupSlot && (!pickupSlot.isActive || !pickupSlot.isAvailable)) {
+    throw publicError("That pickup time is no longer available. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  if (deliverySlot && deliverySlot.capacity - deliverySlot.currentBookings <= 0) {
+    throw publicError("That delivery time is fully booked. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  if (pickupSlot && pickupSlot.maxOrders - pickupSlot.currentOrders <= 0) {
+    throw publicError("That pickup time is fully booked. Choose another time.", "SLOT_UNAVAILABLE");
+  }
+  const fulfillmentMethod = pickupSlot ? "pickup" : "delivery";
+  const now = new Date(Math.max(Date.now(), zonedDateTimeForDateKey(zonedDateKey(selectedSlot.date, cart.store.timezone), selectedSlot.endTime, cart.store.timezone).getTime()));
+  let subtotalCents = 0;
+  for (const item of cart.items) {
+    const product = item.product;
+    if (!product || product.store?.id !== cart.store.id || product.status !== "published") {
+      throw publicError(`${product?.title || "An item in your basket"} is no longer available. Remove it to continue.`, "PRODUCT_UNAVAILABLE");
+    }
+    assertSellableQuantity(product, cart.store.id, item.quantity, now);
+    subtotalCents += Number(product.priceCents ?? Math.round(Number(product.price || 0) * 100)) * item.quantity;
+  }
+  const subtotalDollars = subtotalCents / 100;
+  await sudoContext.db.Cart.updateOne({ where: { id: cart.id }, data: { subtotal: subtotalDollars, subtotalCents, itemCount: cart.items.reduce((sum, item) => sum + item.quantity, 0) } });
+  const taxRateBps = await getStoreTaxRateBps(context, cart.store?.id);
+  let deliveryFeeDollars = Number(((deliverySlot?.deliveryFee || 0) / 100).toFixed(2));
+  let discountDollars = 0;
+  let couponSnapshot = null;
+  if (couponCode?.trim()) {
+    const coupon = await findStoreCouponByCode(sudoContext, couponCode, cart.store?.id, "id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts categoryTaxonomy store { id }");
+    if (!coupon || coupon.store?.id !== cart.store?.id) throw publicError(`Coupon ${couponCode.trim().toUpperCase().slice(0, 40)} isn't valid here. Check the code or remove it.`, "COUPON_INVALID");
+    await validateLoyaltyCoupon(context.prisma, coupon.id, context.session?.itemId, cart.store.id);
+    discountDollars = calculateCouponDiscount(coupon, cart.items || []);
+    couponSnapshot = { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discountDollars, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, categoryTaxonomy: coupon.categoryTaxonomy, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents };
+  }
+  const discountCents = Math.round(discountDollars * 100);
+  const service = evaluateDeliveryPolicy(storeSettings.deliveryPolicy, fulfillmentMethod, recovery.deliveryAddress.postalCode, subtotalCents - discountCents);
+  deliveryFeeDollars += service.feeCents / 100;
+  const commercial = priceCommercialLines(cart.items.map((item) => ({
+    id: item.id,
+    subtotalCents: Number(item.product.priceCents) * item.quantity,
+    taxRateBasisPoints: item.product.taxRateBasisPoints ?? taxRateBps,
+    discountEligible: isCouponLineEligible(item.product, couponSnapshot)
+  })), discountCents, Math.round(deliveryFeeDollars * 100), service.feeTaxRateBasisPoints);
+  const taxCents = commercial.taxCents;
+  const taxDollars = taxCents / 100;
+  const amountInCents = Math.max(0, subtotalCents + taxCents + Math.round(deliveryFeeDollars * 100) - discountCents) + tipCents;
+  const totalDollars = amountInCents / 100;
+  const slotKey = pickupSlotId ? `pickup:${pickupSlotId}` : `delivery:${deliverySlotId || "no-slot"}`;
+  const couponIdentity = couponSnapshot ? `${couponSnapshot.id}:${couponSnapshot.code}` : "none";
+  let idempotencyKey = `${cart.id}:${provider.code}:${slotKey}:coupon:${couponIdentity}:amount:${amountInCents}${tipCents ? `:tip:${tipCents}` : ""}`;
+  const sessionSelection = `
+    id
+    data
+    amount
+    amountCents
+    reservedOrderDisplayId
+    idempotencyKey
+    isInitiated
+    isSelected
+    paymentProvider { id code }
+  `;
+  const claimData = {
+    commercial,
+    deliveryPolicySnapshot: service.policy,
+    captureMethod: "manual",
+    subtotal: subtotalDollars,
+    tax: taxDollars,
+    deliveryFee: deliveryFeeDollars,
+    total: totalDollars,
+    fulfillmentMethod,
+    taxRateBps,
+    fulfillmentSlot: {
+      id: (pickupSlot || deliverySlot)?.id,
+      date: (pickupSlot || deliverySlot)?.date,
+      startTime: (pickupSlot || deliverySlot)?.startTime,
+      endTime: (pickupSlot || deliverySlot)?.endTime
+    },
+    deliverySlotId: deliverySlotId || null,
+    pickupSlotId: pickupSlotId || null,
+    amountInCents,
+    couponCode: couponCode?.trim().toUpperCase() || null,
+    coupon: couponSnapshot,
+    discount: discountDollars,
+    ...tipCents ? { tipCents } : {},
+    currency: "usd",
+    ...restartSource ? {
+      checkoutRestartOfPaymentSessionId: restartSource.paymentSessionId,
+      checkoutRestartTermsFingerprint: restartSource.termsFingerprint
+    } : {}
+  };
+  const checkoutRequest = (paymentSessionId, providerPaymentId) => ({
+    cartId: cart.id,
+    paymentSessionId,
+    paymentIntentId: providerPaymentId,
+    sessionId: context.session?.itemId ? void 0 : sessionId?.trim(),
+    couponCode: couponCode?.trim().toUpperCase() || void 0,
+    email: recovery.email.trim(),
+    deliveryAddress: recovery.deliveryAddress,
+    deliveryDate: new Date(selectedSlot.date).toISOString(),
+    deliveryTimeWindow: fulfillmentWindow2(selectedSlot.startTime),
+    fulfillmentMethod,
+    deliverySlotId: deliverySlotId || void 0,
+    pickupSlotId: pickupSlotId || void 0,
+    deliveryFee: deliveryFeeDollars,
+    ...tipCents ? { tipCents } : {},
+    expectedTotal: totalDollars,
+    substitutionPreference: recovery.substitutionPreference,
+    deliveryInstructions: recovery.deliveryInstructions?.trim() || void 0,
+    checkoutOwnerId: context.session?.itemId || null
+  });
+  const checkoutFingerprint = checkoutRequestFingerprint(checkoutRequest("", ""));
+  const cartFingerprint = checkoutCartFingerprint(cart);
+  const termsFingerprint = checkoutTermsFingerprint(claimData);
+  if (restartSource && (checkoutFingerprint !== restartSource.checkoutFingerprint || cartFingerprint !== restartSource.cartFingerprint || amountInCents !== restartSource.amountCents || termsFingerprint !== restartSource.termsFingerprint)) {
+    throw new Error("Checkout details or terms changed after compensation; review checkout before restarting");
+  }
+  const identityPayload = {
+    commercialKey: idempotencyKey,
+    checkoutFingerprint,
+    cartFingerprint,
+    ...restartSource ? { checkoutRestartOfPaymentSessionId: restartSource.paymentSessionId } : {}
+  };
+  idempotencyKey = `grocery-checkout:${payloadHash(identityPayload)}`;
+  let claim;
+  try {
+    claim = await context.transaction(async (transactionContext) => {
+      if (context.session?.itemId) {
+        await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id"=$1 FOR UPDATE', context.session.itemId);
+        const owner = await transactionContext.prisma.user.findUnique({ where: { id: context.session.itemId }, select: { id: true, storeId: true, privacyErasedAt: true } });
+        if (!owner || owner.privacyErasedAt || owner.storeId !== cart.store.id) throw new Error("Checkout customer is no longer active");
+      }
+      await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id"=$1 FOR UPDATE', cart.id);
+      const freshCart = await transactionContext.sudo().query.Cart.findOne({ where: { id: cart.id }, query: "id customer { id } sessionId items { id quantity substitutionPreference product { id priceCents taxRateBasisPoints pricingMethod unitOfMeasure } }" });
+      if (!freshCart || checkoutCartFingerprint(freshCart) !== cartFingerprint || (context.session?.itemId ? freshCart.customer?.id !== context.session.itemId : freshCart.customer?.id || freshCart.sessionId !== sessionId?.trim())) throw publicError("Your basket changed while payment was being prepared. Review checkout and try again.", "CART_CHANGED");
+      await transactionContext.prisma.$queryRaw`
+      WITH payment_lock AS MATERIALIZED (
+        SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))
+      )
+      SELECT true AS locked FROM payment_lock
+    `;
+      await transactionContext.prisma.$queryRaw`SELECT "id" FROM "PaymentSession" WHERE "idempotencyKey" = ${idempotencyKey} FOR UPDATE`;
+      const existingRows = await transactionContext.sudo().query.PaymentSession.findMany({
+        where: { idempotencyKey: { equals: idempotencyKey } },
+        take: 1,
+        query: sessionSelection
+      });
+      const existing = existingRows[0] || null;
+      if (isTerminalRestartReplay(existing, restartSource, amountInCents, checkoutFingerprint, cartFingerprint, termsFingerprint)) {
+        await bindRestartChild(transactionContext.prisma, restartSource, existing.id);
+        return { session: existing, shouldCreate: false, terminalReplay: true };
+      }
+      const now2 = Date.now();
+      const creation = claimPaymentCreationData(existing?.data, { ...claimData, checkoutFingerprint, cartFingerprint }, (0, import_node_crypto19.randomUUID)(), now2);
+      if (creation.action !== "create") {
+        await bindRestartChild(transactionContext.prisma, restartSource, existing.id);
+        return { session: existing, shouldCreate: false };
+      }
+      const baseData = { ...creation.data, ...!existing ? { creationBindingVersion: 1, recoveryRequest: checkoutRequest("", "") } : {} };
+      const reservedOrderDisplayId = existing?.reservedOrderDisplayId || await (async () => {
+        await transactionContext.prisma.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-order-display-id'), hashtext('allocation'))");
+        const [orderMax, sessionMax] = await Promise.all([
+          transactionContext.prisma.order.aggregate({ _max: { displayId: true } }),
+          transactionContext.prisma.paymentSession.aggregate({ _max: { reservedOrderDisplayId: true } })
+        ]);
+        return Math.max(orderMax._max.displayId || 0, sessionMax._max.reservedOrderDisplayId || 0) + 1;
+      })();
+      if (existing) {
+        const updated = await transactionContext.sudo().query.PaymentSession.updateOne({
+          where: { id: existing.id },
+          data: { isSelected: true, isInitiated: false, amountCents: amountInCents, reservedOrderDisplayId, data: baseData },
+          query: sessionSelection
+        });
+        await bindRestartChild(transactionContext.prisma, restartSource, updated.id);
+        return { session: updated, shouldCreate: true };
+      }
+      const existingSelected = await transactionContext.sudo().query.PaymentSession.findMany({
+        where: { cart: { id: { equals: cart.id } }, isSelected: { equals: true } },
+        query: "id"
+      });
+      for (const selected of existingSelected) {
+        await transactionContext.sudo().query.PaymentSession.updateOne({ where: { id: selected.id }, data: { isSelected: false } });
+      }
+      const created = await transactionContext.sudo().query.PaymentSession.createOne({
+        data: {
+          cart: { connect: { id: cart.id } },
+          paymentProvider: { connect: { id: provider.id } },
+          amount: totalDollars.toFixed(2),
+          idempotencyKey,
+          isSelected: true,
+          isInitiated: false,
+          amountCents: amountInCents,
+          reservedOrderDisplayId,
+          data: baseData
+        },
+        query: sessionSelection
+      });
+      const bound = await transactionContext.sudo().query.PaymentSession.updateOne({
+        where: { id: created.id },
+        data: { data: { ...baseData, recoveryRequest: { ...baseData.recoveryRequest, paymentSessionId: created.id } } },
+        query: sessionSelection
+      });
+      await bindRestartChild(transactionContext.prisma, restartSource, bound.id);
+      return { session: bound, shouldCreate: true };
+    });
+  } catch (error) {
+    const candidate = error;
+    const errorCode = candidate.code || candidate.extensions?.prisma?.code;
+    if (errorCode !== "P2002") throw error;
+    const winner = await sudoContext.query.PaymentSession.findMany({ where: { idempotencyKey: { equals: idempotencyKey } }, take: 1, query: sessionSelection });
+    if (!winner[0]) throw error;
+    claim = {
+      session: winner[0],
+      shouldCreate: false,
+      terminalReplay: isTerminalRestartReplay(winner[0], restartSource, amountInCents, checkoutFingerprint, cartFingerprint, termsFingerprint)
+    };
+  }
+  if (claim.terminalReplay) return claim.session;
+  if (!claim.shouldCreate) {
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const ready = await sudoContext.query.PaymentSession.findOne({ where: { id: claim.session.id }, query: sessionSelection });
+      if (ready?.data?.paymentIntentId && ["ready", "attempt_pending", "unknown"].includes(ready.data?.status)) {
+        const providerPaymentId = ready.data?.paymentIntentId;
+        if (!providerPaymentId) throw new Error("Payment session is missing a durable payment identity");
+        await dependencies.ensureCheckoutAttempt(context, checkoutRequest(ready.id, providerPaymentId), cart, ready, providerPaymentId);
+        if (ready.data.status !== "ready") return writePaymentCreationResult(context, { sessionId: ready.id, phase: "ready", paymentIntentId: providerPaymentId });
+        return ready;
+      }
+      if (ready?.data?.status === "failed") throw new Error(ready.data.error || "Payment session initiation failed");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw publicError("Payment is still being prepared. Try again in a moment without changing your basket or time.", "PAYMENT_PENDING");
+  }
+  try {
+    const sessionData = amountInCents === 0 ? {
+      paymentIntentId: `grocery_no_charge:${claim.session.id}`,
+      clientSecret: void 0,
+      noCharge: {
+        version: 1,
+        amountCents: 0,
+        paymentSessionId: claim.session.id,
+        reason: couponSnapshot && subtotalCents > 0 ? "coupon_covers_total" : "zero_priced_goods",
+        couponId: couponSnapshot?.id || null,
+        authorizedAt: (/* @__PURE__ */ new Date()).toISOString()
+      }
+    } : await dependencies.createPayment({
+      provider,
+      cart: claim.session.data.creationBindingVersion === 1 ? { ...cart, checkoutPaymentSessionId: claim.session.id, checkoutFingerprint, cartFingerprint } : cart,
+      amount: amountInCents,
+      currency: "usd",
+      captureMethod: "manual",
+      idempotencyKey
+    });
+    const providerPaymentId = sessionData?.paymentIntentId;
+    const ready = await writePaymentCreationResult(context, {
+      sessionId: claim.session.id,
+      claimToken: claim.session.data.creationClaimToken,
+      phase: "provider_ready",
+      paymentIntentId: providerPaymentId,
+      clientSecret: sessionData?.clientSecret,
+      noCharge: sessionData?.noCharge
+    });
+    if (!providerPaymentId) throw new Error("Payment provider did not return a durable payment identity");
+    await dependencies.ensureCheckoutAttempt(context, checkoutRequest(ready.id, providerPaymentId), cart, ready, providerPaymentId);
+    return writePaymentCreationResult(context, { sessionId: ready.id, phase: "ready", paymentIntentId: providerPaymentId });
+  } catch (error) {
+    await writePaymentCreationResult(context, { sessionId: claim.session.id, claimToken: claim.session.data.creationClaimToken, phase: "unknown" });
+    throw error;
+  }
+}
+function initiatePaymentSession(root, args, context) {
+  return initiatePaymentSessionWithDependencies(root, args, context);
+}
+
+// features/keystone/mutations/restartGroceryCheckout.ts
+var unavailable = () => new Error("Checkout attempt not found");
+async function restartGroceryCheckout(_root, args, context) {
+  const paymentSessionId = args.paymentSessionId?.trim();
+  const guestSessionId = args.sessionId?.trim();
+  const userId = context.session?.itemId || null;
+  if (!paymentSessionId || !userId && !guestSessionId) throw unavailable();
+  const activeStore = userId ? await requireSessionStore(context) : null;
+  const source = await context.transaction(async (transactionContext) => {
+    const tx = transactionContext.prisma;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentSession" WHERE "id" = $1 FOR UPDATE', paymentSessionId);
+    const session = await tx.paymentSession.findUnique({
+      where: { id: paymentSessionId },
+      include: { cart: { include: { items: { include: { product: true } } } }, paymentProvider: true }
+    });
+    if (!session) throw unavailable();
+    const attemptKey = `checkout:${paymentSessionId}`;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "CheckoutAttempt" WHERE "idempotencyKey" = $1 FOR UPDATE', attemptKey);
+    const attempt = await tx.checkoutAttempt.findUnique({ where: { idempotencyKey: attemptKey } });
+    const cart = session.cart;
+    const request = attempt?.requestData;
+    const sessionData = session.data && typeof session.data === "object" ? session.data : {};
+    if (!attempt || !cart || !request || attempt.paymentSessionId !== session.id || attempt.cartId !== cart.id || attempt.storeId !== cart.storeId || session.paymentProvider?.code !== attempt.providerCode) throw unavailable();
+    if (userId) {
+      if (activeStore?.id !== cart.storeId || request.checkoutOwnerId !== userId) throw unavailable();
+    } else if (request.checkoutOwnerId || request.sessionId !== guestSessionId) {
+      throw unavailable();
+    }
+    if (attempt.status !== "compensated" || attempt.orderId || !attempt.compensationAt || sessionData.compensationStatus !== "refunded" || !sessionData.compensationProviderRefundId) {
+      throw new Error("A fresh checkout is available only after payment compensation is confirmed");
+    }
+    if (sessionData.status === "completed" || !sessionData.paymentIntentId || sessionData.paymentIntentId !== attempt.providerPaymentId || Number(session.amountCents) !== Number(attempt.amountCents) || Number(sessionData.amountInCents) !== Number(attempt.amountCents) || attempt.currencyCode !== "usd") throw unavailable();
+    const checkoutFingerprint = String(sessionData.checkoutFingerprint || "");
+    const cartFingerprint = String(sessionData.cartFingerprint || "");
+    if (!checkoutFingerprint || !cartFingerprint || checkoutRequestFingerprint(request) !== checkoutFingerprint) throw unavailable();
+    const linkedChildId = typeof sessionData.checkoutRestartPaymentSessionId === "string" ? sessionData.checkoutRestartPaymentSessionId : null;
+    if (linkedChildId) {
+      const child = await tx.paymentSession.findUnique({ where: { id: linkedChildId }, select: { id: true, cartId: true, data: true } });
+      const childData = child?.data && typeof child.data === "object" ? child.data : {};
+      if (!child || child.cartId !== cart.id || childData.checkoutRestartOfPaymentSessionId !== session.id) throw unavailable();
+      if (childData.status === "completed" || childData.compensationStatus) return { terminalChildPaymentSessionId: child.id };
+    }
+    if (userId ? cart.customerId !== userId : cart.customerId || cart.sessionId !== guestSessionId) throw unavailable();
+    if (checkoutCartFingerprint(cart) !== cartFingerprint) throw new Error("Your basket changed after payment compensation. Review checkout before restarting.");
+    const restartSource = {
+      paymentSessionId: session.id,
+      amountCents: Number(attempt.amountCents),
+      checkoutFingerprint,
+      cartFingerprint,
+      termsFingerprint: checkoutTermsFingerprint(sessionData)
+    };
+    return { attempt, request, providerCode: session.paymentProvider.code, restartSource };
+  });
+  if ("terminalChildPaymentSessionId" in source) {
+    return context.sudo().query.PaymentSession.findOne({
+      where: { id: source.terminalChildPaymentSessionId },
+      query: "id data amount amountCents reservedOrderDisplayId idempotencyKey isInitiated isSelected paymentProvider { id code }"
+    });
+  }
+  return initiatePaymentSessionWithDependencies(_root, {
+    cartId: source.attempt.cartId,
+    paymentProviderId: source.providerCode,
+    deliverySlotId: source.request.deliverySlotId || void 0,
+    pickupSlotId: source.request.pickupSlotId || void 0,
+    sessionId: userId ? void 0 : guestSessionId,
+    couponCode: source.request.couponCode || void 0,
+    recovery: {
+      email: source.request.email,
+      deliveryAddress: source.request.deliveryAddress,
+      substitutionPreference: source.request.substitutionPreference,
+      deliveryInstructions: source.request.deliveryInstructions || void 0,
+      tipCents: source.request.tipCents || void 0
+    }
+  }, context, void 0, source.restartSource);
+}
+var restartGroceryCheckout_default = restartGroceryCheckout;
+
 // features/keystone/mutations/updateGroceryDeliveryPolicy.ts
 init_access();
 init_storeScope();
-init_groceryOutbox();
-var import_node_crypto19 = require("node:crypto");
 async function updateGroceryDeliveryPolicy(_root, { policy }, context) {
   await requireFreshCapability(context, "canManageOnboarding");
   const store = await requireSessionStore(context);
@@ -11170,7 +13060,6 @@ async function updateGroceryDeliveryPolicy(_root, { policy }, context) {
     const old = await tc.prisma.storeSettings.findUnique({ where: { storeId: store.id } });
     if (!old) throw new Error("Store settings are unavailable");
     await tc.prisma.storeSettings.update({ where: { storeId: store.id }, data: { deliveryPolicy: normalized } });
-    await enqueueGroceryOutboxEvent(tc.prisma, { storeId: store.id, eventKey: `delivery.policy:${(0, import_node_crypto19.randomUUID)()}`, eventType: "delivery.policy.updated", aggregateType: "Store", aggregateId: store.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { before: old.deliveryPolicy, after: normalized, actorId: context.session.itemId } });
     return normalized;
   });
 }
@@ -11187,8 +13076,8 @@ async function manageInventoryCount(_root, args, context) {
   if (args.action !== "approve" && (args.quantity == null || quantityMilli(args.quantity) < 0)) throw new Error("Non-negative observed quantity required");
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
-    await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-count'), hashtext($1))", args.countId || args.idempotencyKey);
-    let count = args.countId ? await tx.inventoryCount.findUnique({ where: { id: args.countId } }) : await tx.inventoryCount.findUnique({ where: { idempotencyKey: args.idempotencyKey } });
+    requirePrismaSuccess(await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-count'), hashtext($1))", args.countId || args.idempotencyKey), "inventory count lock");
+    let count = args.countId ? requirePrismaSuccess(await tx.inventoryCount.findUnique({ where: { id: args.countId } }), "inventory count lookup") : requirePrismaSuccess(await tx.inventoryCount.findUnique({ where: { idempotencyKey: args.idempotencyKey } }), "inventory count lookup");
     if (count && count.storeId !== storeId) throw new Error("Count not found in active store");
     const events = count?.events || [];
     const replay = events.find((event2) => event2.idempotencyKey === args.idempotencyKey);
@@ -11199,17 +13088,17 @@ async function manageInventoryCount(_root, args, context) {
     if (args.action !== "observe" && !count) throw new Error("Count not found");
     if (args.action === "observe" && count) throw new Error("Count already exists");
     const lotId = count?.inventoryLotId || args.inventoryLotId;
-    const identity2 = await tx.inventoryLot.findUnique({ where: { id: lotId }, select: { productId: true, storeId: true } });
+    const identity2 = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: lotId }, select: { productId: true, storeId: true } }), "inventory lot ownership lookup");
     if (!identity2 || identity2.storeId !== storeId || !identity2.productId) throw new Error("Lot not found in active store");
-    await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', identity2.productId);
-    await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', lotId);
-    const lot = await tx.inventoryLot.findUnique({ where: { id: lotId } });
+    requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', identity2.productId), "product lock");
+    requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', lotId), "lot lock");
+    const lot = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: lotId } }), "locked lot lookup");
     const event = { action: args.action, idempotencyKey: args.idempotencyKey, reason: args.reason.trim(), quantity: args.quantity ?? null, actorId: context.session.itemId, at: (/* @__PURE__ */ new Date()).toISOString() };
     if (args.action === "observe") {
-      count = await tx.inventoryCount.create({ data: { storeId, inventoryLotId: lotId, productId: identity2.productId, idempotencyKey: args.idempotencyKey, status: "observed", expectedQuantity: lot.quantityRemaining, observedQuantity: args.quantity, reason: args.reason.trim(), observedBy: context.session.itemId, events: [event] } });
+      count = requirePrismaSuccess(await tx.inventoryCount.create({ data: { storeId, inventoryLotId: lotId, productId: identity2.productId, idempotencyKey: args.idempotencyKey, status: "observed", expectedQuantity: lot.quantityRemaining, observedQuantity: args.quantity, reason: args.reason.trim(), observedBy: context.session.itemId, events: [event] } }), "inventory count creation");
     } else if (args.action === "recount") {
       if (count.status !== "observed") throw new Error("Only an observed count can be recounted");
-      count = await tx.inventoryCount.update({ where: { id: count.id }, data: { status: "recounted", recountQuantity: args.quantity, recountedBy: context.session.itemId, events: [...events, event] } });
+      count = requirePrismaSuccess(await tx.inventoryCount.update({ where: { id: count.id }, data: { status: "recounted", recountQuantity: args.quantity, recountedBy: context.session.itemId, events: [...events, event] } }), "inventory recount update");
     } else {
       if (count.status === "approved") throw new Error("Count is already approved");
       const variance = quantityMilli(count.observedQuantity) !== quantityMilli(count.expectedQuantity);
@@ -11218,13 +13107,13 @@ async function manageInventoryCount(_root, args, context) {
       if (quantityMilli(lot.quantityRemaining) !== quantityMilli(count.expectedQuantity)) throw new Error("Stock changed since observation; start a fresh count");
       const target = Number(count.status === "recounted" ? count.recountQuantity : count.observedQuantity);
       if (quantityMilli(target) > await unconvertedLotCapacityMilli(tx, storeId, lot)) throw new Error("Count exceeds received quantity remaining after case conversions; reconcile receipt provenance first");
-      const product = await tx.product.findUnique({ where: { id: identity2.productId } });
+      const product = requirePrismaSuccess(await tx.product.findUnique({ where: { id: identity2.productId } }), "product lookup");
       const nextStock = (quantityMilli(product.stockQuantity) + quantityMilli(target) - quantityMilli(lot.quantityRemaining)) / 1e3;
       if (nextStock < 0) throw new Error("Count would make product stock negative");
-      await tx.inventoryLot.update({ where: { id: lotId }, data: { quantityRemaining: target } });
-      await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextStock, inStock: nextStock > 0 } });
+      requirePrismaSuccess(await tx.inventoryLot.update({ where: { id: lotId }, data: { quantityRemaining: target } }), "inventory lot balance update");
+      requirePrismaSuccess(await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextStock, inStock: nextStock > 0 } }), "product stock update");
       await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lotId, sourceType: "approved_count", sourceId: count.id, idempotencyKey: `count:${args.idempotencyKey}`, actorId: context.session.itemId, reason: args.reason, quantityBefore: lot.quantityRemaining, quantityAfter: target, productStockBefore: product.stockQuantity, productStockAfter: nextStock });
-      count = await tx.inventoryCount.update({ where: { id: count.id }, data: { status: "approved", approvedBy: context.session.itemId, approvedAt: /* @__PURE__ */ new Date(), events: [...events, event] } });
+      count = requirePrismaSuccess(await tx.inventoryCount.update({ where: { id: count.id }, data: { status: "approved", approvedBy: context.session.itemId, approvedAt: /* @__PURE__ */ new Date(), events: [...events, event] } }), "inventory count approval");
     }
     return { success: true, countId: count.id, status: count.status, reused: false };
   }, { isolationLevel: "Serializable" }));
@@ -11233,7 +13122,6 @@ async function manageInventoryCount(_root, args, context) {
 // features/keystone/mutations/manageInventorySafety.ts
 init_access();
 init_inventoryMovements();
-init_groceryOutbox();
 init_serializableTransaction();
 var effectiveDispositions = (events) => events.filter((event) => event.action === "disposition" && !events.some((later) => later.action === "disposition" && later.evidence?.replacesIdempotencyKey === event.idempotencyKey));
 async function manageInventorySafety(_root, args, context) {
@@ -11243,12 +13131,12 @@ async function manageInventorySafety(_root, args, context) {
   if (!args.reason?.trim() || args.idempotencyKey?.trim().length < 12) throw new Error("Safety reason and idempotency key required");
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
-    await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-safety'), hashtext($1))", args.recallId || args.idempotencyKey);
+    requirePrismaSuccess(await tx.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-safety'), hashtext($1))", args.recallId || args.idempotencyKey), "inventory safety scope lock");
     await lockInventoryConversionScope(tx, storeId);
-    const recall = args.recallId ? await tx.inventoryRecall.findUnique({ where: { id: args.recallId } }) : args.action === "recall" ? await tx.inventoryRecall.findUnique({ where: { idempotencyKey: args.idempotencyKey } }) : null;
+    const recall = args.recallId ? requirePrismaSuccess(await tx.inventoryRecall.findUnique({ where: { id: args.recallId } }), "recall lookup") : args.action === "recall" ? requirePrismaSuccess(await tx.inventoryRecall.findUnique({ where: { idempotencyKey: args.idempotencyKey } }), "recall idempotency lookup") : null;
     if (recall && recall.storeId !== storeId) throw new Error("Recall not found in active store");
     const events = recall?.events || [];
-    const scopeFingerprint = canonicalGroceryOutboxPayload({ action: args.action, productId: args.productId || null, inventoryLotIds: [...new Set(args.inventoryLotIds || [])].sort(), reason: args.reason.trim(), evidence: args.evidence || null });
+    const scopeFingerprint = canonicalPayload({ action: args.action, productId: args.productId || null, inventoryLotIds: [...new Set(args.inventoryLotIds || [])].sort(), reason: args.reason.trim(), evidence: args.evidence || null });
     const event = { action: args.action, idempotencyKey: args.idempotencyKey, reason: args.reason.trim(), evidence: args.evidence || null, scopeFingerprint, actorId: context.session.itemId, at: (/* @__PURE__ */ new Date()).toISOString() };
     const replay = events.find((value) => value.idempotencyKey === args.idempotencyKey);
     if (replay) {
@@ -11264,8 +13152,9 @@ async function manageInventorySafety(_root, args, context) {
       if (args.action === "disposition") {
         if (!(recall.scope?.lots || []).some((lot2) => lot2.id === args.evidence?.lotId)) throw new Error("Disposition lot is outside recall scope");
         if (!["released", "recovered", "disposed", "unaccounted"].includes(args.evidence?.disposition) || quantityMilli(args.evidence?.quantity) <= 0 || !args.evidence?.custody?.trim()) throw new Error("Disposition requires positive quantity and custody evidence");
+        let replaced = null;
         if (args.evidence.replacesIdempotencyKey) {
-          const replaced = effectiveDispositions(events).find((value) => value.idempotencyKey === args.evidence.replacesIdempotencyKey);
+          replaced = effectiveDispositions(events).find((value) => value.idempotencyKey === args.evidence.replacesIdempotencyKey);
           if (!replaced || replaced.evidence.lotId !== args.evidence.lotId || quantityMilli(replaced.evidence.quantity) !== quantityMilli(args.evidence.quantity)) throw new Error("Disposition correction must replace one current outcome for the same lot and quantity");
         }
         const lotScope = recall.scope.lots.find((lot2) => lot2.id === args.evidence.lotId);
@@ -11273,19 +13162,21 @@ async function manageInventorySafety(_root, args, context) {
         if (assigned > quantityMilli(lotScope.quantity)) throw new Error("Disposition evidence exceeds recalled quantity");
         const stockQuantity = quantityMilli(args.evidence?.stockQuantity ?? 0);
         if (stockQuantity < 0 || stockQuantity > quantityMilli(args.evidence.quantity)) throw new Error("Disposition stock quantity must be between zero and the evidenced quantity");
-        const identity2 = await tx.inventoryLot.findUnique({ where: { id: args.evidence.lotId } });
+        const identity2 = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: args.evidence.lotId } }), "disposition lot identity lookup");
         if (!identity2 || identity2.storeId !== storeId) throw new Error("Disposition lot not found in active store");
-        await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', identity2.productId);
-        await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', identity2.id);
-        const lot = await tx.inventoryLot.findUnique({ where: { id: identity2.id } });
-        const product = await tx.product.findUnique({ where: { id: identity2.productId } });
-        const delta = args.evidence.disposition === "recovered" ? stockQuantity : args.evidence.disposition === "unaccounted" ? 0 : -stockQuantity;
+        requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', identity2.productId), "disposition product lock");
+        requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', identity2.id), "disposition lot lock");
+        const lot = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: identity2.id } }), "disposition lot lookup");
+        const product = requirePrismaSuccess(await tx.product.findUnique({ where: { id: identity2.productId } }), "disposition product lookup");
+        const physicalDelta = (evidence) => evidence.disposition === "recovered" ? quantityMilli(evidence.stockQuantity ?? 0) : evidence.disposition === "unaccounted" ? 0 : -quantityMilli(evidence.stockQuantity ?? 0);
+        const deltaMilli = physicalDelta(args.evidence) - (replaced ? physicalDelta(replaced.evidence) : 0);
+        const delta = deltaMilli;
         const nextLot = (quantityMilli(lot.quantityRemaining) + delta) / 1e3;
         const nextProduct = (quantityMilli(product.stockQuantity) + delta) / 1e3;
         if (Math.min(nextLot, nextProduct) < 0 || quantityMilli(nextLot) > quantityMilli(lot.quantity)) throw new Error("Disposition exceeds recorded physical stock");
-        await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot } });
-        await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextProduct, inStock: nextProduct > 0 } });
-        await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lot.id, sourceType: `recall_${args.evidence.disposition}`, sourceId: recall.id, idempotencyKey: `recall-disposition:${args.idempotencyKey}`, actorId: context.session.itemId, reason: args.reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextProduct, metadata: { ...args.evidence, recallId: recall.id } });
+        requirePrismaSuccess(await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot } }), "disposition lot balance update");
+        requirePrismaSuccess(await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextProduct, inStock: nextProduct > 0 } }), "disposition product balance update");
+        if (delta !== 0 || !replaced) await appendInventoryMovement(tx, { storeId, productId: product.id, inventoryLotId: lot.id, sourceType: replaced ? "recall_correction" : `recall_${args.evidence.disposition}`, sourceId: recall.id, idempotencyKey: `recall-disposition:${args.idempotencyKey}`, actorId: context.session.itemId, reason: args.reason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextProduct, metadata: { ...args.evidence, recallId: recall.id, ...replaced ? { replacesIdempotencyKey: replaced.idempotencyKey, replacedDisposition: replaced.evidence.disposition } : {} } });
       }
       if (args.action === "close") {
         for (const lot of recall.scope.lots) {
@@ -11297,16 +13188,16 @@ async function manageInventorySafety(_root, args, context) {
           if (!events.some((value) => value.action === "notice" && value.evidence.orderId === order.orderId && value.evidence.outcome === "delivered")) throw new Error("All affected orders require a delivered notice outcome before closure");
         }
       }
-      const updated = await tx.inventoryRecall.update({ where: { id: recall.id }, data: { events: [...events, event], ...args.action === "close" ? { status: "closed", closedBy: context.session.itemId, closedAt: /* @__PURE__ */ new Date(), closure: { reason: args.reason.trim(), evidence: args.evidence || null } } : {} } });
+      const updated = requirePrismaSuccess(await tx.inventoryRecall.update({ where: { id: recall.id }, data: { events: [...events, event], ...args.action === "close" ? { status: "closed", closedBy: context.session.itemId, closedAt: /* @__PURE__ */ new Date(), closure: { reason: args.reason.trim(), evidence: args.evidence || null } } : {} } }), "recall evidence update");
       return { success: true, recallId: recall.id, status: updated.status, affectedOrders: recall.affectedOrders, reused: false };
     }
     const ids = [...new Set(args.inventoryLotIds || [])].sort();
-    const priorOperation = await tx.inventoryMovement.findFirst({ where: { storeId, idempotencyKey: { startsWith: `safety:${args.idempotencyKey}:` } } });
+    const priorOperation = requirePrismaSuccess(await tx.inventoryMovement.findFirst({ where: { storeId, idempotencyKey: { startsWith: `safety:${args.idempotencyKey}:` } } }), "safety replay lookup");
     if (priorOperation && priorOperation.metadata?.scopeFingerprint !== scopeFingerprint) throw new Error("Safety replay conflicts with original scope");
     if (!ids.length && !args.productId) throw new Error("Select a product or explicit lot scope");
     const lots = [];
     for (let skip = 0; ; skip += 100) {
-      const page = await tx.inventoryLot.findMany({ where: { storeId, ...ids.length ? { id: { in: ids } } : { productId: args.productId } }, orderBy: { id: "asc" }, take: 100, skip });
+      const page = requirePrismaSuccess(await tx.inventoryLot.findMany({ where: { storeId, ...ids.length ? { id: { in: ids } } : { productId: args.productId } }, orderBy: { id: "asc" }, take: 100, skip }), "safety lot scope lookup");
       lots.push(...page);
       if (page.length < 100) break;
     }
@@ -11315,17 +13206,17 @@ async function manageInventorySafety(_root, args, context) {
     const descendants = conversionScope.lotIds.filter((id) => !lots.some((lot) => lot.id === id));
     for (let offset = 0; offset < descendants.length; offset += 100) {
       const requested = descendants.slice(offset, offset + 100);
-      const children = await tx.inventoryLot.findMany({ where: { storeId, id: { in: requested } } });
+      const children = requirePrismaSuccess(await tx.inventoryLot.findMany({ where: { storeId, id: { in: requested } } }), "converted descendant lot lookup");
       if (children.length !== requested.length) throw new Error("Converted descendant lot is missing or outside the active Store");
       lots.push(...children);
     }
     lots.sort((left, right) => left.id.localeCompare(right.id));
-    for (const productId of [...new Set(lots.map((lot) => lot.productId))].sort()) await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', productId);
-    for (const lot of lots) await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', lot.id);
+    for (const productId of [...new Set(lots.map((lot) => lot.productId))].sort()) requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', productId), "safety product lock");
+    for (const lot of lots) requirePrismaSuccess(await tx.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "id" = $1 FOR UPDATE', lot.id), "safety lot lock");
     const affectedOrders = [];
     let cursor;
     for (; ; ) {
-      const page = await tx.order.findMany({ where: { storeId }, take: 100, orderBy: { id: "asc" }, ...cursor ? { cursor: { id: cursor }, skip: 1 } : {}, include: { user: { select: { email: true } }, lineItems: { include: { inventoryAllocations: true, fulfillment: true } } } });
+      const page = requirePrismaSuccess(await tx.order.findMany({ where: { storeId }, take: 100, orderBy: { id: "asc" }, ...cursor ? { cursor: { id: cursor }, skip: 1 } : {}, include: { user: { select: { email: true } }, lineItems: { include: { inventoryAllocations: true, fulfillment: true } } } }), "affected order lookup");
       affectedOrders.push(...traceAffectedOrders(page, lots.map((lot) => lot.id)));
       if (page.length < 100) break;
       cursor = page[page.length - 1].id;
@@ -11338,14 +13229,13 @@ async function manageInventorySafety(_root, args, context) {
         if (attributable < 0 || quantityMilli(lot.quantityRemaining) > attributable) throw new Error("Conversion provenance conflicts with original received lot quantity or remaining stock");
         return { id: lot.id, supplierLotNumber: lot.supplierLotNumber || lot.lotNumber, supplierId: lot.supplierId || null, productId: lot.productId, quantity: attributable / 1e3, originalQuantity: Number(lot.quantity), convertedOutQuantity: convertedOut / 1e3, quantityRemaining: Number(lot.quantityRemaining) };
       });
-      const created = await tx.inventoryRecall.create({ data: { storeId, idempotencyKey: args.idempotencyKey, reason: args.reason.trim(), status: "open", openedBy: context.session.itemId, scope: { productId: args.productId || null, conversionIds: conversionScope.conversions.map((record2) => record2.id), lots: scopeLots }, affectedOrders, events: [event] } });
+      const created = requirePrismaSuccess(await tx.inventoryRecall.create({ data: { storeId, idempotencyKey: args.idempotencyKey, reason: args.reason.trim(), status: "open", openedBy: context.session.itemId, scope: { productId: args.productId || null, conversionIds: conversionScope.conversions.map((record2) => record2.id), lots: scopeLots }, affectedOrders, events: [event] } }), "recall record creation");
       recallId = created.id;
-      for (const order of affectedOrders) await enqueueGroceryOutboxEvent(tx, { storeId, eventKey: `recall:${created.id}:notice:${order.orderId}`, eventType: "inventory.recall.notice", aggregateType: "Order", aggregateId: order.orderId, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { orderId: order.orderId, recallId: created.id, reason: args.reason.trim() } });
     }
     for (const initial of lots) {
-      const lot = await tx.inventoryLot.findUnique({ where: { id: initial.id } });
+      const lot = requirePrismaSuccess(await tx.inventoryLot.findUnique({ where: { id: initial.id } }), "safety lot lookup");
       const key2 = `safety:${args.idempotencyKey}:${lot.id}`;
-      const previous = await tx.inventoryMovement.findUnique({ where: { idempotencyKey: key2 } });
+      const previous = requirePrismaSuccess(await tx.inventoryMovement.findUnique({ where: { idempotencyKey: key2 } }), "safety movement replay lookup");
       if (previous) {
         if (previous.storeId !== storeId || previous.sourceType !== `safety_${args.action}` || previous.reason !== args.reason.trim()) throw new Error("Safety replay conflicts with original evidence");
         continue;
@@ -11356,8 +13246,8 @@ async function manageInventorySafety(_root, args, context) {
         if (new Date(lot.expirationDate) <= /* @__PURE__ */ new Date()) throw new Error("Expired stock cannot be released");
       }
       const status = args.action === "hold" ? "held" : args.action === "quarantine" ? "quarantined" : args.action === "recall" ? "recalled" : "available";
-      const product = await tx.product.findUnique({ where: { id: lot.productId } });
-      await tx.inventoryLot.update({ where: { id: lot.id }, data: { safetyStatus: status, safetyReason: args.reason.trim(), ...args.action === "release" ? { conditionStatus: "accepted" } : {} } });
+      const product = requirePrismaSuccess(await tx.product.findUnique({ where: { id: lot.productId } }), "safety product lookup");
+      requirePrismaSuccess(await tx.inventoryLot.update({ where: { id: lot.id }, data: { safetyStatus: status, safetyReason: args.reason.trim(), ...args.action === "release" ? { conditionStatus: "accepted" } : {} } }), "inventory safety status update");
       await appendInventoryMovement(tx, { storeId, productId: lot.productId, inventoryLotId: lot.id, sourceType: `safety_${args.action}`, sourceId: recallId || lot.id, idempotencyKey: key2, actorId: context.session.itemId, reason: args.reason, quantityBefore: lot.quantityRemaining, quantityAfter: lot.quantityRemaining, productStockBefore: product.stockQuantity, productStockAfter: product.stockQuantity, metadata: { previousStatus: lot.safetyStatus, safetyStatus: status, scopeFingerprint, evidence: args.evidence || null, affectedOrders } });
     }
     return { success: true, recallId: recallId || null, status: args.action === "recall" ? "open" : args.action, affectedOrders, reused: false };
@@ -11366,17 +13256,18 @@ async function manageInventorySafety(_root, args, context) {
 
 // features/keystone/mutations/finalizeGroceryOrderActuals.ts
 var import_node_crypto21 = require("node:crypto");
+init_payment();
 
 // features/keystone/lib/finalSaleIdentity.ts
 var import_node_crypto20 = require("node:crypto");
-function canonical(value) {
+function canonical2(value) {
   if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().filter((key2) => value[key2] !== void 0).map((key2) => [key2, canonical(value[key2])]));
+  if (Array.isArray(value)) return value.map(canonical2);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().filter((key2) => value[key2] !== void 0).map((key2) => [key2, canonical2(value[key2])]));
   return value;
 }
 function finalSaleSnapshotHash(snapshot) {
-  return (0, import_node_crypto20.createHash)("sha256").update(JSON.stringify(canonical(snapshot))).digest("hex");
+  return (0, import_node_crypto20.createHash)("sha256").update(JSON.stringify(canonical2(snapshot))).digest("hex");
 }
 
 // features/keystone/mutations/finalizeGroceryOrderActuals.ts
@@ -11384,14 +13275,15 @@ init_access();
 init_storeScope();
 
 // features/keystone/lib/fulfillmentActuals.ts
+init_publicError();
 init_inventoryMovements();
 var ACTUAL_FIELDS = `id lineItemIdSnapshot resolution product { id } productTitle productSku
   quantityMilli grossMilli tareMilli unitOfMeasure unitPriceCents subtotalCents taxRateBasisPoints allocations evidence`;
 function measureMilli(value, label = "Quantity") {
-  if (!/^\d{1,7}(?:\.\d{1,3})?$/.test(value)) throw new Error(`${label} must be nonnegative with at most three decimal places`);
+  if (!/^\d{1,7}(?:\.\d{1,3})?$/.test(value)) throw publicError(`${label} must be nonnegative with at most three decimal places`);
   const [whole, fraction = ""] = value.split(".");
   const result = Number(whole) * 1e3 + Number(fraction.padEnd(3, "0"));
-  if (!Number.isSafeInteger(result) || result > 2147483647) throw new Error(`${label} is too large`);
+  if (!Number.isSafeInteger(result) || result > 2147483647) throw publicError(`${label} is too large`);
   return result;
 }
 var UNITS = {
@@ -11408,17 +13300,83 @@ var UNITS = {
 };
 function roundRatio(numerator, denominator) {
   const value = Number((numerator + denominator / BigInt(2)) / denominator);
-  if (!Number.isSafeInteger(value) || value > 2147483647) throw new Error("Measured amount exceeds supported precision");
+  if (!Number.isSafeInteger(value) || value > 2147483647) throw publicError("Measured amount exceeds supported precision");
   return value;
 }
 function convertMeasureMilli(value, from, to) {
   const source = UNITS[from], target = UNITS[to];
-  if (!source || !target || source[0] !== target[0]) throw new Error("Measurement units are incompatible");
+  if (!source || !target || source[0] !== target[0]) throw publicError("Measurement units are incompatible");
   return roundRatio(BigInt(value) * source[1] * target[2], source[2] * target[1]);
+}
+function convertMeasureMilliFloor(value, from, to) {
+  const source = UNITS[from], target = UNITS[to];
+  if (!source || !target || source[0] !== target[0]) throw publicError("Measurement units are incompatible");
+  const converted = Number(BigInt(value) * source[1] * target[2] / (source[2] * target[1]));
+  if (!Number.isSafeInteger(converted) || converted > 2147483647) throw publicError("Measured amount exceeds supported precision");
+  return converted;
+}
+var UNIT_ALIASES = {
+  each: "each",
+  ea: "each",
+  unit: "each",
+  units: "each",
+  item: "each",
+  items: "each",
+  ct: "each",
+  count: "each",
+  g: "g",
+  gram: "g",
+  grams: "g",
+  kg: "kg",
+  kilogram: "kg",
+  kilograms: "kg",
+  lb: "lb",
+  lbs: "lb",
+  pound: "lb",
+  pounds: "lb",
+  oz: "oz",
+  ounce: "oz",
+  ounces: "oz",
+  ml: "mL",
+  milliliter: "mL",
+  milliliters: "mL",
+  l: "L",
+  liter: "L",
+  liters: "L",
+  litre: "L",
+  litres: "L",
+  gallon: "gallon",
+  gallons: "gallon",
+  gal: "gallon",
+  quart: "quart",
+  quarts: "quart",
+  qt: "quart",
+  pint: "pint",
+  pints: "pint",
+  pt: "pint"
+};
+function normalizeMeasureUnit(label) {
+  const key2 = String(label || "").trim().replace(/\.$/, "");
+  if (!key2) return null;
+  return UNIT_ALIASES[key2.toLowerCase()] || (UNITS[key2] ? key2 : null);
+}
+function exactWholeConversion(quantity, from, to) {
+  if (!Number.isSafeInteger(quantity) || quantity < 0) return null;
+  if (from === to) return quantity;
+  const source = UNITS[from], target = UNITS[to];
+  if (!source || !target || source[0] !== target[0]) return null;
+  const numerator = BigInt(quantity) * source[1] * target[2];
+  const denominator = source[2] * target[1];
+  if (numerator % denominator !== BigInt(0)) return null;
+  const result = Number(numerator / denominator);
+  return Number.isSafeInteger(result) ? result : null;
+}
+function measureDimension(unit) {
+  return UNITS[unit]?.[0] || null;
 }
 function measuredSubtotalCents(unitPriceCents, quantityMilli2) {
   if (!Number.isSafeInteger(unitPriceCents) || unitPriceCents < 0 || !Number.isSafeInteger(quantityMilli2) || quantityMilli2 < 0) {
-    throw new Error("Price and quantity must be nonnegative integers");
+    throw publicError("Price and quantity must be nonnegative integers");
   }
   return roundRatio(BigInt(unitPriceCents) * BigInt(quantityMilli2), BigInt(1e3));
 }
@@ -11437,12 +13395,12 @@ function normalizeActualInput(input) {
     consentEvidence: input.consentEvidence?.trim() || "",
     idempotencyKey: input.idempotencyKey.trim()
   };
-  if (!result.orderId || !result.lineItemId || !["picked", "short", "substituted"].includes(result.resolution)) throw new Error("Order, line and resolution are required");
-  if (result.idempotencyKey.length < 12 || result.idempotencyKey.length > 200) throw new Error("A valid resolution idempotency key is required");
-  if (result.reason.length > 1e3 || result.consentEvidence.length > 1e3 || result.consentCustomer.length > 200) throw new Error("Resolution evidence is too long");
+  if (!result.orderId || !result.lineItemId || !["picked", "short", "substituted"].includes(result.resolution)) throw publicError("Order, line and resolution are required");
+  if (result.idempotencyKey.length < 12 || result.idempotencyKey.length > 200) throw publicError("A valid resolution idempotency key is required");
+  if (result.reason.length > 1e3 || result.consentEvidence.length > 1e3 || result.consentCustomer.length > 200) throw publicError("Resolution evidence is too long");
   measureMilli(result.quantity);
   measureMilli(result.tare, "Tare");
-  if (result.resolution !== "picked" && !result.reason) throw new Error("A reason is required for shortages and substitutions");
+  if (result.resolution !== "picked" && !result.reason) throw publicError("A reason is required for shortages and substitutions");
   return result;
 }
 function calculateLineActual(line, order, product, input) {
@@ -11452,26 +13410,51 @@ function calculateLineActual(line, order, product, input) {
   const unit = replacement ? product.unitOfMeasure : commercial.unitOfMeasure || commercial.unitOfMeasurement || product.unitOfMeasure;
   const grossMilli = convertMeasureMilli(measureMilli(input.quantity), input.unitOfMeasure, unit);
   const tareMilli = convertMeasureMilli(measureMilli(input.tare, "Tare"), input.unitOfMeasure, unit);
-  if (tareMilli > grossMilli) throw new Error("Tare cannot exceed gross measurement");
+  if (tareMilli > grossMilli) throw publicError("Tare cannot exceed gross measurement");
   const quantityMilli2 = grossMilli - tareMilli;
-  if (pricingMethod === "unit" && (quantityMilli2 % 1e3 !== 0 || tareMilli !== 0 || input.unitOfMeasure !== unit)) throw new Error("Unit products require whole quantities without tare");
-  if (input.resolution === "picked" && pricingMethod === "unit" && quantityMilli2 !== line.quantity * 1e3) throw new Error("Use shortage resolution when fewer units are picked");
-  if (input.resolution === "short" && quantityMilli2 >= line.quantity * 1e3) throw new Error("Short quantity must be less than the requested quantity");
-  if (input.resolution !== "short" && quantityMilli2 === 0) throw new Error("Zero quantity requires shortage resolution");
-  if (replacement && product.id === line.product?.id) throw new Error("Select a different replacement product");
-  if (!replacement && input.productId && input.productId !== line.product?.id) throw new Error("Only substitutions may change the product");
+  if (pricingMethod === "unit" && (quantityMilli2 % 1e3 !== 0 || tareMilli !== 0 || input.unitOfMeasure !== unit)) throw publicError("Unit products require whole quantities without tare");
+  if (input.resolution === "picked" && pricingMethod === "unit" && quantityMilli2 !== line.quantity * 1e3) throw publicError("Use shortage resolution when fewer units are picked");
+  if (input.resolution === "short" && quantityMilli2 >= line.quantity * 1e3) throw publicError("Short quantity must be less than the requested quantity");
+  if (input.resolution !== "short" && quantityMilli2 === 0) throw publicError("Zero quantity requires shortage resolution");
+  if (replacement && product.id === line.product?.id) throw publicError("Select a different replacement product");
+  if (!replacement && input.productId && input.productId !== line.product?.id) throw publicError("Only substitutions may change the product");
   const preference = line.metadata?.substitutionPreference;
-  if (replacement && (["none", "remove", "no_substitutions", "refund"].includes(preference) || order.substitutionPreference === "refund")) throw new Error("Customer preferences prohibit substitutions");
+  if (replacement && (["none", "remove", "no_substitutions", "refund"].includes(preference) || order.substitutionPreference === "refund")) throw publicError("Customer preferences prohibit substitutions");
   const unitPriceCents = replacement ? product.priceCents : line.unitPriceCents;
   const subtotalCents = measuredSubtotalCents(unitPriceCents, quantityMilli2);
-  const requiresConsent = replacement && (preference === "contact" || order.substitutionPreference === "call_me") || quantityMilli2 > line.quantity * 1e3 || subtotalCents > measuredSubtotalCents(line.unitPriceCents, line.quantity * 1e3);
-  if (requiresConsent || input.consentChannel || input.consentEvidence || input.consentCustomer) {
+  const requestedUnit = commercial.unitOfMeasure || commercial.unitOfMeasurement || line.product?.unitOfMeasure;
+  let requestedQuantityCeilingMilli = null;
+  if (replacement && requestedUnit && Number.isSafeInteger(line.quantity) && line.quantity >= 0) {
+    try {
+      requestedQuantityCeilingMilli = convertMeasureMilliFloor(line.quantity * 1e3, requestedUnit, unit);
+    } catch {
+    }
+  }
+  const exceedsRequestedQuantity = replacement ? requestedQuantityCeilingMilli === null || quantityMilli2 > requestedQuantityCeilingMilli : quantityMilli2 > line.quantity * 1e3;
+  const requiresConsent = replacement && (preference === "contact" || order.substitutionPreference === "call_me") || exceedsRequestedQuantity || subtotalCents > measuredSubtotalCents(line.unitPriceCents, line.quantity * 1e3);
+  const proposal = order.metadata?.substitutionProposals?.[line.id];
+  if (replacement && proposal?.status === "rejected" && proposal.productId === product.id) throw publicError("The customer declined this replacement. Choose another product or resolve the line as short.");
+  if (input.consentChannel === "online") {
+    if (!replacement || proposal?.status !== "approved" || proposal.productId !== product.id || proposal.unitOfMeasure !== unit || quantityMilli2 > Number(proposal.quantityMilli) || input.consentCustomer.toLowerCase() !== order.email.toLowerCase()) {
+      throw publicError("Online approval covers only the replacement product and quantity the customer approved");
+    }
+    if (Number(product.priceCents) > Number(proposal.unitPriceCents)) {
+      throw publicError("The replacement\u2019s price rose after the customer approved it. Send a new proposal for their approval.");
+    }
+    const currentTaxRate = product.taxRateBasisPoints ?? order.storeTaxRateBasisPoints;
+    if (proposal.taxRateBasisPoints !== void 0 && Number(proposal.taxRateBasisPoints) !== Number(currentTaxRate)) {
+      throw publicError("The replacement\u2019s tax treatment changed after approval. Send a new proposal for their approval.");
+    }
+    if (proposal.materialInformation?.fingerprint && materialInformationSnapshot(product, null).fingerprint !== proposal.materialInformation.fingerprint) {
+      throw publicError("The replacement\u2019s product information changed after approval. Send a new proposal for their approval.");
+    }
+  } else if (requiresConsent || input.consentChannel || input.consentEvidence || input.consentCustomer) {
     if (!["phone", "in_person"].includes(input.consentChannel) || input.consentCustomer.toLowerCase() !== order.email.toLowerCase() || input.consentEvidence.length < 8) {
-      throw new Error("Record phone or in-person consent, the order customer email, and approval details");
+      throw publicError("Record phone or in-person consent, the order customer email, and approval details");
     }
   }
   const taxRateBasisPoints = replacement ? product.taxRateBasisPoints ?? order.storeTaxRateBasisPoints : commercial.taxRateBasisPoints ?? order.storeTaxRateBasisPoints;
-  if (!Number.isInteger(taxRateBasisPoints) || taxRateBasisPoints < 0 || taxRateBasisPoints > 1e4) throw new Error("A valid snapshotted tax treatment is required");
+  if (!Number.isInteger(taxRateBasisPoints) || taxRateBasisPoints < 0 || taxRateBasisPoints > 1e4) throw publicError("A valid snapshotted tax treatment is required");
   return { grossMilli, tareMilli, quantityMilli: quantityMilli2, unitOfMeasure: unit, unitPriceCents, subtotalCents, taxRateBasisPoints };
 }
 async function resolveActualInTransaction(tx, actor, rawInput, now = /* @__PURE__ */ new Date()) {
@@ -11479,39 +13462,39 @@ async function resolveActualInTransaction(tx, actor, rawInput, now = /* @__PURE_
   await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', input.orderId);
   const sudo = tx.sudo();
   const order = await sudo.query.Order.findOne({ where: { id: input.orderId }, query: "id status email metadata substitutionPreference store { id }" });
-  if (!order || order.store?.id !== actor.storeId) throw new Error("Order not found in active store");
-  const line = await sudo.query.OrderLineItem.findOne({ where: { id: input.lineItemId }, query: `id title sku quantity unitPriceCents metadata order { id } product { id } fulfillment { ${ACTUAL_FIELDS} } inventoryAllocations { quantity inventoryLot { id product { id } store { id } } }` });
-  if (!line || line.order?.id !== order.id) throw new Error("Line does not belong to this order");
+  if (!order || order.store?.id !== actor.storeId) throw publicError("Order not found in active store");
+  const line = await sudo.query.OrderLineItem.findOne({ where: { id: input.lineItemId }, query: `id title sku quantity unitPriceCents metadata order { id } product { id pricingMethod unitOfMeasure } fulfillment { ${ACTUAL_FIELDS} } inventoryAllocations { quantity inventoryLot { id product { id } store { id } } }` });
+  if (!line || line.order?.id !== order.id) throw publicError("Line does not belong to this order");
   const fingerprint = JSON.stringify(input);
   if (line.fulfillment) {
-    if (line.fulfillment.evidence?.inputFingerprint !== fingerprint) throw new Error("This line was already resolved with different input");
+    if (line.fulfillment.evidence?.inputFingerprint !== fingerprint) throw publicError("This line was already resolved with different input");
     return { ...line.fulfillment, reused: true };
   }
-  if (order.status !== "picking" || order.metadata?.finalSale) throw new Error("Actual goods can only be resolved while picking before finalization");
+  if (order.status !== "picking" || order.metadata?.finalSale) throw publicError("Actual goods can only be resolved while picking before finalization");
   const payment = await sudo.query.Payment.findMany({ where: { order: { id: { equals: order.id } }, status: { in: ["authorized", "succeeded", "partially_refunded"] } }, take: 1, query: "id" });
-  if (!payment.length) throw new Error("Picking requires an authorized or succeeded payment");
+  if (!payment.length) throw publicError("Picking requires an authorized or succeeded payment");
   const productId = input.resolution === "substituted" ? input.productId : line.product?.id;
-  if (!productId || !line.product?.id) throw new Error("The original and actual products must be identifiable");
+  if (!productId || !line.product?.id) throw publicError("The original and actual products must be identifiable");
   const productIds = [.../* @__PURE__ */ new Set([line.product.id, productId])].sort();
   for (const id of productIds) await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "Product" WHERE "id" = $1 FOR UPDATE', id);
   for (const id of productIds) await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "InventoryLot" WHERE "product" = $1 ORDER BY "expirationDate", "id" FOR UPDATE', id);
   const products = [];
-  for (const id of productIds) products.push(await sudo.query.Product.findOne({ where: { id }, query: `id title sku status department priceCents taxRateBasisPoints pricingMethod unitOfMeasure store { id } inventoryLots(take: 1001) { id quantityRemaining expirationDate safetyStatus conditionStatus store { id } }` }));
-  if (products.some((product2) => !product2 || product2.store?.id !== actor.storeId || product2.inventoryLots.length > 1e3)) throw new Error("Product inventory is unavailable in this store");
+  for (const id of productIds) products.push(await sudo.query.Product.findOne({ where: { id }, query: `id title sku status department departmentRef { handle } ${MATERIAL_INFORMATION_FIELDS} priceCents taxRateBasisPoints pricingMethod unitOfMeasure store { id } inventoryLots(take: 1001) { id quantityRemaining expirationDate safetyStatus conditionStatus store { id } }` }));
+  if (products.some((product2) => !product2 || product2.store?.id !== actor.storeId || product2.inventoryLots.length > 1e3)) throw publicError("Product inventory is unavailable in this store");
   const product = products.find((product2) => product2.id === productId);
-  if (input.resolution === "substituted" && product.status !== "published") throw new Error("Replacement product is not available");
+  if (input.resolution === "substituted" && product.status !== "published") throw publicError("Replacement product is not available");
   const settings = await sudo.query.StoreSettings.findMany({ where: { store: { id: { equals: actor.storeId } } }, take: 1, query: "taxRateBps" });
   order.storeTaxRateBasisPoints = Number(settings[0]?.taxRateBps || 0);
   const actual = calculateLineActual(line, order, product, input);
   const originalAllocations = line.inventoryAllocations || [];
-  if (!originalAllocations.length) throw new Error("Original inventory allocation evidence is required");
+  if (!originalAllocations.length) throw publicError("Original inventory allocation evidence is required");
   const lotBefore = /* @__PURE__ */ new Map();
   const productBefore = new Map(products.map((product2) => [product2.id, product2.inventoryLots.reduce((sum, lot) => sum + Number(lot.quantityRemaining), 0)]));
   for (const product2 of products) for (const lot of product2.inventoryLots) lotBefore.set(lot.id, Number(lot.quantityRemaining));
   for (const allocation of originalAllocations) {
     const original = products.find((product2) => product2.id === allocation.inventoryLot?.product?.id);
     const lot = original?.inventoryLots.find((lot2) => lot2.id === allocation.inventoryLot?.id);
-    if (!lot || allocation.inventoryLot?.store?.id !== actor.storeId) throw new Error("Original allocation does not belong to this store and product");
+    if (!lot || allocation.inventoryLot?.store?.id !== actor.storeId) throw publicError("Original allocation does not belong to this store and product");
     lot.quantityRemaining = (Math.round(Number(lot.quantityRemaining) * 1e3) + Math.round(Number(allocation.quantity) * 1e3)) / 1e3;
   }
   const promisedAt = new Date(Math.max(now.getTime(), new Date(order.metadata?.fulfillmentPromise?.endsAt || order.metadata?.promiseEndsAt || now).getTime() || 0));
@@ -11535,12 +13518,21 @@ async function resolveActualInTransaction(tx, actor, rawInput, now = /* @__PURE_
       inputFingerprint: fingerprint,
       reason: input.reason,
       department: product.department,
+      departmentHandle: product.departmentRef?.handle ?? null,
       pricingMethod: product.pricingMethod,
+      materialInformation: materialInformationSnapshot(product, (await latestInformationVersionIds(tx.prisma, [product.id])).get(product.id) || null),
       measuredAt: now.toISOString(),
       enteredUnit: input.unitOfMeasure,
       enteredGross: input.quantity,
       enteredTare: input.tare,
-      consent: input.consentChannel ? { channel: input.consentChannel, customer: order.email, actorId: actor.userId, recordedAt: now.toISOString(), details: input.consentEvidence } : null,
+      consent: input.consentChannel ? {
+        channel: input.consentChannel,
+        customer: order.email,
+        actorId: actor.userId,
+        recordedAt: now.toISOString(),
+        details: input.consentEvidence,
+        ...input.consentChannel === "online" ? { proposal: (({ previous, ...approved }) => approved)(order.metadata.substitutionProposals[line.id]) } : {}
+      } : null,
       releasedAllocations: originalAllocations.map((entry) => ({ lotId: entry.inventoryLot.id, quantity: Number(entry.quantity) }))
     }
   } });
@@ -11578,17 +13570,17 @@ async function getFulfillmentActualLines(tx, orderId) {
     take: 1001,
     query: `id fulfillment { ${ACTUAL_FIELDS} }`
   });
-  if (!lines.length || lines.length > 1e3 || lines.some((line) => !line.fulfillment)) throw new Error("Resolve every order line before finalizing or packing");
+  if (!lines.length || lines.length > 1e3 || lines.some((line) => !line.fulfillment)) throw publicError("Resolve every order line before finalizing or packing");
   return lines.map((line) => ({ ...line.fulfillment, lineItemId: line.id, productId: line.fulfillment.product?.id }));
 }
 
 // features/keystone/mutations/finalizeGroceryOrderActuals.ts
 init_paymentProviderAdapter();
-init_groceryOutbox();
 init_serializableTransaction();
 init_managePaymentRefund();
+init_stripeEnabled();
 function cents2(value) {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Settlement requires nonnegative integer minor units");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Settlement amounts must be zero or more, in whole cents");
   return value;
 }
 function decimalHundredths(value) {
@@ -11603,7 +13595,7 @@ function priceActualSale(order, actuals) {
     cents2(line.quantityMilli);
     cents2(line.unitPriceCents);
   }
-  const eligible = actuals.filter((line) => isCouponLineEligible({ id: line.productId, department: line.evidence?.department }, coupon));
+  const eligible = actuals.filter((line) => isCouponLineEligible({ id: line.productId, department: line.evidence?.department, departmentHandle: line.evidence?.departmentHandle }, coupon));
   const eligibleCents = eligible.reduce((sum, line) => cents2(sum + line.subtotalCents), 0);
   let discountCents = 0;
   if (coupon && subtotal >= cents2(coupon.minPurchaseCents ?? decimalHundredths(coupon.minPurchase ?? 0))) {
@@ -11616,23 +13608,26 @@ function priceActualSale(order, actuals) {
     else throw new Error("Unsupported coupon type");
     discountCents = Math.min(eligibleCents, discountCents);
   }
-  const feeCents = actuals.some((line) => line.quantityMilli > 0) ? cents2(order.deliveryFeeCents || 0) : 0;
-  return priceCommercialLines(actuals.map((line) => ({
+  const anyPicked = actuals.some((line) => line.quantityMilli > 0);
+  const feeCents = anyPicked ? cents2(order.deliveryFeeCents || 0) : 0;
+  const priced = priceCommercialLines(actuals.map((line) => ({
     id: line.lineItemId,
     subtotalCents: line.subtotalCents,
     taxRateBasisPoints: line.taxRateBasisPoints,
-    discountEligible: isCouponLineEligible({ id: line.productId, department: line.evidence?.department }, coupon)
+    discountEligible: isCouponLineEligible({ id: line.productId, department: line.evidence?.department, departmentHandle: line.evidence?.departmentHandle }, coupon)
   })), discountCents, feeCents, Number(order.metadata?.deliveryPolicySnapshot?.feeTaxRateBasisPoints || 0));
+  const tipCents = anyPicked ? cents2(order.metadata?.tipCents || 0) : 0;
+  return tipCents ? { ...priced, tipCents, totalCents: cents2(priced.totalCents + tipCents) } : priced;
 }
-function canonical2(value) {
+function canonical3(value) {
   if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map(canonical2);
-  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().filter((key2) => value[key2] !== void 0).map((key2) => [key2, canonical2(value[key2])]));
+  if (Array.isArray(value)) return value.map(canonical3);
+  if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().filter((key2) => value[key2] !== void 0).map((key2) => [key2, canonical3(value[key2])]));
   return value;
 }
 function finalSaleSnapshot(order, actuals) {
   const stable = actuals.map((line) => ({ ...line, allocations: [...line.allocations || []].sort((a, b) => `${a.productId}:${a.lotId}`.localeCompare(`${b.productId}:${b.lotId}`)) })).sort((a, b) => a.lineItemId.localeCompare(b.lineItemId));
-  return canonical2({ ...priceActualSale(order, stable), actuals: stable, currency: String(order.currencyCode).toLowerCase(), originalTotalCents: cents2(order.totalCents) });
+  return canonical3({ ...priceActualSale(order, stable), actuals: stable, currency: String(order.currencyCode).toLowerCase(), originalTotalCents: cents2(order.totalCents) });
 }
 function customerFinalSaleSnapshot(snapshot) {
   return { ...snapshot, actuals: (snapshot.actuals || []).map((line) => Object.fromEntries([
@@ -11679,7 +13674,6 @@ var defaults3 = {
   capturePayment,
   cancelPayment,
   getPaymentStatus,
-  enqueueGroceryOutboxEvent,
   reconcileOrderLoyalty,
   refundPaymentForOrder,
   now: () => Date.now(),
@@ -11710,7 +13704,8 @@ function makeFinalizeGroceryOrderActuals(overrides = {}) {
       const payments = await tx.payment.findMany({ where: { orderId }, include: { paymentProvider: true, refunds: true }, orderBy: { id: "asc" } });
       const candidates = payments.filter((payment3) => ["authorized", "succeeded", "partially_refunded"].includes(payment3.status));
       const payment2 = prior?.providerEvidence?.originalPaymentId ? payments.find((payment3) => payment3.id === prior.providerEvidence.originalPaymentId) : candidates.length === 1 ? candidates[0] : null;
-      if (!payment2 || payment2.storeId !== store.id || !payment2.providerPaymentId || !payment2.paymentProvider?.isInstalled) throw new Error("Order requires one unambiguous original payment before finalization");
+      if (!payment2 || payment2.storeId !== store.id || !payment2.providerPaymentId || !payment2.paymentProvider || !isPaymentProviderInstalled(payment2.paymentProvider)) throw new Error("Order requires one unambiguous original payment before finalization");
+      assertIdempotentCaptureProvider(payment2.paymentProvider);
       for (const row of payments) {
         checkVoid(row);
         refundsCents(row.refunds || []);
@@ -11724,7 +13719,6 @@ function makeFinalizeGroceryOrderActuals(overrides = {}) {
       const settlement2 = prior ? await tx.orderSettlement.update({ where: { id: prior.id }, data: { status, providerEvidence } }) : await tx.orderSettlement.create({ data: { orderId, idempotencyKey: `order-actuals:${orderId}`, actualsHash, status, totalCents: snapshot.totalCents, snapshot, providerEvidence, finalizedById: context.session.itemId } });
       if (revised?.paymentIntentId && (revised.paymentIntentId === payment2.providerPaymentId || revised.fingerprint !== adjustmentFingerprint(settlement2, payment2) || providerEvidence.customerApproval?.fingerprint !== revised.fingerprint)) throw new Error("Customer approval does not match revised authorization");
       await tx.order.update({ where: { id: orderId }, data: { metadata: { ...order.metadata, finalSale: { ...customerFinalSaleSnapshot(snapshot), settlementId: settlement2.id, status } } } });
-      if (status === "requires_customer_authorization") await deps.enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `order.adjustment:${settlement2.id}`, eventType: "order.adjustment.requested", aggregateType: "Order", aggregateId: orderId, occurredAt: new Date(deps.now()).toISOString(), payload: { orderId, totalCents: snapshot.totalCents } });
       return { done: false, settlement: settlement2, order, payment: payment2, status, lease: lease2 };
     });
     if (claim.done || claim.status === "requires_customer_authorization") return {
@@ -11849,7 +13843,6 @@ function makeFinalizeGroceryOrderActuals(overrides = {}) {
         }
         await tx.order.update({ where: { id: orderId }, data: { metadata: { ...order.metadata, finalSale } } });
         await deps.reconcileOrderLoyalty(tx, { storeId: store.id, orderId, actorId: context.session.itemId, sourceId: `settlement:${settlement.id}`, reason: "Final picked goods settled", netGoodsCents: finalSale.subtotalCents - finalSale.discountCents, settled: true });
-        await deps.enqueueGroceryOutboxEvent(tx, { storeId: store.id, eventKey: `order.finalized:${orderId}`, eventType: "order.finalized", aggregateType: "Order", aggregateId: orderId, occurredAt: finalSale.finalizedAt, payload: { orderId, settlementId: settlement.id, totalCents: desired } });
         return { status: "finalized", totalCents: desired, message: "Actual goods and final payment recorded" };
       });
     } catch (error) {
@@ -11894,7 +13887,7 @@ async function resolveOrderLineFulfillment(_root, input, context) {
 
 // features/keystone/mutations/index.ts
 var import_schema = require("@graphql-tools/schema");
-var import_graphql = require("graphql");
+var import_graphql6 = require("graphql");
 
 // features/keystone/mutations/redirectToInit.ts
 async function redirectToInit(root, args, context) {
@@ -11906,9 +13899,63 @@ async function redirectToInit(root, args, context) {
 }
 var redirectToInit_default = redirectToInit;
 
+// features/keystone/mutations/groceryHealth.ts
+async function groceryHealth(_root, _args, context) {
+  try {
+    const result = await context.prisma.$queryRaw`SELECT 1 AS readiness`;
+    if (!Array.isArray(result) || result.length !== 1 || result[0]?.readiness !== 1) {
+      return { status: "not_ready", database: "unavailable" };
+    }
+    return { status: "ok", database: "ok" };
+  } catch {
+    return { status: "not_ready", database: "unavailable" };
+  }
+}
+var groceryHealth_default = groceryHealth;
+
 // features/keystone/mutations/updateActiveUser.ts
 init_storeScope();
 init_access();
+
+// features/lib/accountContract.ts
+var SHOPPER_PASSWORD_MIN = 12;
+var SHOPPER_PASSWORD_MAX = 128;
+var SHOPPER_EMAIL_MAX = 254;
+function shopperPasswordProblem(password2) {
+  if (password2.length < SHOPPER_PASSWORD_MIN || password2.length > SHOPPER_PASSWORD_MAX) {
+    return `Choose a password of ${SHOPPER_PASSWORD_MIN} to ${SHOPPER_PASSWORD_MAX} characters.`;
+  }
+  return null;
+}
+function normalizeAccountEmail(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+function accountEmailProblem(email) {
+  if (!email || email.length > SHOPPER_EMAIL_MAX || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return `Enter a valid email address of up to ${SHOPPER_EMAIL_MAX} characters.`;
+  }
+  return null;
+}
+
+// features/keystone/lib/accountPassword.ts
+var import_graphql3 = require("graphql");
+function isSecretFieldImpl(value) {
+  return Boolean(value && typeof value.compare === "function" && typeof value.generateHash === "function");
+}
+async function verifyCurrentPassword(context, userId, secret2) {
+  const field = (0, import_graphql3.assertObjectType)(context.graphql.schema.getType("User")).getFields().password;
+  const impl = field?.extensions?.keystoneSecretField;
+  if (!isSecretFieldImpl(impl)) throw new Error("Password verification is unavailable");
+  const user = await context.prisma.user.findUnique({ where: { id: userId }, select: { password: true } });
+  if (!user?.password) {
+    await impl.generateHash("simulated-password-to-counter-timing-attack");
+    return false;
+  }
+  return impl.compare(secret2, user.password);
+}
+
+// features/keystone/mutations/updateActiveUser.ts
+init_publicError();
 var CLIENT_ONBOARDING_STATUSES = /* @__PURE__ */ new Set(["not_started", "in_progress", "dismissed"]);
 async function updateActiveUser(_root, { data }, context) {
   const session = context.session;
@@ -11918,15 +13965,24 @@ async function updateActiveUser(_root, { data }, context) {
   const update = {};
   if (data.name !== void 0) {
     if (typeof data.name !== "string" || !data.name.trim() || data.name.length > 200) {
-      throw new Error("Name must be between 1 and 200 characters");
+      throw publicError("Enter your name (up to 200 characters).");
     }
     update.name = data.name.trim();
   }
   if (data.email !== void 0) {
-    if (typeof data.email !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email) || data.email.length > 320) {
-      throw new Error("A valid email address is required");
+    const email = normalizeAccountEmail(data.email);
+    const problem = accountEmailProblem(email);
+    if (problem) throw publicError(problem);
+    const current = await context.prisma.user.findUnique({ where: { id: session.itemId }, select: { email: true } });
+    if (email !== current?.email) {
+      const currentPassword = typeof data.currentPassword === "string" ? data.currentPassword : "";
+      if (!currentPassword || !await verifyCurrentPassword(context, session.itemId, currentPassword)) {
+        throw publicError("Enter your current password to change your sign-in email.");
+      }
+      const taken = await context.prisma.user.findUnique({ where: { email }, select: { id: true } });
+      if (taken && taken.id !== session.itemId) throw publicError("That email address is already used by another account.");
+      update.email = email;
     }
-    update.email = data.email.trim().toLowerCase();
   }
   if (data.onboardingStatus !== void 0) {
     if (typeof data.onboardingStatus !== "string" || !CLIENT_ONBOARDING_STATUSES.has(data.onboardingStatus)) {
@@ -11935,13 +13991,201 @@ async function updateActiveUser(_root, { data }, context) {
     await requireFreshCapability(context, "canManageOnboarding");
     update.onboardingStatus = data.onboardingStatus;
   }
-  if (!Object.keys(update).length) throw new Error("No supported profile changes were provided");
-  return context.db.User.updateOne({
-    where: { id: session.itemId },
-    data: update
-  });
+  if (!Object.keys(update).length) {
+    if (data.name !== void 0 || data.email !== void 0) return context.db.User.findOne({ where: { id: session.itemId } });
+    throw new Error("No supported profile changes were provided");
+  }
+  await context.sudo().db.User.updateOne({ where: { id: session.itemId }, data: update });
+  return context.db.User.findOne({ where: { id: session.itemId } });
 }
 var updateActiveUser_default = updateActiveUser;
+
+// features/keystone/mutations/updateActiveUserPassword.ts
+init_publicError();
+init_storeScope();
+async function updateActiveUserPassword(_root, args, context) {
+  const userId = context.session?.itemId;
+  if (!userId) throw publicError("Sign in to change your password.", "UNAUTHENTICATED");
+  await requireSessionStore(context);
+  const currentPassword = typeof args.currentPassword === "string" ? args.currentPassword : "";
+  const newPassword = typeof args.newPassword === "string" ? args.newPassword : "";
+  const problem = shopperPasswordProblem(newPassword);
+  if (problem) throw publicError(problem);
+  if (newPassword === currentPassword) throw publicError("Choose a new password that is different from your current one.");
+  if (!currentPassword || !await verifyCurrentPassword(context, userId, currentPassword)) {
+    throw publicError("Your current password is not correct.");
+  }
+  await context.sudo().db.User.updateOne({ where: { id: userId }, data: { password: newPassword } });
+  return true;
+}
+
+// features/keystone/mutations/recoverRevisedAuthorization.ts
+init_access();
+init_storeScope();
+init_publicError();
+init_paymentProviderAdapter();
+init_payment();
+async function recoverRevisedAuthorization(_root, args, context) {
+  await requireFreshCapability(context, "canManagePayments");
+  const store = await requireSessionStore(context);
+  const providerPaymentId = String(args.providerPaymentId || "").trim();
+  const reason = String(args.reason || "").trim();
+  if (!/^[A-Za-z0-9_-]{3,255}$/.test(providerPaymentId)) throw publicError("Enter the provider payment reference exactly as the provider shows it.");
+  if (reason.length < 3 || reason.length > 500) throw publicError("Record why this authorization is being recovered (3\u2013500 characters).");
+  const prisma = context.prisma;
+  const settlement = await prisma.orderSettlement.findUnique({ where: { idempotencyKey: `order-actuals:${args.orderId}` } });
+  const evidence = settlement?.providerEvidence || {};
+  if (!settlement || settlement.orderId !== args.orderId) throw publicError("This order has no revised sale to recover.");
+  const order = await prisma.order.findUnique({ where: { id: args.orderId }, select: { id: true, storeId: true } });
+  if (!order || order.storeId !== store.id) throw publicError("This order has no revised sale to recover.");
+  if (evidence.reauthorization?.paymentIntentId) return { recovered: false, alreadyRecorded: true, paymentIntentId: evidence.reauthorization.paymentIntentId };
+  const request = evidence.reauthorizationRequest;
+  if (!request || request.settlementId !== settlement.id || request.orderId !== order.id || request.storeId !== store.id) {
+    throw publicError("This revised authorization has no recorded request binding. Reconcile it with the provider\u2019s records before acting.", "NEEDS_PROVIDER_EVIDENCE");
+  }
+  const payment = await prisma.payment.findUnique({ where: { id: evidence.originalPaymentId }, include: { paymentProvider: true } });
+  if (!payment || payment.orderId !== order.id || payment.storeId !== store.id || !payment.paymentProvider) throw publicError("The original payment for this order is unavailable.");
+  if (getConfiguredPaymentAdapterSelector(payment.paymentProvider, "createPaymentFunction") !== "stripe") {
+    throw publicError("This payment provider has no verifiable recovery record. Reconcile with the provider before acting.", "NEEDS_PROVIDER_EVIDENCE");
+  }
+  const fingerprint = adjustmentFingerprint(settlement, payment);
+  if (fingerprint !== request.fingerprint) throw publicError("The revised sale changed after the authorization was requested.");
+  if (providerPaymentId === payment.providerPaymentId) throw publicError("That is the original payment, not the revised authorization.");
+  const other = await prisma.payment.findUnique({ where: { providerPaymentId } });
+  if (other && other.orderId !== order.id) throw publicError("That provider reference belongs to another order.");
+  const remote = await getPaymentStatus({ provider: payment.paymentProvider, paymentId: providerPaymentId });
+  const intent = remote?.data || {};
+  const metadata = intent.metadata || {};
+  const matches = intent.id === providerPaymentId && metadata.kind === "revised_authorization" && metadata.orderId === order.id && metadata.storeId === store.id && metadata.settlementId === settlement.id && metadata.fingerprint === fingerprint && Number(remote.authorizedAmountCents ?? intent.amount) === request.amountCents && String(remote.currency || "").toLowerCase() === String(request.currency).toLowerCase() && intent.capture_method === "manual";
+  if (!matches) throw publicError("The provider record does not match this order\u2019s revised authorization request.");
+  return context.transaction(async (tc) => {
+    const tx = tc.prisma;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id"=$1 FOR UPDATE', order.id);
+    const current = await tx.orderSettlement.findUnique({ where: { id: settlement.id } });
+    if (current?.providerEvidence?.reauthorization?.paymentIntentId) return { recovered: false, alreadyRecorded: true, paymentIntentId: current.providerEvidence.reauthorization.paymentIntentId };
+    await tx.orderSettlement.update({ where: { id: settlement.id }, data: { providerEvidence: {
+      ...current.providerEvidence,
+      authorizationCreationLease: null,
+      reauthorization: {
+        paymentIntentId: providerPaymentId,
+        clientSecret: typeof intent.client_secret === "string" ? intent.client_secret : "",
+        fingerprint,
+        recovered: { by: context.session.itemId, at: (/* @__PURE__ */ new Date()).toISOString(), reason, providerStatus: String(remote.status || "") }
+      }
+    } } });
+    return { recovered: true, alreadyRecorded: false, paymentIntentId: providerPaymentId };
+  });
+}
+
+// features/keystone/mutations/updateGroceryStoreProfile.ts
+init_access();
+init_publicError();
+init_storeScope();
+var DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+function text62(value, label, max, required2 = false) {
+  const result = typeof value === "string" ? value.trim() : "";
+  if (required2 && !result) throw publicError(`${label} is required.`);
+  if (result.length > max) throw publicError(`${label} must be ${max} characters or fewer.`);
+  return result;
+}
+async function updateGroceryStoreProfile(_root, { input }, context) {
+  await requireFreshCapability(context, "canManageOnboarding");
+  const store = await requireSessionStore(context);
+  if (!input || typeof input !== "object") throw publicError("Store details are required.");
+  const data = {};
+  if (input.name !== void 0) data.name = text62(input.name, "Store name", 120, true);
+  if (input.tagline !== void 0) data.tagline = text62(input.tagline, "Tagline", 200);
+  if (input.homepageTitle !== void 0) data.homepageTitle = text62(input.homepageTitle, "Homepage title", 200);
+  if (input.homepageDescription !== void 0) data.homepageDescription = text62(input.homepageDescription, "Homepage description", 1e3);
+  if (input.contactEmail !== void 0) {
+    const email = text62(input.contactEmail, "Contact email", 254).toLowerCase();
+    if (email && accountEmailProblem(email)) throw publicError("Enter a valid contact email.");
+    data.contactEmail = email;
+  }
+  if (input.contactPhone !== void 0) data.contactPhone = text62(input.contactPhone, "Contact phone", 40);
+  if (input.address !== void 0) data.address = text62(input.address, "Address", 500);
+  if (input.policyNotes !== void 0) data.policyNotes = text62(input.policyNotes, "Policy notes", 5e3);
+  if (input.countryCode !== void 0) {
+    const country = text62(input.countryCode, "Country", 2, true).toUpperCase();
+    if (!/^[A-Z]{2}$/.test(country)) throw publicError("Use a two-letter country code, like US.");
+    data.countryCode = country;
+  }
+  if (input.locale !== void 0) {
+    const locale = text62(input.locale, "Locale", 35, true);
+    try {
+      Intl.getCanonicalLocales(locale);
+    } catch {
+      throw publicError("Use a locale like en-US.");
+    }
+    data.locale = locale;
+  }
+  if (input.timezone !== void 0) {
+    const timezone = text62(input.timezone, "Timezone", 64, true);
+    try {
+      assertValidTimeZone(timezone);
+    } catch {
+      throw publicError("Choose a valid timezone, like America/Los_Angeles.");
+    }
+    data.timezone = timezone;
+  }
+  if (input.taxRateBps !== void 0) {
+    if (!Number.isInteger(input.taxRateBps) || input.taxRateBps < 0 || input.taxRateBps > 1e4) throw publicError("Tax rate must be between 0% and 100% with at most two decimals.");
+    data.taxRateBps = input.taxRateBps;
+  }
+  return context.transaction(async (transactionContext) => {
+    const tx = transactionContext.prisma;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Store" WHERE "id" = $1 FOR UPDATE', store.id);
+    await tx.$queryRawUnsafe('SELECT "id" FROM "StoreSettings" WHERE "store" = $1 FOR UPDATE', store.id);
+    const settings = await tx.storeSettings.findUnique({ where: { storeId: store.id }, select: { id: true, hours: true } });
+    if (!settings) throw publicError("Finish store setup before editing details.");
+    if (input.hours) {
+      const hours = { ...settings.hours || {} };
+      for (const day of DAYS) {
+        const value = input.hours[day];
+        if (value === void 0) continue;
+        const entry = String(value).trim();
+        const problem = openingHoursEntryProblem(entry);
+        if (problem) throw publicError(`${day[0].toUpperCase()}${day.slice(1)}: ${problem}`);
+        hours[day] = entry;
+      }
+      assertValidRollingFulfillmentPolicy(hours);
+      data.hours = hours;
+    }
+    if (!Object.keys(data).length) throw publicError("There were no changes to save.");
+    await tx.storeSettings.update({ where: { id: settings.id }, data });
+    const mirror = Object.fromEntries(Object.entries({ name: data.name, timezone: data.timezone }).filter(([, value]) => value !== void 0));
+    if (Object.keys(mirror).length) await tx.store.update({ where: { id: store.id }, data: mirror });
+    return { success: true };
+  });
+}
+
+// features/keystone/mutations/getCustomerOrderSubstitutions.ts
+init_publicError();
+init_storeScope();
+async function getCustomerOrderSubstitutions(_root, { orderId }, context) {
+  if (!context.session?.itemId) throw publicError("Order not found", "NOT_FOUND");
+  const store = await requireSessionStore(context);
+  const order = await context.prisma.order.findUnique({ where: { id: orderId }, select: { userId: true, storeId: true } });
+  if (!order || order.userId !== context.session.itemId || order.storeId !== store.id) throw publicError("Order not found", "NOT_FOUND");
+  const lines = await context.prisma.orderLineItem.findMany({
+    where: { orderId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: 1e3,
+    select: {
+      id: true,
+      substitutions: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { id: true, originalProduct: true, substitutedProduct: true, reason: true, customerApproved: true, approvedAt: true }
+      }
+    }
+  });
+  return lines.flatMap((line) => line.substitutions[0] ? [{
+    ...line.substitutions[0],
+    orderItem: line.id,
+    approvedAt: line.substitutions[0].approvedAt?.toISOString() || null
+  }] : []);
+}
 
 // features/keystone/mutations/cartOperations.ts
 init_storeScope();
@@ -11958,15 +14202,21 @@ function assertProductStore(product, storeId) {
 }
 
 // features/keystone/mutations/cartOperations.ts
+init_publicError();
+var import_node_crypto22 = require("node:crypto");
 var DELIVERY_FEE = 0;
+var GUEST_SESSION_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 function requireGuestSessionId(sessionId) {
   const trimmed = sessionId?.trim();
   if (!trimmed) {
     throw new Error("No session ID provided for guest cart");
   }
+  if (!GUEST_SESSION_PATTERN.test(trimmed)) {
+    throw publicError("This basket session is not valid. Refresh the page to start a new basket.");
+  }
   return trimmed;
 }
-function assertCartAccess(cart, context, sessionId) {
+function assertCartAccess(cart, context, sessionId, options = {}) {
   if (!cart) {
     throw new Error("Cart not found");
   }
@@ -11980,6 +14230,15 @@ function assertCartAccess(cart, context, sessionId) {
   if (cart.customer?.id || cart.sessionId !== guestSessionId) {
     throw new Error("You do not have access to this cart");
   }
+  if (!options.allowExpired && cart.expiresAt && new Date(cart.expiresAt).getTime() <= Date.now()) {
+    throw publicError("Your basket session expired. Refresh the page to start a new basket.");
+  }
+}
+var MAX_CART_PRODUCTS = 200;
+function productPriceCents(product) {
+  const cents3 = product?.priceCents;
+  if (cents3 !== null && cents3 !== void 0 && Number.isFinite(Number(cents3))) return Math.round(Number(cents3));
+  return Math.round(Number(product?.price || 0) * 100);
 }
 var CART_QUERY = `
   id
@@ -11995,7 +14254,7 @@ var CART_QUERY = `
     subtotal
     substitutionPreference
     product {
-      id title handle price priceCents taxRateBasisPoints imageUrl status
+      id title handle price priceCents taxRateBasisPoints imageUrl photoUrl status
       store { id }
       inventoryLots { expirationDate quantityRemaining safetyStatus conditionStatus store { id } }
       pricingMethod unitOfMeasure
@@ -12012,6 +14271,7 @@ async function getOrCreateCart(context, sessionId) {
       "SELECT pg_advisory_xact_lock(hashtext('grocery-cart-identity'), hashtext($1))",
       identity2
     );
+    if (ownerId) await lockCurrentCustomer(transactionContext);
     const sudoContext = transactionContext.sudo();
     const carts = await sudoContext.query.Cart.findMany({
       where: ownerId ? { customer: { id: { equals: ownerId } } } : { sessionId: { equals: guestSessionId } },
@@ -12021,6 +14281,7 @@ async function getOrCreateCart(context, sessionId) {
     if (carts.length > 1) throw new Error("Cart identity is ambiguous");
     const existing = carts[0] || null;
     if (existing) {
+      assertCartAccess(existing, transactionContext, guestSessionId || void 0, { allowExpired: true });
       if (existing.store?.id !== store.id) throw new Error("Cart belongs to another Store");
       const expired = !ownerId && existing.expiresAt && new Date(existing.expiresAt).getTime() <= Date.now();
       if (!expired) return existing;
@@ -12042,9 +14303,11 @@ async function getOrCreateCart(context, sessionId) {
 }
 async function withLockedCart(context, cartId, operation) {
   return context.transaction(async (transactionContext) => {
+    const actorStore = transactionContext.session?.itemId ? await lockCurrentCustomer(transactionContext) : null;
     await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id" = $1 FOR UPDATE', cartId);
     const cart = await transactionContext.sudo().query.Cart.findOne({ where: { id: cartId }, query: CART_QUERY });
     if (!cart) throw new Error("Cart not found");
+    if (actorStore && cart.store?.id !== actorStore.id) throw new Error("You do not have access to this cart");
     return operation(transactionContext, cart);
   });
 }
@@ -12075,13 +14338,13 @@ async function recalculateCart(context, cartId) {
   let subtotalCents = 0;
   let itemCount = 0;
   for (const item of cart.items) {
-    const itemSubtotalCents = Number(item.product?.priceCents || Math.round(Number(item.product?.price || 0) * 100)) * item.quantity;
+    const itemSubtotalCents = productPriceCents(item.product) * item.quantity;
     subtotalCents += itemSubtotalCents;
     itemCount += item.quantity;
     const itemSubtotal = itemSubtotalCents / 100;
     await sudoContext.query.CartItem.updateOne({
       where: { id: item.id },
-      data: { subtotal: itemSubtotal, subtotalCents: Math.round(itemSubtotal * 100) }
+      data: { subtotal: itemSubtotal, subtotalCents: itemSubtotalCents }
     });
   }
   await sudoContext.query.Cart.updateOne({
@@ -12095,20 +14358,21 @@ async function recalculateCart(context, cartId) {
   return { subtotal: subtotalCents / 100, subtotalCents, itemCount };
 }
 async function formatCartResponse(cart, context) {
-  const subtotalCents = Number(cart.subtotalCents ?? Math.round(Number(cart.subtotal || 0) * 100));
+  const lines = cart.items.map((item) => ({ item, subtotalCents: productPriceCents(item.product) * item.quantity }));
+  const subtotalCents = lines.reduce((sum, line) => sum + line.subtotalCents, 0);
   const subtotal = subtotalCents / 100;
   const taxRateBps = await getStoreTaxRateBps(context, cart.store?.id);
-  const taxCents = priceCommercialLines(cart.items.map((item) => ({ id: item.id, subtotalCents: Number(item.product.priceCents) * item.quantity, taxRateBasisPoints: item.product.taxRateBasisPoints ?? taxRateBps }))).taxCents;
+  const taxCents = priceCommercialLines(lines.map((line) => ({ id: line.item.id, subtotalCents: line.subtotalCents, taxRateBasisPoints: line.item.product?.taxRateBasisPoints ?? taxRateBps }))).taxCents;
   const tax = taxCents / 100;
   const total = (subtotalCents + taxCents) / 100 + DELIVERY_FEE;
   return {
     id: cart.id,
-    items: cart.items.map((item) => {
+    items: lines.map(({ item, subtotalCents: lineCents }) => {
       const sellableQuantity = item.product ? deriveSellableQuantity(item.product, cart.store?.id) : 0;
       return {
         id: item.id,
         quantity: item.quantity,
-        subtotal: item.subtotal,
+        subtotal: lineCents / 100,
         substitutionPreference: item.substitutionPreference,
         product: {
           id: item.product?.id,
@@ -12117,7 +14381,7 @@ async function formatCartResponse(cart, context) {
           price: item.product?.price,
           unitPrice: item.product?.price,
           unit: item.product?.unitOfMeasure,
-          imageUrl: item.product?.imageUrl,
+          imageUrl: item.product?.photoUrl || item.product?.imageUrl,
           inStock: item.product?.status === "published" && sellableQuantity >= item.quantity,
           stockQuantity: sellableQuantity
         }
@@ -12127,16 +14391,38 @@ async function formatCartResponse(cart, context) {
     tax: Math.round(tax * 100) / 100,
     deliveryFee: DELIVERY_FEE,
     total: Math.round(total * 100) / 100,
-    itemCount: cart.itemCount || 0
+    itemCount: cart.items.reduce((sum, item) => sum + item.quantity, 0)
   };
 }
 async function getCart(root, { sessionId }, context) {
-  try {
-    const cart = await getOrCreateCart(context, sessionId);
-    return formatCartResponse(cart, context);
-  } catch (error) {
-    console.error("Error getting cart:", error);
-    return null;
+  if (!context.session?.itemId && !sessionId?.trim()) return null;
+  const cart = await getOrCreateCart(context, sessionId);
+  assertCartAccess(cart, context, sessionId);
+  return formatCartResponse(cart, context);
+}
+async function addProductToLockedCart(transactionContext, cart, productId, quantity) {
+  const sudoContext = transactionContext.sudo();
+  const product = await requireStoreProduct(transactionContext, productId, cart.store.id, { publishedOnly: true });
+  const existingItem = cart.items.find((item) => item.product?.id === productId);
+  if (!existingItem && cart.items.length >= MAX_CART_PRODUCTS) throw publicError(`A basket can hold up to ${MAX_CART_PRODUCTS} different products.`);
+  const newQuantity = (existingItem?.quantity || 0) + quantity;
+  assertSellableQuantity(product, cart.store.id, newQuantity);
+  const unitPriceCents = productPriceCents(product);
+  if (existingItem) {
+    await sudoContext.query.CartItem.updateOne({ where: { id: existingItem.id }, data: { quantity: newQuantity } });
+    existingItem.quantity = newQuantity;
+  } else {
+    const created = await sudoContext.query.CartItem.createOne({
+      data: {
+        cart: { connect: { id: cart.id } },
+        product: { connect: { id: productId } },
+        quantity,
+        subtotal: unitPriceCents * quantity / 100,
+        subtotalCents: unitPriceCents * quantity
+      },
+      query: "id"
+    });
+    cart.items.push({ id: created.id, quantity, product: { id: productId } });
   }
 }
 async function addToCart(root, {
@@ -12148,30 +14434,77 @@ async function addToCart(root, {
   const identityCart = await getOrCreateCart(context, sessionId);
   return withLockedCart(context, identityCart.id, async (transactionContext, cart) => {
     assertCartAccess(cart, context, sessionId);
-    const sudoContext = transactionContext.sudo();
-    const product = await requireStoreProduct(transactionContext, productId, cart.store.id, { publishedOnly: true });
-    const existingItem = cart.items.find((item) => item.product?.id === productId);
-    if (!existingItem && cart.items.length >= 200) throw new Error("Cart cannot exceed 200 distinct products");
-    const newQuantity = (existingItem?.quantity || 0) + quantity;
-    assertSellableQuantity(product, cart.store.id, newQuantity);
-    const unitPriceCents = Number(product.priceCents || Math.round(Number(product.price || 0) * 100));
-    if (existingItem) {
-      await sudoContext.query.CartItem.updateOne({ where: { id: existingItem.id }, data: { quantity: newQuantity } });
-    } else {
-      await sudoContext.query.CartItem.createOne({
-        data: {
-          cart: { connect: { id: cart.id } },
-          product: { connect: { id: productId } },
-          quantity,
-          subtotal: unitPriceCents * quantity / 100,
-          subtotalCents: unitPriceCents * quantity
-        }
-      });
-    }
+    await addProductToLockedCart(transactionContext, cart, productId, quantity);
     await recalculateCart(transactionContext, cart.id);
-    const updated = await sudoContext.query.Cart.findOne({ where: { id: cart.id }, query: CART_QUERY });
+    const updated = await transactionContext.sudo().query.Cart.findOne({ where: { id: cart.id }, query: CART_QUERY });
     return formatCartResponse(updated, transactionContext);
   });
+}
+async function batchLines(transactionContext, source, sourceId, storeId) {
+  const userId = transactionContext.session?.itemId;
+  if (!userId) throw new Error("Must be logged in to add saved items to the basket");
+  const prisma = transactionContext.prisma;
+  if (source === "list") {
+    const list65 = await prisma.shoppingList.findUnique({ where: { id: sourceId }, select: { userId: true, items: { where: { checked: false }, orderBy: [{ addedAt: "asc" }, { id: "asc" }], select: { product: true, productRefId: true, quantity: true, unit: true, productRef: { select: { unitOfMeasure: true } } } } } });
+    if (!list65 || list65.userId !== userId) throw new Error("Shopping list not found");
+    return list65.items.map((item) => ({ title: item.product, productId: item.productRefId, quantity: item.quantity, unit: item.unit, productUnit: item.productRef?.unitOfMeasure }));
+  }
+  const order = await prisma.order.findUnique({ where: { id: sourceId }, select: { userId: true, storeId: true, lineItems: { orderBy: [{ id: "asc" }], select: { title: true, productId: true, quantity: true } } } });
+  if (!order || order.userId !== userId || order.storeId !== storeId) throw new Error("Order not found");
+  return order.lineItems.map((line) => ({ title: line.title, productId: line.productId, quantity: line.quantity }));
+}
+async function addCartBatch(context, { requestKey: requestKey2, source, sourceId, sessionId }) {
+  const key2 = requestKey2?.trim() || `once:${(0, import_node_crypto22.randomUUID)()}`;
+  if (!/^[A-Za-z0-9:_-]{8,120}$/.test(key2)) throw publicError("This request could not be identified. Refresh and try again.");
+  const ownerKey = context.session?.itemId ? `user:${context.session.itemId}` : `guest:${requireGuestSessionId(sessionId)}`;
+  const identityCart = await getOrCreateCart(context, sessionId);
+  return withLockedCart(context, identityCart.id, async (transactionContext, cart) => {
+    assertCartAccess(cart, context, sessionId);
+    const prisma = transactionContext.prisma;
+    const previous = await prisma.customerBatchRequest.findUnique({ where: { requestKey: key2 } });
+    if (previous) {
+      if (previous.ownerKey !== ownerKey || previous.kind !== source || previous.sourceId !== sourceId || previous.storeId !== cart.store.id) {
+        throw publicError("This request was already used for something else. Refresh and try again.");
+      }
+      return { ...previous.results, replayed: true };
+    }
+    const lines = await batchLines(transactionContext, source, sourceId, cart.store.id);
+    const skippedItems = [];
+    let addedCount = 0;
+    for (const line of lines) {
+      if (!line.productId || !Number.isInteger(line.quantity) || line.quantity <= 0) {
+        skippedItems.push(line.title);
+        continue;
+      }
+      const productUnit = normalizeMeasureUnit(line.productUnit) || null;
+      const lineUnit = normalizeMeasureUnit(line.unit) || productUnit;
+      const quantity = productUnit && lineUnit ? exactWholeConversion(line.quantity, lineUnit, productUnit) : line.quantity;
+      if (quantity === null || quantity < 1) {
+        skippedItems.push(`${line.title} (${line.quantity} ${line.unit} is not a whole ${productUnit}; choose a quantity on its product page)`);
+        continue;
+      }
+      try {
+        await addProductToLockedCart(transactionContext, cart, line.productId, quantity);
+        addedCount += 1;
+      } catch (error) {
+        skippedItems.push(`${line.title} (${error instanceof Error && !/unexpected/i.test(error.message) ? error.message : "unavailable"})`);
+      }
+    }
+    if (addedCount) await recalculateCart(transactionContext, cart.id);
+    const results = {
+      success: addedCount > 0 || lines.length === 0,
+      message: lines.length === 0 ? "No unchecked items to add to cart" : `Added ${addedCount} items to cart${skippedItems.length ? `, skipped ${skippedItems.length}` : ""}`,
+      addedCount,
+      skippedCount: skippedItems.length,
+      skippedItems
+    };
+    await prisma.customerBatchRequest.create({ data: { requestKey: key2, ownerKey, kind: source, sourceId, storeId: cart.store.id, results } });
+    return { ...results, replayed: false };
+  });
+}
+async function reorderGroceryOrder(root, { orderId, requestKey: requestKey2, sessionId }, context) {
+  if (!context.session?.itemId) throw publicError("Sign in to shop this order again.", "UNAUTHENTICATED");
+  return addCartBatch(context, { requestKey: requestKey2, source: "order", sourceId: orderId, sessionId });
 }
 async function updateCartItem(root, {
   itemId,
@@ -12188,7 +14521,7 @@ async function updateCartItem(root, {
       query: "id cart { id sessionId store { id } customer { id } } product { id store { id } status }"
     });
     if (!cartItem || cartItem.cart?.id !== cart.id) throw new Error("Cart item not found");
-    assertCartAccess(cartItem.cart, context, sessionId);
+    assertCartAccess(cart, context, sessionId);
     assertProductStore(cartItem.product, cart.store.id);
     if (cartItem.product?.status !== "published") throw new Error("Product is not available for public checkout");
     const product = await requireStoreProduct(transactionContext, cartItem.product.id, cart.store.id, { publishedOnly: true });
@@ -12225,55 +14558,47 @@ async function clearCart(root, { sessionId }, context) {
     return formatCartResponse(updated, transactionContext);
   });
 }
-async function mergeGuestCart(root, { guestSessionId }, context) {
+async function mergeGuestCart(root, { guestSessionId: rawGuestSessionId }, context) {
   if (!context.session?.itemId) {
     throw new Error("Must be logged in to merge cart");
   }
-  const sudoContext = context.sudo();
+  const guestSessionId = requireGuestSessionId(rawGuestSessionId);
   const store = await requireSessionStore(context);
-  const guestCarts = await sudoContext.query.Cart.findMany({
-    where: { sessionId: { equals: guestSessionId } },
-    query: `
-      id
-      sessionId
-      expiresAt
-      store { id }
-      customer { id }
-      items {
-        id
-        quantity
-        product { id status store { id } }
-      }
-    `
-  });
-  if (guestCarts.length === 0) {
-    const userCart2 = await getOrCreateCart(context);
-    return formatCartResponse(userCart2, context);
-  }
-  if (guestCarts.length > 1) throw new Error("Guest cart identity is ambiguous");
-  const guestCart = guestCarts[0];
-  assertCartAccess(guestCart, { ...context, session: void 0 }, guestSessionId);
-  if (guestCart.store?.id !== store.id) throw new Error("Guest cart belongs to another Store");
-  if (guestCart.expiresAt && new Date(guestCart.expiresAt).getTime() <= Date.now()) throw new Error("Guest cart session has expired");
-  if (guestCart.items.some((item) => !item.product || item.product.store?.id !== store.id || item.product.status !== "published")) {
-    throw new Error("Guest cart contains a product unavailable to the active Store");
-  }
   const userCart = await getOrCreateCart(context);
   return context.transaction(async (transactionContext) => {
-    const ids = [guestCart.id, userCart.id].sort();
-    for (const id of ids) await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id" = $1 FOR UPDATE', id);
+    await transactionContext.prisma.$executeRawUnsafe(
+      "SELECT pg_advisory_xact_lock(hashtext('grocery-cart-identity'), hashtext($1))",
+      `guest:${guestSessionId}`
+    );
+    const currentStore = await lockCurrentCustomer(transactionContext);
+    if (currentStore.id !== store.id) throw new Error("Cart merge ownership changed");
     const txSudo = transactionContext.sudo();
-    const [currentGuest, currentUser] = await Promise.all([
-      txSudo.query.Cart.findOne({ where: { id: guestCart.id }, query: CART_QUERY }),
-      txSudo.query.Cart.findOne({ where: { id: userCart.id }, query: CART_QUERY })
-    ]);
-    if (!currentGuest || currentGuest.store?.id !== store.id || !currentUser || currentUser.store?.id !== store.id) {
+    const guestCarts = await txSudo.query.Cart.findMany({
+      where: { sessionId: { equals: guestSessionId } },
+      take: 2,
+      query: "id"
+    });
+    if (guestCarts.length > 1) throw new Error("Guest cart identity is ambiguous");
+    const ids = [guestCarts[0]?.id, userCart.id].filter(Boolean).sort();
+    for (const id of ids) await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id" = $1 FOR UPDATE', id);
+    const currentUser = await txSudo.query.Cart.findOne({ where: { id: userCart.id }, query: CART_QUERY });
+    if (!currentUser || currentUser.customer?.id !== context.session.itemId || currentUser.store?.id !== store.id) {
       throw new Error("Cart merge ownership changed");
+    }
+    const currentGuest = guestCarts[0] ? await txSudo.query.Cart.findOne({ where: { id: guestCarts[0].id }, query: CART_QUERY }) : null;
+    const mergeable = currentGuest && !currentGuest.customer?.id && currentGuest.sessionId === guestSessionId && !(currentGuest.expiresAt && new Date(currentGuest.expiresAt).getTime() <= Date.now());
+    if (!mergeable || !currentGuest.items.length) return formatCartResponse(currentUser, transactionContext);
+    if (currentGuest.store?.id !== store.id) throw publicError("Your earlier basket belongs to another store and cannot be moved.");
+    const mergedProducts = new Set([...currentUser.items, ...currentGuest.items].map((item) => item.product?.id));
+    if (mergedProducts.size > MAX_CART_PRODUCTS) {
+      throw publicError(`Your earlier basket and your account basket together exceed ${MAX_CART_PRODUCTS} different products. Remove some items and try again.`);
     }
     for (const guestItem of currentGuest.items) {
       const existingItem = currentUser.items.find((item) => item.product?.id === guestItem.product?.id);
       const quantity = guestItem.quantity + (existingItem?.quantity || 0);
-      const product = await requireStoreProduct(transactionContext, guestItem.product?.id, store.id, { publishedOnly: true });
+      const product = await requireStoreProduct(transactionContext, guestItem.product?.id, store.id, { publishedOnly: true }).catch(() => {
+        throw publicError(`${guestItem.product?.title || "An item"} from your earlier basket is no longer available.`);
+      });
       assertSellableQuantity(product, store.id, quantity);
       if (existingItem) {
         await txSudo.query.CartItem.updateOne({ where: { id: existingItem.id }, data: { quantity } });
@@ -12316,11 +14641,13 @@ async function getClippedCoupons(root, args, context) {
   if (!context.session?.itemId) {
     return [];
   }
+  const store = await requireSessionStore(context);
   const sudoContext = context.sudo();
   const userCoupons = await sudoContext.query.UserCoupon.findMany({
     where: {
       user: { id: { equals: context.session.itemId } },
-      used: { equals: false }
+      used: { equals: false },
+      coupon: { store: { id: { equals: store.id } } }
     },
     query: `
       id
@@ -12361,37 +14688,38 @@ async function getClippedCoupons(root, args, context) {
 
 // features/keystone/mutations/manageShoppingList.ts
 init_storeScope();
-async function getShoppingListForUser(context, listId) {
-  const sudoContext = context.sudo();
-  if (!context.session?.itemId) {
-    throw new Error("Must be logged in to manage shopping lists");
+init_publicError();
+var LIST_QUERY = `
+  id
+  name
+  isDefault
+  user { id }
+  items {
+    id
+    product
+    productRef { id }
+    quantity
+    unit
+    checked
+    notes
+    addedAt
   }
-  const list65 = await sudoContext.query.ShoppingList.findOne({
-    where: { id: listId },
-    query: `
-      id
-      name
-      isDefault
-      user { id }
-      items {
-        id
-        product
-        productRef { id }
-        quantity
-        unit
-        checked
-        notes
-        addedAt
-      }
-    `
+`;
+async function withOwnedList(context, listId, operation) {
+  if (!context.session?.itemId) throw new Error("Must be logged in to manage shopping lists");
+  return context.transaction(async (transactionContext) => {
+    const store = await lockCurrentCustomer(transactionContext);
+    await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "ShoppingList" WHERE "id" = $1 FOR UPDATE', listId);
+    const list65 = await transactionContext.sudo().query.ShoppingList.findOne({ where: { id: listId }, query: LIST_QUERY });
+    if (!list65) throw new Error("Shopping list not found");
+    if (list65.user?.id !== context.session.itemId) throw new Error("Not authorized to access this shopping list");
+    return operation(transactionContext, list65, store);
   });
-  if (!list65) {
-    throw new Error("Shopping list not found");
-  }
-  if (list65.user?.id !== context.session.itemId) {
-    throw new Error("Not authorized to access this shopping list");
-  }
-  return list65;
+}
+async function reloadList(transactionContext, listId) {
+  const list65 = await transactionContext.sudo().query.ShoppingList.findOne({ where: { id: listId }, query: LIST_QUERY });
+  if (!list65) throw new Error("Shopping list not found");
+  return formatShoppingListResponse(list65);
 }
 function formatShoppingListResponse(list65) {
   return {
@@ -12411,174 +14739,115 @@ function formatShoppingListResponse(list65) {
     checkedCount: list65.items.filter((item) => item.checked).length
   };
 }
+async function resolveListProduct(transactionContext, storeId, { productId, product }) {
+  const sudoContext = transactionContext.sudo();
+  const published = { store: { id: { equals: storeId } }, status: { equals: "published" } };
+  const query = "id title handle sku variantLabel unitOfMeasure pricingMethod";
+  if (productId) {
+    const found = await sudoContext.query.Product.findMany({ where: { ...published, id: { equals: productId } }, query, take: 1 });
+    if (!found[0]) throw publicError("That product is no longer available in the shop.");
+    return found[0];
+  }
+  const text63 = String(product || "").trim();
+  if (!text63) throw publicError("Choose a product to add.");
+  const byHandle = await sudoContext.query.Product.findMany({ where: { ...published, handle: { equals: text63 } }, query, take: 1 });
+  if (byHandle[0]) return byHandle[0];
+  const byTitle = await sudoContext.query.Product.findMany({ where: { ...published, title: { equals: text63, mode: "insensitive" } }, query, take: 6 });
+  if (!byTitle.length) throw publicError(`No product named \u201C${text63.slice(0, 80)}\u201D is in the shop. Check the name, or save it from its product page.`);
+  if (byTitle.length > 1) {
+    const choices = byTitle.slice(0, 5).map((option) => [option.title, option.variantLabel, option.sku].filter(Boolean).join(" \xB7 ")).join("; ");
+    throw publicError(`Several products are named \u201C${text63.slice(0, 80)}\u201D (${choices}). Open the one you want and use \u201CSave to a shopping list\u201D.`, "PRODUCT_CHOICE_REQUIRED");
+  }
+  return byTitle[0];
+}
+function listUnitFor(productUnit, requested) {
+  const native = normalizeMeasureUnit(productUnit) || "each";
+  if (!requested || !String(requested).trim()) return native;
+  const unit = normalizeMeasureUnit(requested);
+  if (!unit) throw publicError(`\u201C${String(requested).slice(0, 20)}\u201D is not a unit the shop supports. Use ${native}.`);
+  if (measureDimension(unit) !== measureDimension(native)) throw publicError(`This product is sold by ${native}; ${unit} cannot be converted to it.`);
+  return unit;
+}
 async function addToList(root, {
   listId,
   product,
+  productId,
   quantity,
   unit,
-  notes
+  notes,
+  mode
 }, context) {
-  const sudoContext = context.sudo();
-  const store = await requireSessionStore(context);
-  const matchingProducts = await sudoContext.query.Product.findMany({
-    where: { AND: [{ store: { id: { equals: store.id } } }, { status: { equals: "published" } }, { OR: [{ id: { equals: product } }, { handle: { equals: product } }, { title: { equals: product } }] }] },
-    query: "id title handle store { id }",
-    take: 2
+  const amount = quantity ?? 1;
+  if (!Number.isInteger(amount) || amount < 1 || amount > 999) throw publicError("List quantities are whole numbers from 1 to 999.");
+  if (mode && mode !== "add" && mode !== "set") throw new Error("Unsupported list quantity mode");
+  return withOwnedList(context, listId, async (transactionContext, list65, store) => {
+    const productRecord = await resolveListProduct(transactionContext, store.id, { productId, product });
+    const listUnit = listUnitFor(productRecord.unitOfMeasure, unit);
+    const prisma = transactionContext.prisma;
+    const existingItem = list65.items.find((item) => item.productRef?.id === productRecord.id);
+    if (existingItem) {
+      const sameUnit = (normalizeMeasureUnit(existingItem.unit) || listUnit) === listUnit;
+      if (!sameUnit && mode !== "set") throw publicError(`${productRecord.title} is already on this list in ${existingItem.unit}. Change that line instead.`);
+      const nextQuantity = mode === "set" ? amount : existingItem.quantity + amount;
+      if (nextQuantity > 999) throw publicError("List quantities are whole numbers from 1 to 999.");
+      await prisma.shoppingListItem.update({
+        where: { id: existingItem.id },
+        data: { quantity: nextQuantity, unit: listUnit, ...notes && notes !== existingItem.notes ? { notes: notes.slice(0, 500) } : {} }
+      });
+    } else {
+      if (list65.items.length >= 200) throw publicError("A list can hold up to 200 products.");
+      await prisma.shoppingListItem.create({
+        data: { listId, product: productRecord.title, productRefId: productRecord.id, quantity: amount, unit: listUnit, notes: (notes || "").slice(0, 500), checked: false, addedAt: /* @__PURE__ */ new Date() }
+      });
+    }
+    return reloadList(transactionContext, listId);
   });
-  const productRecord = matchingProducts[0];
-  if (!productRecord) throw new Error("Shopping-list items must reference a catalog product");
-  const list65 = await getShoppingListForUser(context, listId);
-  const existingItem = list65.items.find(
-    (item) => item.product.toLowerCase() === product.toLowerCase()
-  );
-  if (existingItem) {
-    const requestedQuantity = quantity || 1;
-    await sudoContext.query.ShoppingListItem.updateOne({
-      where: { id: existingItem.id },
-      data: {
-        quantity: requestedQuantity,
-        ...unit && { unit },
-        ...notes && notes !== existingItem.notes ? { notes } : {},
-        productRef: { connect: { id: productRecord.id } }
-      }
-    });
-  } else {
-    await sudoContext.query.ShoppingListItem.createOne({
-      data: {
-        list: { connect: { id: listId } },
-        product: productRecord.title,
-        productRef: { connect: { id: productRecord.id } },
-        quantity: quantity || 1,
-        unit: unit || "each",
-        notes: notes || "",
-        checked: false,
-        addedAt: (/* @__PURE__ */ new Date()).toISOString()
-      }
-    });
-  }
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 async function removeFromList(root, { listId, itemId }, context) {
-  const sudoContext = context.sudo();
-  await getShoppingListForUser(context, listId);
-  const item = await sudoContext.query.ShoppingListItem.findOne({
-    where: { id: itemId },
-    query: "id list { id }"
+  return withOwnedList(context, listId, async (transactionContext, list65) => {
+    if (list65.items.some((item) => item.id === itemId)) await transactionContext.prisma.shoppingListItem.delete({ where: { id: itemId } });
+    else {
+      const elsewhere = await transactionContext.prisma.shoppingListItem.findUnique({ where: { id: itemId }, select: { listId: true } });
+      if (elsewhere) throw new Error("Item does not belong to this shopping list");
+    }
+    return reloadList(transactionContext, listId);
   });
-  if (!item) {
-    const updatedList2 = await getShoppingListForUser(context, listId);
-    return formatShoppingListResponse(updatedList2);
-  }
-  if (item.list?.id !== listId) {
-    throw new Error("Item does not belong to this shopping list");
-  }
-  await sudoContext.query.ShoppingListItem.deleteOne({
-    where: { id: itemId }
-  });
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 async function updateListItemQuantity(root, {
   listId,
   itemId,
-  quantity
+  quantity,
+  expectedQuantity
 }, context) {
-  const sudoContext = context.sudo();
-  await getShoppingListForUser(context, listId);
-  const item = await sudoContext.query.ShoppingListItem.findOne({
-    where: { id: itemId },
-    query: "id list { id }"
+  if (!Number.isInteger(quantity) || quantity > 999) throw publicError("List quantities are whole numbers from 1 to 999.");
+  return withOwnedList(context, listId, async (transactionContext, list65) => {
+    const item = list65.items.find((entry) => entry.id === itemId);
+    if (!item) throw new Error("Item does not belong to this shopping list");
+    if (expectedQuantity !== null && expectedQuantity !== void 0 && item.quantity !== expectedQuantity) {
+      throw publicError("This item was changed in another window. Your list has been refreshed; try again.", "LIST_CHANGED");
+    }
+    if (quantity <= 0) await transactionContext.prisma.shoppingListItem.delete({ where: { id: itemId } });
+    else await transactionContext.prisma.shoppingListItem.update({ where: { id: itemId }, data: { quantity } });
+    return reloadList(transactionContext, listId);
   });
-  if (!item) {
-    throw new Error("Item not found");
-  }
-  if (item.list?.id !== listId) {
-    throw new Error("Item does not belong to this shopping list");
-  }
-  if (quantity <= 0) {
-    await sudoContext.query.ShoppingListItem.deleteOne({
-      where: { id: itemId }
-    });
-  } else {
-    await sudoContext.query.ShoppingListItem.updateOne({
-      where: { id: itemId },
-      data: { quantity }
-    });
-  }
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
 async function toggleListItemChecked(root, { listId, itemId }, context) {
-  const sudoContext = context.sudo();
-  await getShoppingListForUser(context, listId);
-  const item = await sudoContext.query.ShoppingListItem.findOne({
-    where: { id: itemId },
-    query: "id list { id } checked"
+  return withOwnedList(context, listId, async (transactionContext, list65) => {
+    const item = list65.items.find((entry) => entry.id === itemId);
+    if (!item) throw new Error("Item does not belong to this shopping list");
+    await transactionContext.prisma.shoppingListItem.update({ where: { id: itemId }, data: { checked: !item.checked } });
+    return reloadList(transactionContext, listId);
   });
-  if (!item) {
-    throw new Error("Item not found");
-  }
-  if (item.list?.id !== listId) {
-    throw new Error("Item does not belong to this shopping list");
-  }
-  await sudoContext.query.ShoppingListItem.updateOne({
-    where: { id: itemId },
-    data: { checked: !item.checked }
-  });
-  const updatedList = await getShoppingListForUser(context, listId);
-  return formatShoppingListResponse(updatedList);
 }
-async function addListToCart(root, { listId, sessionId }, context) {
-  const sudoContext = context.sudo();
-  const store = await requireSessionStore(context);
-  const list65 = await getShoppingListForUser(context, listId);
-  const uncheckedItems = list65.items.filter((item) => !item.checked);
-  if (uncheckedItems.length === 0) {
-    return {
-      success: true,
-      message: "No unchecked items to add to cart",
-      addedCount: 0,
-      skippedCount: 0,
-      skippedItems: []
-    };
-  }
-  let addedCount = 0;
-  const skippedItems = [];
-  for (const item of uncheckedItems) {
-    const products = await sudoContext.query.Product.findMany({
-      where: {
-        AND: [
-          { store: { id: { equals: store.id } } },
-          { status: { equals: "published" } },
-          item.productRef?.id ? { id: { equals: item.productRef.id } } : { title: { equals: item.product, mode: "insensitive" } }
-        ]
-      },
-      query: "id title store { id }",
-      take: 2
-    });
-    if (products.length !== 1) {
-      skippedItems.push(item.product);
-      continue;
-    }
-    const product = products[0];
-    try {
-      await addToCart(null, { productId: product.id, quantity: item.quantity, sessionId }, context);
-      addedCount++;
-    } catch (error) {
-      skippedItems.push(`${item.product} (${error instanceof Error ? error.message : "unavailable"})`);
-    }
-  }
-  return {
-    success: true,
-    message: `Added ${addedCount} items to cart${skippedItems.length > 0 ? `, skipped ${skippedItems.length}` : ""}`,
-    addedCount,
-    skippedCount: skippedItems.length,
-    skippedItems
-  };
+async function addListToCart(root, { listId, sessionId, requestKey: requestKey2 }, context) {
+  if (!context.session?.itemId) throw new Error("Must be logged in to manage shopping lists");
+  return addCartBatch(context, { requestKey: requestKey2 || null, source: "list", sourceId: listId, sessionId });
 }
 
 // features/keystone/mutations/manageShoppingLists.ts
+init_storeScope();
+init_publicError();
+var LIST_QUERY2 = "id name isDefault updatedAt items { id product productRef { id handle } quantity unit checked notes addedAt }";
 function requireUser(context) {
   if (!context.session?.itemId) throw new Error("Must be logged in to manage shopping lists");
   return context.session.itemId;
@@ -12595,38 +14864,42 @@ function normalizeShoppingListGraphQLResult(list65) {
 }
 async function createShoppingList(_root, { name }, context) {
   const userId = requireUser(context);
-  const normalizedName = name.trim();
-  if (!normalizedName) throw new Error("Shopping list name is required");
-  const sudoContext = context.sudo();
-  const existing = await sudoContext.query.ShoppingList.findMany({
-    where: {
-      user: { id: { equals: userId } },
-      name: { equals: normalizedName, mode: "insensitive" }
-    },
-    take: 1,
-    query: "id name isDefault updatedAt items { id product quantity unit checked notes addedAt }"
+  const normalizedName = typeof name === "string" ? name.trim().replace(/\s+/g, " ") : "";
+  if (!normalizedName || normalizedName.length > 100) throw publicError("Name your list (up to 100 characters).");
+  return context.transaction(async (transactionContext) => {
+    await transactionContext.prisma.$executeRawUnsafe(
+      "SELECT pg_advisory_xact_lock(hashtext('grocery-shopping-list'), hashtext($1))",
+      `${userId}:${normalizedName.toLowerCase()}`
+    );
+    await lockCurrentCustomer(transactionContext);
+    const sudoContext = transactionContext.sudo();
+    const existing = await sudoContext.query.ShoppingList.findMany({
+      where: { user: { id: { equals: userId } }, name: { equals: normalizedName, mode: "insensitive" } },
+      take: 1,
+      query: LIST_QUERY2
+    });
+    if (existing[0]) return normalizeShoppingListGraphQLResult(existing[0]);
+    const count = await transactionContext.prisma.shoppingList.count({ where: { userId } });
+    if (count >= 50) throw publicError("You can keep up to 50 shopping lists. Delete one you no longer use first.");
+    const created = await sudoContext.query.ShoppingList.createOne({
+      data: { name: normalizedName, user: { connect: { id: userId } } },
+      query: LIST_QUERY2
+    });
+    return normalizeShoppingListGraphQLResult(created);
   });
-  if (existing[0]) return normalizeShoppingListGraphQLResult(existing[0]);
-  const created = await sudoContext.query.ShoppingList.createOne({
-    data: { name: normalizedName, user: { connect: { id: userId } } },
-    query: "id name isDefault updatedAt items { id product quantity unit checked notes addedAt }"
-  });
-  return normalizeShoppingListGraphQLResult(created);
 }
 async function deleteShoppingList(_root, { listId }, context) {
   const userId = requireUser(context);
-  const sudoContext = context.sudo();
-  const list65 = await sudoContext.query.ShoppingList.findOne({
-    where: { id: listId },
-    query: "id user { id } items { id }"
+  return context.transaction(async (transactionContext) => {
+    await lockCurrentCustomer(transactionContext);
+    await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "ShoppingList" WHERE "id" = $1 FOR UPDATE', listId);
+    const list65 = await transactionContext.prisma.shoppingList.findUnique({ where: { id: listId }, select: { id: true, userId: true } });
+    if (!list65) return { success: true, listId };
+    if (list65.userId !== userId) throw new Error("Not authorized to delete this shopping list");
+    await transactionContext.prisma.shoppingListItem.deleteMany({ where: { listId } });
+    await transactionContext.prisma.shoppingList.delete({ where: { id: listId } });
+    return { success: true, listId };
   });
-  if (!list65) return { success: true, listId };
-  if (list65.user?.id !== userId) throw new Error("Not authorized to delete this shopping list");
-  for (const item of list65.items || []) {
-    await sudoContext.query.ShoppingListItem.deleteOne({ where: { id: item.id } });
-  }
-  await sudoContext.query.ShoppingList.deleteOne({ where: { id: listId } });
-  return { success: true, listId };
 }
 
 // features/keystone/mutations/getAvailablePickupSlots.ts
@@ -12859,8 +15132,9 @@ async function completePickupHandoff(context, orderId, expectedParkingSpotId) {
       if (order.status !== "delivered") await tx.parkingSpot.update({ where: { id: parkingSpotId }, data: { isAvailable: true } });
     }
     if (order.status !== "delivered") {
-      await tx.order.update({
-        where: { id: orderId },
+      assertTransition(ORDER_TRANSITIONS, "Order", order.status, "delivered");
+      const handedOver = await tx.order.updateMany({
+        where: { id: orderId, status: order.status },
         data: {
           status: "delivered",
           metadata: {
@@ -12871,6 +15145,7 @@ async function completePickupHandoff(context, orderId, expectedParkingSpotId) {
           }
         }
       });
+      if (handedOver.count !== 1) throw new Error("Order changed during handoff; refresh and retry");
     }
     return { order, parkingSpotId, spotNumber };
   }, { isolationLevel: "Serializable" }));
@@ -12894,365 +15169,6 @@ async function completeOrderHandoff(_root, { orderId }, context) {
     status: "delivered",
     message: `Order #${result.order.displayId} has been handed off successfully.`
   };
-}
-
-// features/keystone/mutations/initiatePaymentSession.ts
-init_groceryOutbox();
-var import_node_crypto22 = require("node:crypto");
-init_storeScope();
-init_payment();
-init_paymentProviderAdapter();
-function fulfillmentWindow2(startTime) {
-  const hour = Number.parseInt(startTime.slice(0, 2), 10);
-  if (hour < 10) return "time_8_10";
-  if (hour < 12) return "time_10_12";
-  if (hour < 14) return "time_12_14";
-  if (hour < 16) return "time_14_16";
-  if (hour < 18) return "time_16_18";
-  return "time_18_20";
-}
-async function initiatePaymentSessionWithDependencies(root, { cartId, paymentProviderId, deliverySlotId, pickupSlotId, sessionId, couponCode, recovery }, context, dependencies = { createPayment, ensureCheckoutAttempt }) {
-  assertPublicPaymentProvider(paymentProviderId);
-  if (context.session?.itemId) await requireSessionStore(context);
-  const sudoContext = context.sudo();
-  if (Boolean(deliverySlotId) === Boolean(pickupSlotId)) {
-    throw new Error("Choose exactly one live delivery or pickup slot");
-  }
-  const requestedFulfillmentMethod = pickupSlotId ? "pickup" : "delivery";
-  if (!/^\S+@\S+\.\S+$/.test(recovery?.email?.trim() || "") || recovery.email.length > 320) throw new Error("Checkout recovery requires a valid email");
-  for (const value of [recovery.deliveryAddress?.firstName, recovery.deliveryAddress?.lastName, recovery.deliveryAddress?.phone]) {
-    if (!value?.trim() || value.length > 200) throw new Error("Checkout recovery requires customer contact details");
-  }
-  if (requestedFulfillmentMethod === "delivery") {
-    for (const value of [recovery.deliveryAddress.address1, recovery.deliveryAddress.city, recovery.deliveryAddress.province, recovery.deliveryAddress.postalCode]) {
-      if (!value?.trim() || value.length > 200) throw new Error("Checkout recovery requires a valid delivery address");
-    }
-  }
-  if (!["call_me", "best_match", "refund"].includes(recovery.substitutionPreference)) {
-    throw new Error("Checkout recovery substitution preference is invalid");
-  }
-  const cart = await sudoContext.query.Cart.findOne({
-    where: { id: cartId },
-    query: `
-      id
-      store { id timezone isActive }
-      sessionId
-      expiresAt
-      customer { id }
-      subtotal
-      subtotalCents
-      items { id quantity substitutionPreference product { id title price priceCents taxRateBasisPoints pricingMethod unitOfMeasure department status store { id } inventoryLots { id expirationDate quantityRemaining safetyStatus conditionStatus store { id } } } }
-      paymentSessions {
-        id
-        isSelected
-        isInitiated
-        amount
-        idempotencyKey
-        paymentProvider {
-          id
-          code
-        }
-        data
-      }
-    `
-  });
-  if (!cart) {
-    throw new Error("Cart not found");
-  }
-  if (context.session?.itemId) {
-    if (cart.customer?.id !== context.session.itemId) {
-      throw new Error("You do not have access to this cart");
-    }
-  } else if (!sessionId?.trim() || cart.customer?.id || cart.sessionId !== sessionId.trim()) {
-    throw new Error("You do not have access to this cart");
-  }
-  if (!cart.store?.isActive) throw new Error("Cart store is unavailable");
-  if (!context.session?.itemId && cart.expiresAt && new Date(cart.expiresAt).getTime() <= Date.now()) {
-    throw new Error("Guest cart session has expired; start a new cart");
-  }
-  if (!cart.items?.length) throw new Error("Cart is empty");
-  const provider = await sudoContext.query.PaymentProvider.findOne({
-    where: { code: paymentProviderId },
-    query: "id code isInstalled"
-  });
-  if (!provider || !provider.isInstalled) {
-    throw new Error(`Payment provider ${paymentProviderId} not found or not installed`);
-  }
-  const deliverySlot = deliverySlotId ? await sudoContext.query.DeliverySlot.findOne({
-    where: { id: deliverySlotId },
-    query: "id date startTime endTime deliveryFee capacity currentBookings isActive store { id }"
-  }) : null;
-  const pickupSlot = pickupSlotId ? await sudoContext.query.PickupSlot.findOne({
-    where: { id: pickupSlotId },
-    query: "id date startTime endTime maxOrders currentOrders isActive isAvailable store { id }"
-  }) : null;
-  if (deliverySlotId && (!deliverySlot || deliverySlot.store?.id !== cart.store?.id)) {
-    throw new Error("Selected delivery slot was not found in the active store");
-  }
-  if (pickupSlotId && (!pickupSlot || pickupSlot.store?.id !== cart.store?.id)) {
-    throw new Error("Selected pickup slot was not found in the active store");
-  }
-  const selectedSlot = deliverySlot || pickupSlot;
-  if (!selectedSlot || !isLiveFulfillmentSlot(selectedSlot, cart.store.timezone)) {
-    throw new Error("Selected fulfillment slot is no longer a live Store-local window");
-  }
-  const storeSettings = await context.prisma.storeSettings.findFirst({
-    where: { storeId: cart.store.id, isActive: true },
-    select: { hours: true, deliveryPolicy: true }
-  });
-  const windowDecision = evaluateFulfillmentWindow({
-    hours: storeSettings?.hours,
-    timeZone: cart.store.timezone,
-    date: selectedSlot.date,
-    startTime: selectedSlot.startTime,
-    endTime: selectedSlot.endTime
-  });
-  if (!storeSettings || !windowDecision.allowed) {
-    throw new Error("Selected fulfillment slot is outside current Store hours, blackout, horizon, or cutoff policy");
-  }
-  if (deliverySlot && !deliverySlot.isActive) {
-    throw new Error("Selected delivery slot is no longer available");
-  }
-  if (pickupSlot && (!pickupSlot.isActive || !pickupSlot.isAvailable)) {
-    throw new Error("Selected pickup slot is no longer available");
-  }
-  if (deliverySlot && deliverySlot.capacity - deliverySlot.currentBookings <= 0) {
-    throw new Error("Selected delivery slot is fully booked");
-  }
-  if (pickupSlot && pickupSlot.maxOrders - pickupSlot.currentOrders <= 0) {
-    throw new Error("Selected pickup slot is fully booked");
-  }
-  const fulfillmentMethod = pickupSlot ? "pickup" : "delivery";
-  const now = new Date(Math.max(Date.now(), zonedDateTimeForDateKey(zonedDateKey(selectedSlot.date, cart.store.timezone), selectedSlot.endTime, cart.store.timezone).getTime()));
-  let subtotalCents = 0;
-  for (const item of cart.items) {
-    const product = item.product;
-    if (!product || product.store?.id !== cart.store.id || product.status !== "published") {
-      throw new Error("Cart contains a product that is no longer available");
-    }
-    assertSellableQuantity(product, cart.store.id, item.quantity, now);
-    subtotalCents += Number(product.priceCents ?? Math.round(Number(product.price || 0) * 100)) * item.quantity;
-  }
-  const subtotalDollars = subtotalCents / 100;
-  await sudoContext.db.Cart.updateOne({ where: { id: cart.id }, data: { subtotal: subtotalDollars, subtotalCents, itemCount: cart.items.reduce((sum, item) => sum + item.quantity, 0) } });
-  const taxRateBps = await getStoreTaxRateBps(context, cart.store?.id);
-  let deliveryFeeDollars = Number(((deliverySlot?.deliveryFee || 0) / 100).toFixed(2));
-  let discountDollars = 0;
-  let couponSnapshot = null;
-  if (couponCode?.trim()) {
-    const coupon = await sudoContext.query.Coupon.findOne({ where: { code: couponCode.trim().toUpperCase() }, query: "id code discountType discountValue discountValueCents minPurchase minPurchaseCents validFrom validTo isActive maxUses currentUses productCategories excludedProducts store { id }" });
-    if (!coupon || coupon.store?.id !== cart.store?.id) throw new Error("Coupon is not available for this store");
-    await validateLoyaltyCoupon(context.prisma, coupon.id, context.session?.itemId, cart.store.id);
-    discountDollars = calculateCouponDiscount(coupon, cart.items || []);
-    couponSnapshot = { id: coupon.id, code: coupon.code, discountType: coupon.discountType, discountValue: coupon.discountValue, discountAmount: discountDollars, productCategories: coupon.productCategories, excludedProducts: coupon.excludedProducts, minPurchaseCents: coupon.minPurchaseCents, discountValueCents: coupon.discountValueCents };
-  }
-  const discountCents = Math.round(discountDollars * 100);
-  const service = evaluateDeliveryPolicy(storeSettings.deliveryPolicy, fulfillmentMethod, recovery.deliveryAddress.postalCode, subtotalCents - discountCents);
-  deliveryFeeDollars += service.feeCents / 100;
-  const commercial = priceCommercialLines(cart.items.map((item) => ({
-    id: item.id,
-    subtotalCents: Number(item.product.priceCents) * item.quantity,
-    taxRateBasisPoints: item.product.taxRateBasisPoints ?? taxRateBps,
-    discountEligible: isCouponLineEligible(item.product, couponSnapshot)
-  })), discountCents, Math.round(deliveryFeeDollars * 100), service.feeTaxRateBasisPoints);
-  const taxCents = commercial.taxCents;
-  const taxDollars = taxCents / 100;
-  const amountInCents = Math.max(0, subtotalCents + taxCents + Math.round(deliveryFeeDollars * 100) - discountCents);
-  const totalDollars = amountInCents / 100;
-  const slotKey = pickupSlotId ? `pickup:${pickupSlotId}` : `delivery:${deliverySlotId || "no-slot"}`;
-  const couponIdentity = couponSnapshot ? `${couponSnapshot.id}:${couponSnapshot.code}` : "none";
-  let idempotencyKey = `${cart.id}:${provider.code}:${slotKey}:coupon:${couponIdentity}:amount:${amountInCents}`;
-  const sessionSelection = `
-    id
-    data
-    amount
-    amountCents
-    reservedOrderDisplayId
-    idempotencyKey
-    isInitiated
-    isSelected
-    paymentProvider { id code }
-  `;
-  const claimData = {
-    commercial,
-    deliveryPolicySnapshot: service.policy,
-    captureMethod: "manual",
-    subtotal: subtotalDollars,
-    tax: taxDollars,
-    deliveryFee: deliveryFeeDollars,
-    total: totalDollars,
-    fulfillmentMethod,
-    taxRateBps,
-    fulfillmentSlot: {
-      id: (pickupSlot || deliverySlot)?.id,
-      date: (pickupSlot || deliverySlot)?.date,
-      startTime: (pickupSlot || deliverySlot)?.startTime,
-      endTime: (pickupSlot || deliverySlot)?.endTime
-    },
-    deliverySlotId: deliverySlotId || null,
-    pickupSlotId: pickupSlotId || null,
-    amountInCents,
-    couponCode: couponCode?.trim().toUpperCase() || null,
-    coupon: couponSnapshot,
-    discount: discountDollars,
-    currency: "usd"
-  };
-  const checkoutRequest = (paymentSessionId, providerPaymentId) => ({
-    cartId: cart.id,
-    paymentSessionId,
-    paymentIntentId: providerPaymentId,
-    sessionId: context.session?.itemId ? void 0 : sessionId?.trim(),
-    couponCode: couponCode?.trim().toUpperCase() || void 0,
-    email: recovery.email.trim(),
-    deliveryAddress: recovery.deliveryAddress,
-    deliveryDate: new Date(selectedSlot.date).toISOString(),
-    deliveryTimeWindow: fulfillmentWindow2(selectedSlot.startTime),
-    fulfillmentMethod,
-    deliverySlotId: deliverySlotId || void 0,
-    pickupSlotId: pickupSlotId || void 0,
-    deliveryFee: deliveryFeeDollars,
-    expectedTotal: totalDollars,
-    substitutionPreference: recovery.substitutionPreference,
-    deliveryInstructions: recovery.deliveryInstructions?.trim() || void 0,
-    checkoutOwnerId: context.session?.itemId || null
-  });
-  const checkoutFingerprint = checkoutRequestFingerprint(checkoutRequest("", ""));
-  const cartFingerprint = checkoutCartFingerprint(cart);
-  idempotencyKey = `grocery-checkout:${groceryOutboxPayloadHash({ commercialKey: idempotencyKey, checkoutFingerprint, cartFingerprint })}`;
-  let claim;
-  try {
-    claim = await context.transaction(async (transactionContext) => {
-      if (context.session?.itemId) {
-        await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id"=$1 FOR UPDATE', context.session.itemId);
-        const owner = await transactionContext.prisma.user.findUnique({ where: { id: context.session.itemId }, select: { id: true, storeId: true, privacyErasedAt: true } });
-        if (!owner || owner.privacyErasedAt || owner.storeId !== cart.store.id) throw new Error("Checkout customer is no longer active");
-      }
-      await transactionContext.prisma.$queryRawUnsafe('SELECT "id" FROM "Cart" WHERE "id"=$1 FOR UPDATE', cart.id);
-      const freshCart = await transactionContext.sudo().query.Cart.findOne({ where: { id: cart.id }, query: "id customer { id } sessionId items { id quantity substitutionPreference product { id priceCents taxRateBasisPoints pricingMethod unitOfMeasure } }" });
-      if (!freshCart || checkoutCartFingerprint(freshCart) !== cartFingerprint || (context.session?.itemId ? freshCart.customer?.id !== context.session.itemId : freshCart.customer?.id || freshCart.sessionId !== sessionId?.trim())) throw new Error("Cart changed while payment was being prepared; review checkout");
-      await transactionContext.prisma.$queryRaw`
-      WITH payment_lock AS MATERIALIZED (
-        SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))
-      )
-      SELECT true AS locked FROM payment_lock
-    `;
-      await transactionContext.prisma.$queryRaw`SELECT "id" FROM "PaymentSession" WHERE "idempotencyKey" = ${idempotencyKey} FOR UPDATE`;
-      const existingRows = await transactionContext.sudo().query.PaymentSession.findMany({
-        where: { idempotencyKey: { equals: idempotencyKey } },
-        take: 1,
-        query: sessionSelection
-      });
-      const existing = existingRows[0] || null;
-      const now2 = Date.now();
-      const creation = claimPaymentCreationData(existing?.data, { ...claimData, checkoutFingerprint, cartFingerprint }, (0, import_node_crypto22.randomUUID)(), now2);
-      if (creation.action !== "create") return { session: existing, shouldCreate: false };
-      const baseData = { ...creation.data, ...!existing ? { creationBindingVersion: 1, recoveryRequest: checkoutRequest("", "") } : {} };
-      const reservedOrderDisplayId = existing?.reservedOrderDisplayId || await (async () => {
-        await transactionContext.prisma.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-order-display-id'), hashtext('allocation'))");
-        const [orderMax, sessionMax] = await Promise.all([
-          transactionContext.prisma.order.aggregate({ _max: { displayId: true } }),
-          transactionContext.prisma.paymentSession.aggregate({ _max: { reservedOrderDisplayId: true } })
-        ]);
-        return Math.max(orderMax._max.displayId || 0, sessionMax._max.reservedOrderDisplayId || 0) + 1;
-      })();
-      if (existing) {
-        const updated = await transactionContext.sudo().query.PaymentSession.updateOne({
-          where: { id: existing.id },
-          data: { isSelected: true, isInitiated: false, amountCents: amountInCents, reservedOrderDisplayId, data: baseData },
-          query: sessionSelection
-        });
-        return { session: updated, shouldCreate: true };
-      }
-      const existingSelected = await transactionContext.sudo().query.PaymentSession.findMany({
-        where: { cart: { id: { equals: cart.id } }, isSelected: { equals: true } },
-        query: "id"
-      });
-      for (const selected of existingSelected) {
-        await transactionContext.sudo().query.PaymentSession.updateOne({ where: { id: selected.id }, data: { isSelected: false } });
-      }
-      const created = await transactionContext.sudo().query.PaymentSession.createOne({
-        data: {
-          cart: { connect: { id: cart.id } },
-          paymentProvider: { connect: { id: provider.id } },
-          amount: totalDollars.toFixed(2),
-          idempotencyKey,
-          isSelected: true,
-          isInitiated: false,
-          amountCents: amountInCents,
-          reservedOrderDisplayId,
-          data: baseData
-        },
-        query: sessionSelection
-      });
-      const bound = await transactionContext.sudo().query.PaymentSession.updateOne({
-        where: { id: created.id },
-        data: { data: { ...baseData, recoveryRequest: { ...baseData.recoveryRequest, paymentSessionId: created.id } } },
-        query: sessionSelection
-      });
-      return { session: bound, shouldCreate: true };
-    });
-  } catch (error) {
-    const candidate = error;
-    const errorCode = candidate.code || candidate.extensions?.prisma?.code;
-    if (errorCode !== "P2002") throw error;
-    const winner = await sudoContext.query.PaymentSession.findMany({ where: { idempotencyKey: { equals: idempotencyKey } }, take: 1, query: sessionSelection });
-    if (!winner[0]) throw error;
-    claim = { session: winner[0], shouldCreate: false };
-  }
-  if (!claim.shouldCreate) {
-    for (let attempt = 0; attempt < 25; attempt += 1) {
-      const ready = await sudoContext.query.PaymentSession.findOne({ where: { id: claim.session.id }, query: sessionSelection });
-      if (ready?.data?.paymentIntentId && ["ready", "attempt_pending", "unknown"].includes(ready.data?.status)) {
-        const providerPaymentId = ready.data?.paymentIntentId;
-        if (!providerPaymentId) throw new Error("Payment session is missing a durable payment identity");
-        await dependencies.ensureCheckoutAttempt(context, checkoutRequest(ready.id, providerPaymentId), cart, ready, providerPaymentId);
-        if (ready.data.status !== "ready") return writePaymentCreationResult(context, { sessionId: ready.id, phase: "ready", paymentIntentId: providerPaymentId });
-        return ready;
-      }
-      if (ready?.data?.status === "failed") throw new Error(ready.data.error || "Payment session initiation failed");
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    throw new Error("Payment session is still being initialized; please retry without changing the cart or slot");
-  }
-  try {
-    const sessionData = amountInCents === 0 ? {
-      paymentIntentId: `grocery_no_charge:${claim.session.id}`,
-      clientSecret: void 0,
-      noCharge: {
-        version: 1,
-        amountCents: 0,
-        paymentSessionId: claim.session.id,
-        reason: couponSnapshot && subtotalCents > 0 ? "coupon_covers_total" : "zero_priced_goods",
-        couponId: couponSnapshot?.id || null,
-        authorizedAt: (/* @__PURE__ */ new Date()).toISOString()
-      }
-    } : await dependencies.createPayment({
-      provider,
-      cart: claim.session.data.creationBindingVersion === 1 ? { ...cart, checkoutPaymentSessionId: claim.session.id, checkoutFingerprint, cartFingerprint } : cart,
-      amount: amountInCents,
-      currency: "usd",
-      captureMethod: "manual",
-      idempotencyKey
-    });
-    const providerPaymentId = sessionData?.paymentIntentId;
-    const ready = await writePaymentCreationResult(context, {
-      sessionId: claim.session.id,
-      claimToken: claim.session.data.creationClaimToken,
-      phase: "provider_ready",
-      paymentIntentId: providerPaymentId,
-      clientSecret: sessionData?.clientSecret,
-      noCharge: sessionData?.noCharge
-    });
-    if (!providerPaymentId) throw new Error("Payment provider did not return a durable payment identity");
-    await dependencies.ensureCheckoutAttempt(context, checkoutRequest(ready.id, providerPaymentId), cart, ready, providerPaymentId);
-    return writePaymentCreationResult(context, { sessionId: ready.id, phase: "ready", paymentIntentId: providerPaymentId });
-  } catch (error) {
-    await writePaymentCreationResult(context, { sessionId: claim.session.id, claimToken: claim.session.data.creationClaimToken, phase: "unknown" });
-    throw error;
-  }
-}
-function initiatePaymentSession(root, args, context) {
-  return initiatePaymentSessionWithDependencies(root, args, context);
 }
 
 // features/keystone/mutations/getGuestGroceryOrder.ts
@@ -13403,63 +15319,88 @@ async function getPublicGroceryAvailability(root, args, context) {
 
 // features/keystone/mutations/getPublicGroceryCoupons.ts
 init_storeScope();
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
+}
 async function getPublicGroceryCoupons(_root, _args, context) {
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now = /* @__PURE__ */ new Date();
   const store = await publicStore(context);
-  const coupons = await context.sudo().query.Coupon.findMany({
+  const coupons = await context.prisma.coupon.findMany({
     where: {
+      storeId: store.id,
+      isActive: true,
+      from_LoyaltyRedemption_coupon: { none: {} },
       AND: [
-        { isActive: { equals: true } },
-        { store: { id: { equals: store.id } } },
-        {
-          OR: [
-            { validFrom: { equals: null } },
-            { validFrom: { lte: now } }
-          ]
-        },
-        {
-          OR: [
-            { validTo: { equals: null } },
-            { validTo: { gte: now } }
-          ]
-        }
+        { OR: [{ validFrom: null }, { validFrom: { lte: now } }] },
+        { OR: [{ validTo: null }, { validTo: { gte: now } }] }
       ]
     },
-    query: `
-      id
-      code
-      discountType
-      discountValue
-      minPurchase
-      maxUses
-      currentUses
-      validTo
-      productCategories
-    `,
-    orderBy: [{ validTo: "asc" }, { code: "asc" }]
+    select: { id: true, code: true, discountType: true, discountValue: true, discountValueCents: true, minPurchaseCents: true, maxUses: true, currentUses: true, validTo: true, productCategories: true, excludedProducts: true },
+    orderBy: [{ validTo: "asc" }, { code: "asc" }],
+    take: 100
   });
-  return coupons.flatMap((coupon) => {
-    const maxUses = Number(coupon.maxUses || 0);
-    const currentUses = Number(coupon.currentUses || 0);
-    if (maxUses > 0 && currentUses >= maxUses) return [];
-    return [{
-      id: coupon.id,
-      code: coupon.code,
-      discountType: coupon.discountType,
-      discountValue: coupon.discountValue || 0,
-      minPurchase: coupon.minPurchase || 0,
-      validTo: coupon.validTo || null,
-      productCategories: Array.isArray(coupon.productCategories) ? coupon.productCategories.filter((item) => typeof item === "string") : []
-    }];
+  const live = coupons.filter((coupon) => !(Number(coupon.maxUses || 0) > 0 && Number(coupon.currentUses || 0) >= Number(coupon.maxUses || 0)));
+  const excludedIds = [...new Set(live.flatMap((coupon) => stringArray(coupon.excludedProducts)))].slice(0, 500);
+  const excludedProducts = excludedIds.length ? await context.prisma.product.findMany({ where: { id: { in: excludedIds }, storeId: store.id, status: "published" }, select: { id: true, title: true } }) : [];
+  const titles = new Map(excludedProducts.map((product) => [product.id, product.title]));
+  return live.map((coupon) => ({
+    id: coupon.id,
+    code: coupon.code.trim().toUpperCase(),
+    discountType: coupon.discountType,
+    // Percentage offers carry their percentage; fixed offers their authoritative cents.
+    discountValue: coupon.discountType === "percentage" ? Number(coupon.discountValue || 0) : Number(coupon.discountValueCents || 0) / 100,
+    minPurchase: Number(coupon.minPurchaseCents || 0) / 100,
+    validTo: coupon.validTo ? coupon.validTo.toISOString() : null,
+    productCategories: stringArray(coupon.productCategories),
+    excludedProductNames: stringArray(coupon.excludedProducts).map((id) => titles.get(id)).filter((title) => Boolean(title))
+  }));
+}
+
+// features/keystone/mutations/updateGroceryStoreLogo.ts
+init_access();
+init_storeScope();
+async function updateGroceryStoreLogo(_root, args, context) {
+  await requireFreshCapability(context, "canManageOnboarding");
+  const store = await requireSessionStore(context);
+  if (!Object.prototype.hasOwnProperty.call(args, "logoIcon")) {
+    throw new Error("Choose a logo or explicitly use the existing logo path");
+  }
+  const logoIcon = args.logoIcon ? sanitizeStoreLogoSvg(args.logoIcon) : null;
+  if (args.logoIcon && !logoIcon) throw new Error("Logo must be a valid, safe SVG document");
+  const settings = await context.prisma.storeSettings.findUnique({
+    where: { storeId: store.id },
+    select: { id: true }
   });
+  if (!settings) throw new Error("Store settings are not initialized");
+  const updated = await context.db.StoreSettings.updateOne({
+    where: { id: String(settings.id) },
+    data: { logoIcon, logoColor: normalizeStoreLogoColor(args.logoColor) }
+  });
+  return {
+    logoIcon: sanitizeStoreLogoSvg(updated.logoIcon || "") || null,
+    logoColor: normalizeStoreLogoColor(updated.logoColor)
+  };
 }
 
 // features/keystone/mutations/getPublicGroceryStorefrontSettings.ts
 init_access();
 init_storeScope();
+
+// features/lib/onboarding-placeholders.ts
+var PLACEHOLDER_EMAIL = "replace-with-your-store-email@example.com";
+function isOnboardingPlaceholder(value) {
+  if (typeof value !== "string") return false;
+  const text63 = value.trim();
+  return /^replace with your\b/i.test(text63) || text63.toLowerCase() === PLACEHOLDER_EMAIL;
+}
+
+// features/keystone/mutations/getPublicGroceryStorefrontSettings.ts
 function optionalText(value) {
   const normalized = value?.trim();
   return normalized || null;
+}
+function publicText(value) {
+  return isOnboardingPlaceholder(value) ? null : optionalText(value);
 }
 async function getPublicGroceryStorefrontSettings(_root, _args, context) {
   const store = await publicStore(context);
@@ -13475,34 +15416,52 @@ async function getPublicGroceryStorefrontSettings(_root, _args, context) {
       contactPhone: true,
       address: true,
       logoUrl: true,
+      logoIcon: true,
+      logoColor: true,
       brandHue: true,
       currencyCode: true,
       locale: true,
       timezone: true,
       countryCode: true,
+      hours: true,
+      policyNotes: true,
+      deliveryPolicy: true,
       isActive: true
     }
   });
   if (!settings?.isActive) throw new Error("No active grocery storefront settings are configured");
-  const name = optionalText(settings.name) || optionalText(store.name);
-  if (!name) throw new Error("The active grocery storefront has no configured name");
+  const name = publicText(settings.name) || publicText(store.name);
   const brandHue = normalizeStorefrontBrandHue(settings.brandHue);
+  let deliveryPolicy = null;
+  try {
+    deliveryPolicy = normalizeDeliveryPolicy(settings.deliveryPolicy);
+  } catch {
+    deliveryPolicy = null;
+  }
   return {
     id: String(settings.id),
     name,
-    tagline: optionalText(settings.tagline),
-    homepageTitle: optionalText(settings.homepageTitle),
-    homepageDescription: optionalText(settings.homepageDescription),
-    contactEmail: optionalText(settings.contactEmail),
-    contactPhone: optionalText(settings.contactPhone),
-    address: optionalText(settings.address),
+    setupIncomplete: !name,
+    tagline: publicText(settings.tagline),
+    homepageTitle: publicText(settings.homepageTitle),
+    homepageDescription: publicText(settings.homepageDescription),
+    contactEmail: publicText(settings.contactEmail),
+    contactPhone: publicText(settings.contactPhone),
+    address: publicText(settings.address),
     logoUrl: optionalText(settings.logoUrl),
+    logoIcon: sanitizeStoreLogoSvg(settings.logoIcon || "") || null,
+    logoColor: normalizeStoreLogoColor(settings.logoColor),
     brandHue,
     effectiveBrandHue: effectiveStorefrontBrandHue(brandHue),
     currencyCode: optionalText(settings.currencyCode),
     locale: optionalText(settings.locale),
     timezone: optionalText(settings.timezone),
-    countryCode: optionalText(settings.countryCode)
+    countryCode: optionalText(settings.countryCode),
+    openingHours: publicOpeningHours(settings.hours),
+    policyNotes: publicText(settings.policyNotes),
+    deliveryPostalPrefixes: deliveryPolicy?.postalPrefixes ?? [],
+    deliveryMinimumCents: deliveryPolicy?.deliveryMinimumCents ?? 0,
+    pickupMinimumCents: deliveryPolicy?.pickupMinimumCents ?? 0
   };
 }
 async function updateGroceryStorefrontBrandHue(_root, args, context) {
@@ -13536,16 +15495,17 @@ function catalogPageQuery(args) {
   const filters = ['p."store" = $1', `p."status" = 'published'`];
   if (args.ids?.length) filters.push(`p."id" = ANY(${bind([...new Set(args.ids)].slice(0, 100))}::text[])`);
   if (args.handle) filters.push(`p."handle" = ${bind(args.handle)}`);
-  if (args.department?.trim()) filters.push(`d."handle" = ${bind(args.department.trim())}`);
+  if (args.department?.trim()) filters.push(`d."handle" = ${bind(args.department.trim())} AND d."isActive" = true`);
   if (args.search?.trim()) {
-    const p = bind(`%${args.search.trim().slice(0, 200).replace(/[\\%_]/g, "\\$&")}%`);
-    filters.push(`(p."title" ILIKE ${p} OR p."sku" ILIKE ${p} OR p."handle" ILIKE ${p})`);
+    const p2 = bind(`%${args.search.trim().slice(0, 200).replace(/[\\%_]/g, "\\$&")}%`);
+    filters.push(`(p."title" ILIKE ${p2} OR p."sku" ILIKE ${p2} OR p."handle" ILIKE ${p2})`);
   }
   if (args.organic === true) filters.push('p."organicCertified" = true');
   const availability = args.availability || "in-stock";
-  if (!["all", "in-stock", "low-stock"].includes(availability)) throw new Error("Unsupported catalog availability filter");
+  if (!["all", "in-stock", "low-stock", "on-sale"].includes(availability)) throw new Error("Unsupported catalog availability filter");
   if (availability !== "all") filters.push("COALESCE(stock.quantity,0)>0");
   if (availability === "low-stock") filters.push("COALESCE(stock.quantity,0)<10");
+  if (availability === "on-sale") filters.push('p."compareAtPrice" > p."price"');
   const order = { "price-asc": 'p."priceCents" ASC', "price-desc": 'p."priceCents" DESC', newest: 'p."createdAt" DESC', "low-stock": "COALESCE(stock.quantity,0) ASC" };
   const from = `FROM "Product" p LEFT JOIN "Department" d ON d."id"=p."departmentRef"
     LEFT JOIN (SELECT "product",SUM("quantityRemaining") AS quantity FROM "InventoryLot"
@@ -13559,6 +15519,41 @@ function catalogPageQuery(args) {
     take,
     skip
   };
+}
+
+// features/keystone/mutations/getPublicGroceryCatalog.ts
+init_publicError();
+
+// features/keystone/lib/customerCommunications.ts
+function communicationAllowed(type, preference) {
+  if (preference && Array.isArray(preference.channels) && !preference.channels.includes("email")) return false;
+  if (type === "product.back_in_stock") return preference?.backInStock !== false;
+  if (type === "product.price_drop") return preference?.priceDrops !== false;
+  if (type === "order.dispatched") return preference?.deliveryAlerts !== false;
+  return preference?.orderUpdates !== false;
+}
+
+// features/keystone/lib/notificationConsent.ts
+async function currentNotificationPreference(prisma, userId) {
+  return prisma.notificationPreference.findFirst({ where: { userId }, orderBy: { updatedAt: "desc" } });
+}
+function emailAllowedFor(type, preference) {
+  return communicationAllowed(type, preference);
+}
+async function enableEmailCategory(prisma, userId, category) {
+  const existing = await currentNotificationPreference(prisma, userId);
+  const channels = Array.isArray(existing?.channels) ? existing.channels.filter((value) => typeof value === "string") : ["email"];
+  const emailWasOff = Boolean(existing) && !channels.includes("email");
+  const data = {
+    channels: emailWasOff ? [...channels, "email"] : channels,
+    orderUpdates: emailWasOff ? false : existing?.orderUpdates ?? true,
+    deliveryAlerts: emailWasOff ? false : existing?.deliveryAlerts ?? true,
+    backInStock: emailWasOff ? false : existing?.backInStock ?? true,
+    priceDrops: emailWasOff ? false : existing?.priceDrops ?? true,
+    [category]: true
+  };
+  if (existing) await prisma.notificationPreference.update({ where: { id: existing.id }, data });
+  else await prisma.notificationPreference.create({ data: { ...data, userId } });
 }
 
 // features/keystone/mutations/getPublicGroceryCatalog.ts
@@ -13586,7 +15581,8 @@ function mapCatalogProduct(product, storeId, requestedAlerts, now) {
     shelfLife: product.shelfLife,
     organicCertified: product.organicCertified,
     allergens: Array.isArray(product.allergens) ? product.allergens : [],
-    department: product.departmentRef,
+    // A hidden aisle's details are not published; its products may still be found by search.
+    department: product.departmentRef?.isActive ? product.departmentRef : null,
     inStock: sellableQuantity > 0,
     stockQuantity: sellableQuantity,
     backInStockRequested: requestedAlerts.has(product.id),
@@ -13620,6 +15616,8 @@ async function loadCatalog(context, args, now) {
       pricingMethod: true,
       imageUrl: true,
       thumbnailUrl: true,
+      image_id: true,
+      image_extension: true,
       isPerishable: true,
       shelfLife: true,
       organicCertified: true,
@@ -13630,7 +15628,7 @@ async function loadCatalog(context, args, now) {
     }
   });
   const rowsById = new Map(rows.map((row) => [row.id, row]));
-  const ordered = identities.flatMap((row) => rowsById.has(row.id) ? [{ ...rowsById.get(row.id), sellableQuantity: quantityById.get(row.id) }] : []);
+  const ordered = await Promise.all(identities.flatMap((row) => rowsById.has(row.id) ? [{ ...rowsById.get(row.id), sellableQuantity: quantityById.get(row.id) }] : []).map(async (row) => ({ ...row, ...await resolveProductImage(context, row) })));
   const requestedAlerts = /* @__PURE__ */ new Set();
   if (context.session?.itemId && rows.length) {
     const alerts = await context.prisma.backInStockAlert.findMany({
@@ -13660,7 +15658,7 @@ async function getPublicGroceryProduct(_root, { handle }, context) {
   const { products } = await loadCatalog(context, { handle: normalized, availability: "all", take: 1 }, /* @__PURE__ */ new Date());
   return products.find((product) => product.handle === normalized) || null;
 }
-async function requestGroceryBackInStockAlert(_root, { productId }, context) {
+async function requestGroceryBackInStockAlert(_root, { productId, enableEmail }, context) {
   if (!context.session?.itemId) throw new Error("Sign in to request a back-in-stock alert");
   const store = await requireSessionStore(context);
   const product = await context.prisma.product.findFirst({
@@ -13685,6 +15683,21 @@ async function requestGroceryBackInStockAlert(_root, { productId }, context) {
       "SELECT pg_advisory_xact_lock(hashtext('grocery-back-in-stock'), hashtext($1))",
       `${context.session?.itemId}:${product.id}`
     );
+    await lockCurrentCustomer(transactionContext);
+    const userId = context.session.itemId;
+    const preference = await currentNotificationPreference(transactionContext.prisma, userId);
+    if (!emailAllowedFor("product.back_in_stock", preference)) {
+      if (!enableEmail) {
+        return {
+          requested: false,
+          reused: false,
+          productId: product.id,
+          emailDisabled: true,
+          message: "Back-in-stock emails are turned off in your email preferences, so no alert was set."
+        };
+      }
+      await enableEmailCategory(transactionContext.prisma, userId, "backInStock");
+    }
     const existing = await transactionContext.prisma.backInStockAlert.findFirst({
       where: { userId: context.session?.itemId, productRefId: product.id, isActive: true },
       select: { id: true }
@@ -13703,25 +15716,56 @@ async function requestGroceryBackInStockAlert(_root, { productId }, context) {
       requested: true,
       reused: Boolean(existing),
       productId: product.id,
-      message: existing ? "Back-in-stock alert is already active" : "Back-in-stock alert requested"
+      emailDisabled: false,
+      message: existing ? "Back-in-stock alert is already active" : "Back-in-stock alert requested. We\u2019ll email you when it\u2019s back."
     };
+  });
+}
+async function requestGroceryPriceAlert(_root, { productId, targetPrice, enableEmail }, context) {
+  if (!context.session?.itemId) throw new Error("Sign in to request a price alert");
+  const store = await requireSessionStore(context);
+  const match = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(String(targetPrice || "").trim().replace(/^\$/, ""));
+  if (!match) throw publicError("Enter a target price like 3.49.");
+  const targetCents = Number(match[1]) * 100 + Number((match[2] || "").padEnd(2, "0"));
+  const product = await context.prisma.product.findFirst({ where: { id: productId, storeId: store.id, status: "published" }, select: { id: true, title: true, priceCents: true } });
+  if (!product) throw publicError("This product is not available.");
+  if (targetCents <= 0 || targetCents >= Number(product.priceCents)) throw publicError("Choose a target below the current price.");
+  return context.transaction(async (transactionContext) => {
+    const userId = context.session.itemId;
+    await transactionContext.prisma.$executeRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-price-alert'), hashtext($1))", `${userId}:${product.id}`);
+    await lockCurrentCustomer(transactionContext);
+    const preference = await currentNotificationPreference(transactionContext.prisma, userId);
+    if (!emailAllowedFor("product.price_drop", preference)) {
+      if (!enableEmail) return { requested: false, emailDisabled: true, message: "Price-drop emails are turned off in your email preferences, so no alert was set." };
+      await enableEmailCategory(transactionContext.prisma, userId, "priceDrops");
+    }
+    const existing = await transactionContext.prisma.priceAlert.findFirst({ where: { userId, productRefId: product.id, isTriggered: false }, select: { id: true } });
+    const targetPriceText = (targetCents / 100).toFixed(2);
+    if (existing) await transactionContext.prisma.priceAlert.update({ where: { id: existing.id }, data: { targetPrice: targetPriceText } });
+    else await transactionContext.prisma.priceAlert.create({ data: { userId, productRefId: product.id, product: product.title, targetPrice: targetPriceText, currentPrice: (Number(product.priceCents) / 100).toFixed(2) } });
+    return { requested: true, emailDisabled: false, message: `We\u2019ll email you if ${product.title} drops to ${targetPriceText} or less.` };
   });
 }
 
 // features/keystone/mutations/index.ts
 init_payment();
 
+// features/keystone/mutations/runGroceryOnboarding.ts
+init_payment();
+
 // features/platform/onboarding/lib/seed.json
 var seed_default = {
   storeSettings: {
-    name: "Juniper Market",
+    name: "Replace with your store name",
     tagline: "Neighborhood grocery \xB7 delivery & curbside pickup",
     homepageTitle: "Fresh from the neighborhood",
     homepageDescription: "Seasonal produce, pantry staples, and household essentials selected for everyday shopping.",
-    contactEmail: "hello@junipermarket.example",
-    contactPhone: "(415) 555-0148",
-    address: "184 Juniper Street, San Francisco, CA 94107",
+    contactEmail: "replace-with-your-store-email@example.com",
+    contactPhone: "Replace with your store phone number",
+    address: "Replace with your store street address, city, state and ZIP code",
     logoUrl: "/logo.svg",
+    logoIcon: "capsule",
+    logoColor: "297",
     brandHue: 35,
     currencyCode: "USD",
     taxRateBps: 875,
@@ -13756,6 +15800,15 @@ var seed_default = {
         ]
       }
     },
+    deliveryPolicy: {
+      version: 1,
+      pickupMinimumCents: 0,
+      deliveryMinimumCents: 0,
+      postalPrefixes: [],
+      deliveryFeeCents: 0,
+      feeTaxRateBasisPoints: 0
+    },
+    policyNotes: "Replace with your store's own policies (returns, refunds, age-restricted goods). Shoppers see this on the Policies page once you replace it.",
     isActive: true
   },
   departments: [
@@ -13859,6 +15912,9 @@ var seed_default = {
     {
       title: "Organic Bananas",
       handle: "organic-bananas",
+      description: "Ripe organic Cavendish bananas, sold loose by the pound. A medium banana weighs about 0.4 lb.",
+      nutrition: { servingSize: "1 medium banana (118 g)", ingredients: "Organic bananas.", calories: 105, fatGrams: 0.4, carbohydrateGrams: 27, sugarGrams: 14, proteinGrams: 1.3, sodiumMilligrams: 1 },
+      taxRateBasisPoints: 0,
       sku: "PROD-BAN-001",
       status: "published",
       price: 0.79,
@@ -13882,6 +15938,9 @@ var seed_default = {
     {
       title: "Hass Avocados",
       handle: "avocados-hass",
+      description: "Hass avocados, sold each. Ready to eat when the skin is dark and the fruit gives slightly to gentle pressure.",
+      nutrition: { servingSize: "1/3 medium avocado (50 g)", ingredients: "Avocado.", calories: 80, fatGrams: 7, saturatedFatGrams: 1, carbohydrateGrams: 4, sugarGrams: 0, proteinGrams: 1, sodiumMilligrams: 0 },
+      taxRateBasisPoints: 0,
       sku: "PROD-AVO-001",
       status: "published",
       price: 1.99,
@@ -13905,6 +15964,9 @@ var seed_default = {
     {
       title: "Whole Milk",
       handle: "whole-milk-gallon",
+      description: "Pasteurized whole milk, vitamin D added. One gallon jug. Keep refrigerated.",
+      nutrition: { servingSize: "1 cup (240 mL)", ingredients: "Grade A whole milk, vitamin D3.", calories: 150, fatGrams: 8, saturatedFatGrams: 5, carbohydrateGrams: 12, sugarGrams: 12, proteinGrams: 8, sodiumMilligrams: 120 },
+      taxRateBasisPoints: 0,
       sku: "PROD-MILK-001",
       status: "published",
       price: 4.69,
@@ -13930,6 +15992,9 @@ var seed_default = {
     {
       title: "Plain Greek Yogurt",
       handle: "greek-yogurt-plain",
+      description: "Plain, unsweetened Greek yogurt with live and active cultures. 32 oz tub. Keep refrigerated.",
+      nutrition: { servingSize: "3/4 cup (170 g)", ingredients: "Cultured pasteurized nonfat milk, live and active cultures.", calories: 100, fatGrams: 0, saturatedFatGrams: 0, carbohydrateGrams: 6, sugarGrams: 4, proteinGrams: 18, sodiumMilligrams: 65 },
+      taxRateBasisPoints: 0,
       sku: "PROD-YOG-001",
       status: "published",
       price: 5.49,
@@ -13955,6 +16020,9 @@ var seed_default = {
     {
       title: "Fresh Salmon Fillet",
       handle: "fresh-salmon-fillet",
+      description: "Fresh Atlantic salmon fillet, skin on, cut to order and sold by the pound. Keep refrigerated and cook within two days.",
+      nutrition: { servingSize: "4 oz (113 g)", ingredients: "Atlantic salmon.", calories: 230, fatGrams: 15, saturatedFatGrams: 3, carbohydrateGrams: 0, sugarGrams: 0, proteinGrams: 23, sodiumMilligrams: 65 },
+      taxRateBasisPoints: 0,
       sku: "PROD-SAL-001",
       status: "published",
       price: 14.99,
@@ -13980,6 +16048,9 @@ var seed_default = {
     {
       title: "Sourdough Bread",
       handle: "sourdough-bread",
+      description: "Naturally leavened sourdough loaf, baked fresh each morning. About 24 oz.",
+      nutrition: { servingSize: "1 slice (50 g)", ingredients: "Unbleached wheat flour, water, sourdough culture (wheat flour, water), salt.", calories: 130, fatGrams: 0.5, saturatedFatGrams: 0, carbohydrateGrams: 26, sugarGrams: 1, proteinGrams: 5, sodiumMilligrams: 290 },
+      taxRateBasisPoints: 0,
       sku: "PROD-BREAD-001",
       status: "published",
       price: 4.29,
@@ -14005,6 +16076,9 @@ var seed_default = {
     {
       title: "Frozen Blueberries",
       handle: "frozen-blueberries",
+      description: "Wild blueberries, individually quick frozen. 16 oz bag. Keep frozen.",
+      nutrition: { servingSize: "1 cup (140 g)", ingredients: "Blueberries.", calories: 80, fatGrams: 1, saturatedFatGrams: 0, carbohydrateGrams: 19, sugarGrams: 13, proteinGrams: 1, sodiumMilligrams: 0 },
+      taxRateBasisPoints: 0,
       sku: "PROD-BLUE-001",
       status: "published",
       price: 6.49,
@@ -14028,6 +16102,9 @@ var seed_default = {
     {
       title: "Jasmine Rice",
       handle: "jasmine-rice",
+      description: "Long-grain Thai jasmine rice, sold loose from the bulk bin by the pound.",
+      nutrition: { servingSize: "1/4 cup dry (45 g)", ingredients: "Jasmine rice.", calories: 160, fatGrams: 0, saturatedFatGrams: 0, carbohydrateGrams: 36, sugarGrams: 0, proteinGrams: 3, sodiumMilligrams: 0 },
+      taxRateBasisPoints: 0,
       sku: "PROD-RICE-001",
       status: "published",
       price: 8.99,
@@ -14313,6 +16390,11 @@ var import_zod = require("zod");
 var nonEmpty = import_zod.z.string().trim().min(1);
 var money = import_zod.z.number().finite().nonnegative();
 var wholeNumber = import_zod.z.number().int().nonnegative();
+var physicalQuantity = import_zod.z.number().finite().nonnegative().max(9999999).refine(
+  (value) => Math.abs(value * 1e3 - Math.round(value * 1e3)) < 1e-6,
+  "Use at most three decimal places"
+);
+var minutes = (value) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
 var fulfillmentWindowSchema = import_zod.z.object({
   startTime: import_zod.z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   endTime: import_zod.z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -14328,6 +16410,9 @@ var groceryOnboardingSeedSchema = import_zod.z.object({
     contactPhone: nonEmpty,
     address: nonEmpty,
     logoUrl: nonEmpty,
+    // A logo-library icon id (for example "kintsugi") or an SVG document; sanitized on write.
+    logoIcon: import_zod.z.string().trim().max(2e5).optional(),
+    logoColor: import_zod.z.string().regex(/^-?\d{1,3}(\.\d+)?$/).optional(),
     brandHue: import_zod.z.number().int().min(0).max(359),
     currencyCode: import_zod.z.literal("USD"),
     taxRateBps: import_zod.z.number().int().min(0).max(1e4),
@@ -14348,6 +16433,9 @@ var groceryOnboardingSeedSchema = import_zod.z.object({
         })).min(1)
       })
     }).passthrough(),
+    // Delivery service area and minimums, validated by the same normalizer as the settings screen.
+    deliveryPolicy: import_zod.z.record(import_zod.z.unknown()).optional(),
+    policyNotes: import_zod.z.string().max(5e3).optional(),
     isActive: import_zod.z.literal(true)
   }),
   departments: import_zod.z.array(import_zod.z.object({
@@ -14364,7 +16452,8 @@ var groceryOnboardingSeedSchema = import_zod.z.object({
     contactName: nonEmpty,
     email: import_zod.z.string().email(),
     phone: nonEmpty,
-    paymentTerms: import_zod.z.enum(["cod", "net_15", "net_30", "net_60"]),
+    // The Supplier model supports exactly these terms.
+    paymentTerms: import_zod.z.enum(["cod", "net_30", "net_60"]),
     deliveryDays: import_zod.z.array(import_zod.z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"])),
     minimumOrder: money
   })).min(1),
@@ -14389,7 +16478,11 @@ var groceryOnboardingSeedSchema = import_zod.z.object({
     pricingMethod: import_zod.z.enum(["unit", "weight", "volume"]),
     unitOfMeasure: import_zod.z.enum(["each", "lb", "oz", "kg", "g", "L", "mL", "gallon", "quart", "pint"]),
     organicCertified: import_zod.z.boolean(),
-    allergens: import_zod.z.array(import_zod.z.enum(["milk", "eggs", "fish", "shellfish", "tree_nuts", "peanuts", "wheat", "soybeans", "sesame"]))
+    allergens: import_zod.z.array(import_zod.z.enum(["milk", "eggs", "fish", "shellfish", "tree_nuts", "peanuts", "wheat", "soybeans", "sesame"])),
+    description: import_zod.z.string().max(5e3).optional(),
+    nutrition: import_zod.z.record(import_zod.z.union([import_zod.z.string(), import_zod.z.number()])).optional(),
+    // Blank inherits the store rate; 0 marks exempt food.
+    taxRateBasisPoints: import_zod.z.number().int().min(0).max(1e4).optional()
   })).min(1),
   inventoryLots: import_zod.z.array(import_zod.z.object({
     lotNumber: nonEmpty,
@@ -14397,8 +16490,8 @@ var groceryOnboardingSeedSchema = import_zod.z.object({
     supplierEmail: import_zod.z.string().email(),
     expirationOffsetDays: import_zod.z.number().int().positive(),
     receivedOffsetDays: import_zod.z.number().int(),
-    quantity: wholeNumber,
-    quantityRemaining: wholeNumber,
+    quantity: physicalQuantity,
+    quantityRemaining: physicalQuantity,
     costPerUnit: money,
     location: nonEmpty
   })),
@@ -14473,6 +16566,17 @@ var groceryOnboardingSeedSchema = import_zod.z.object({
       ctx.addIssue({ code: import_zod.z.ZodIssueCode.custom, path: ["products", index, "supplierEmail"], message: `Unknown supplier ${product.supplierEmail}` });
     }
   });
+  for (const [label, slots] of [["deliverySlots", seed.deliverySlots], ["pickupSlots", seed.pickupSlots]]) {
+    const seen = /* @__PURE__ */ new Set();
+    slots.forEach((slot, index) => {
+      if (minutes(slot.endTime) <= minutes(slot.startTime)) {
+        ctx.addIssue({ code: import_zod.z.ZodIssueCode.custom, path: [label, index, "endTime"], message: "A window must end after it starts on the same day" });
+      }
+      const key2 = `${slot.dayOffset}|${slot.startTime}|${slot.endTime}`;
+      if (seen.has(key2)) ctx.addIssue({ code: import_zod.z.ZodIssueCode.custom, path: [label, index], message: "Duplicate window for the same day and times" });
+      seen.add(key2);
+    });
+  }
   seed.inventoryLots.forEach((lot, index) => {
     if (lot.quantityRemaining > lot.quantity) {
       ctx.addIssue({ code: import_zod.z.ZodIssueCode.custom, path: ["inventoryLots", index, "quantityRemaining"], message: "Remaining quantity cannot exceed received quantity" });
@@ -14496,6 +16600,38 @@ function parseGroceryOnboardingSeed(input) {
 // features/keystone/mutations/runGroceryOnboarding.ts
 init_access();
 init_storeScope();
+init_inventoryMovements();
+
+// features/keystone/lib/storeReadiness.ts
+async function assessStoreReadiness(tx, storeId, now = /* @__PURE__ */ new Date()) {
+  const [settings, store, activeDepartments, publishedProducts, sellableLots, deliverySlots, pickupSlots] = await Promise.all([
+    tx.storeSettings.findUnique({ where: { storeId }, select: { name: true, hours: true, timezone: true } }),
+    tx.store.findUnique({ where: { id: storeId }, select: { name: true, isActive: true } }),
+    tx.department.count({ where: { storeId, isActive: true } }),
+    tx.product.count({ where: { storeId, status: "published", departmentRef: { isActive: true } } }),
+    tx.inventoryLot.count({ where: { storeId, quantityRemaining: { gt: 0 }, expirationDate: { gt: now }, safetyStatus: "available", conditionStatus: "accepted", product: { status: "published" } } }),
+    tx.deliverySlot.count({ where: { storeId, isActive: true } }),
+    tx.pickupSlot.count({ where: { storeId, isActive: true } })
+  ]);
+  const missing = [];
+  if (!settings) missing.push("Store settings");
+  const name = String(settings?.name || store?.name || "").trim();
+  if (!name || isOnboardingPlaceholder(name)) missing.push("A store name");
+  if (!store?.isActive) missing.push("An active store");
+  if (!activeDepartments) missing.push("At least one active aisle");
+  if (!publishedProducts) missing.push("A published product in an active aisle");
+  if (!sellableLots) missing.push("Sellable, unexpired stock");
+  let rolling = { deliveryTemplates: [], pickupTemplates: [] };
+  try {
+    rolling = resolveRollingFulfillmentPolicy({ hours: settings?.hours, deliverySlots: [], pickupSlots: [] });
+  } catch {
+  }
+  if (!deliverySlots && !rolling.deliveryTemplates.length) missing.push("Delivery windows");
+  if (!pickupSlots && !rolling.pickupTemplates.length) missing.push("Pickup windows");
+  return { ready: missing.length === 0, missing, counts: { activeDepartments, publishedProducts, sellableLots, deliverySlots, pickupSlots } };
+}
+
+// features/keystone/mutations/runGroceryOnboarding.ts
 function relativeDate(days, hour = 12, minute = 0, now = /* @__PURE__ */ new Date()) {
   const date2 = new Date(now);
   date2.setUTCDate(date2.getUTCDate() + days);
@@ -14517,13 +16653,31 @@ function assertSeedPolicy(seed) {
     throw new Error("Onboarding requires configured rolling delivery and pickup windows");
   }
   normalizeTaxRateBps(seed.storeSettings.taxRateBps);
+  onboardingStoreSettings(seed);
+}
+function postalPrefixesFromAddress(address) {
+  const zips = address.match(/\b\d{5}(?=(?:-\d{4})?\b)/g);
+  return zips?.length ? [zips[zips.length - 1]] : [];
+}
+function onboardingStoreSettings(seed) {
+  const { logoIcon: seedLogoIcon, logoColor: seedLogoColor, deliveryPolicy: seedDeliveryPolicy, ...fields } = seed.storeSettings;
+  const logoIcon = sanitizeStoreLogoSvg(storeLogoSvgFor(seedLogoIcon || DEFAULT_STORE_LOGO_ICON_ID));
+  if (!logoIcon) throw new Error("Onboarding logo must be a logo-library icon id or a safe SVG document");
+  const deliveryPolicy = normalizeDeliveryPolicy(seedDeliveryPolicy ?? { postalPrefixes: postalPrefixesFromAddress(fields.address) });
+  return {
+    ...fields,
+    policyNotes: fields.policyNotes ?? "",
+    logoIcon,
+    logoColor: normalizeStoreLogoColor(seedLogoColor ?? DEFAULT_LIBRARY_LOGO_COLOR),
+    deliveryPolicy,
+    hours: fields.hours
+  };
 }
 function providerInstalled(code) {
   return code === "pp_stripe_default" && Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_WEBHOOK_SECRET && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 }
 function publicProviderMetadata(metadata) {
-  const source = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {};
-  return Object.fromEntries(Object.entries(source).filter(([key2]) => !/(secret|token|password|credential|key)/i.test(key2)));
+  return { provider: metadata.provider, configuration: metadata.configuration };
 }
 async function runGroceryOnboardingTransaction(input, context, failurePoint) {
   const userId = context.session?.itemId;
@@ -14545,6 +16699,7 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
     customers: 0,
     orders: 0
   };
+  const providerAdministrator = await canAdministerPaymentProviders({ session: context.session, context });
   return context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$queryRaw`
@@ -14553,13 +16708,17 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
       )
       SELECT true AS locked FROM onboarding_lock
     `;
+    await tx.$queryRawUnsafe('SELECT "id" FROM "Store" WHERE "id" = $1 FOR UPDATE', store.id);
+    await tx.$queryRawUnsafe('SELECT "id" FROM "User" WHERE "id" = $1 FOR UPDATE', userId);
     const [actor, existingSettings] = await Promise.all([
-      tx.user.findUnique({ where: { id: userId }, select: { storeId: true, onboardingStatus: true } }),
+      tx.user.findUnique({ where: { id: userId }, select: { storeId: true, onboardingStatus: true, privacyErasedAt: true, store: { select: { isActive: true } }, role: { select: { canManageOnboarding: true } } } }),
       tx.storeSettings.findUnique({ where: { storeId: store.id }, select: { id: true } })
     ]);
     if (!actor || actor.storeId !== store.id) throw new Error("Onboarding actor is not owned by the active Store");
+    if (actor.privacyErasedAt || !actor.store?.isActive || !actor.role?.canManageOnboarding) throw new Error("Missing current capability: canManageOnboarding");
     if (existingSettings) {
-      if (actor.onboardingStatus !== "completed") {
+      const readiness2 = await assessStoreReadiness(tx, store.id);
+      if (readiness2.ready && actor.onboardingStatus !== "completed") {
         await tx.user.update({ where: { id: userId }, data: { onboardingStatus: "completed" } });
       }
       const [departments, suppliers, products, inventoryLots, deliverySlots, pickupSlots, parkingSpots, paymentProviders, coupons] = await Promise.all([
@@ -14573,7 +16732,7 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
         tx.paymentProvider.count(),
         tx.coupon.count({ where: { storeId: store.id } })
       ]);
-      return { completed: true, reused: true, counts: { ...launchCounts, departments, suppliers, products, inventoryLots, deliverySlots, pickupSlots, parkingSpots, paymentProviders, coupons } };
+      return { completed: readiness2.ready, reused: true, missing: readiness2.missing, counts: { ...launchCounts, departments, suppliers, products, inventoryLots, deliverySlots, pickupSlots, parkingSpots, paymentProviders, coupons } };
     }
     await tx.store.update({
       where: { id: store.id },
@@ -14584,10 +16743,7 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
         isActive: seed.storeSettings.isActive
       }
     });
-    const storeSettingsData = {
-      ...seed.storeSettings,
-      hours: seed.storeSettings.hours
-    };
+    const storeSettingsData = onboardingStoreSettings(seed);
     await tx.storeSettings.upsert({
       where: { storeId: store.id },
       update: storeSettingsData,
@@ -14654,6 +16810,9 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
         unitOfMeasure: product.unitOfMeasure,
         organicCertified: product.organicCertified,
         allergens: product.allergens,
+        ...product.description ? { description: [{ type: "paragraph", children: [{ text: product.description }] }] } : {},
+        ...product.nutrition ? { nutrition: product.nutrition } : {},
+        ...product.taxRateBasisPoints !== void 0 ? { taxRateBasisPoints: product.taxRateBasisPoints } : {},
         supplierId: supplierIds.get(product.supplierEmail),
         departmentRefId: departmentIds.get(product.departmentHandle),
         storeId: store.id
@@ -14672,6 +16831,7 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
       productIds.set(product.handle, row.id);
     }
     if (failurePoint === "after-products") throw new Error("Injected onboarding failure after products");
+    const openingLots = [];
     for (const lot of seed.inventoryLots) {
       const common = {
         expirationDate: relativeDate(lot.expirationOffsetDays),
@@ -14686,8 +16846,9 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
         storeId: store.id
       };
       const existing = await tx.inventoryLot.findFirst({ where: { lotNumber: lot.lotNumber, storeId: store.id }, select: { id: true } });
-      if (existing) await tx.inventoryLot.update({ where: { id: existing.id }, data: common });
-      else await tx.inventoryLot.create({ data: { ...common, lotNumber: lot.lotNumber } });
+      if (existing) continue;
+      const created = await tx.inventoryLot.create({ data: { ...common, lotNumber: lot.lotNumber }, select: { id: true } });
+      openingLots.push({ lotId: created.id, productId: common.productId, quantity: lot.quantityRemaining });
     }
     const seededSellableByProduct = /* @__PURE__ */ new Map();
     for (const lot of seed.inventoryLots) {
@@ -14700,6 +16861,27 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
         where: { id: productId },
         data: { stockQuantity: sellableQuantity, inStock: sellableQuantity > 0 }
       });
+    }
+    const runningProductStock = /* @__PURE__ */ new Map();
+    for (const opening of openingLots) {
+      const before = runningProductStock.get(opening.productId) || 0;
+      const after = Math.round((before + opening.quantity) * 1e3) / 1e3;
+      await appendInventoryMovement(tx, {
+        storeId: store.id,
+        productId: opening.productId,
+        inventoryLotId: opening.lotId,
+        sourceType: "onboarding_opening_balance",
+        sourceId: `onboarding:${store.id}`,
+        idempotencyKey: `opening:${opening.lotId}`,
+        actorId: userId,
+        reason: "Opening stock recorded at store setup",
+        quantityBefore: 0,
+        quantityAfter: opening.quantity,
+        productStockBefore: before,
+        productStockAfter: after,
+        metadata: { kind: "opening_balance" }
+      });
+      runningProductStock.set(opening.productId, after);
     }
     for (const slot of seed.deliverySlots) {
       const date2 = startOfStoreDay(slot.dayOffset, seed.storeSettings.timezone);
@@ -14736,10 +16918,30 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
       else await tx.parkingSpot.create({ data: { ...spot, storeId: store.id } });
     }
     for (const provider of seed.paymentProviders) {
+      const definition = getPaymentProviderDefinition(provider.code);
+      const adapterSelectors = {
+        createPaymentFunction: definition.adapterKey,
+        capturePaymentFunction: definition.adapterKey,
+        refundPaymentFunction: definition.adapterKey,
+        getPaymentStatusFunction: definition.adapterKey,
+        getRefundStatusFunction: definition.adapterKey,
+        cancelPaymentFunction: definition.adapterKey,
+        generatePaymentLinkFunction: definition.adapterKey,
+        handleWebhookFunction: definition.adapterKey
+      };
       await tx.paymentProvider.upsert({
         where: { code: provider.code },
-        update: { name: provider.name, isInstalled: providerInstalled(provider.code), metadata: publicProviderMetadata(provider.metadata) },
-        create: { ...provider, isInstalled: providerInstalled(provider.code), metadata: publicProviderMetadata(provider.metadata) }
+        // Provider records are deployment-wide: a Store's onboarding may create a
+        // missing one, but only a deployment provider administrator may change it.
+        update: providerAdministrator ? { name: provider.name, isInstalled: providerInstalled(provider.code), metadata: publicProviderMetadata(provider.metadata) } : {},
+        create: {
+          ...provider,
+          isInstalled: providerInstalled(provider.code),
+          publicCheckout: definition.publicCheckout,
+          supportsIdempotentCapture: definition.supportsIdempotentCapture,
+          ...adapterSelectors,
+          metadata: publicProviderMetadata(provider.metadata)
+        }
       });
     }
     for (const coupon of seed.coupons) {
@@ -14757,14 +16959,20 @@ async function runGroceryOnboardingTransaction(input, context, failurePoint) {
         isActive: coupon.isActive,
         storeId: store.id
       };
-      const conflict = await tx.coupon.findFirst({ where: { code: coupon.code }, select: { id: true, storeId: true } });
-      if (conflict && conflict.storeId !== store.id) throw new Error(`Coupon ${coupon.code} belongs to another store`);
+      const code = normalizeCouponCode(coupon.code);
+      const conflicts = await tx.coupon.findMany({ where: { code: { equals: code, mode: "insensitive" } }, select: { id: true, storeId: true }, take: 2 });
+      if (conflicts.length > 1) throw new Error(`Coupon ${code} matches more than one existing offer`);
+      const conflict = conflicts[0];
+      if (conflict && conflict.storeId !== store.id) throw new Error(`Coupon ${code} belongs to another store`);
       const existing = conflict;
       if (existing) await tx.coupon.update({ where: { id: existing.id }, data: common });
-      else await tx.coupon.create({ data: { ...common, code: coupon.code, currentUses: coupon.currentUses } });
+      else await tx.coupon.create({ data: { ...common, code, currentUses: coupon.currentUses } });
     }
-    await tx.user.update({ where: { id: userId }, data: { onboardingStatus: "completed" } });
-    return { completed: true, reused: false, counts: launchCounts };
+    const readiness = await assessStoreReadiness(tx, store.id);
+    if (readiness.ready) {
+      await tx.user.update({ where: { id: userId }, data: { onboardingStatus: "completed" } });
+    }
+    return { completed: readiness.ready, reused: false, missing: readiness.missing, counts: launchCounts };
   }, { timeout: 12e4, isolationLevel: "Serializable" });
 }
 async function runGroceryOnboarding(_root, args, context) {
@@ -14773,7 +16981,6 @@ async function runGroceryOnboarding(_root, args, context) {
 }
 
 // features/keystone/mutations/managePurchaseOrderReceiving.ts
-init_groceryOutbox();
 var import_node_crypto23 = require("node:crypto");
 init_inventoryMovements();
 init_access();
@@ -14873,13 +17080,12 @@ async function transitionPurchaseOrder(_root, { purchaseOrderId, status }, conte
     if (status === "sent") {
       const supplier = purchaseOrder.supplier;
       if (!supplier || supplier.store?.id !== store.id || !supplier.email?.trim()) throw new Error("Purchase order needs a same-Store supplier email before sending");
-      await enqueueGroceryOutboxEvent(transactionContext.prisma, { storeId: store.id, eventKey: `purchase-order:${purchaseOrderId}:send`, eventType: "purchase_order.send_requested", aggregateType: "PurchaseOrder", aggregateId: purchaseOrderId, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { purchaseOrderId, supplierId: supplier.id, recipient: supplier.email, poNumber: purchaseOrder.poNumber, currencyCode: store.currencyCode, lines: purchaseOrder.items.map((item) => ({ title: item.productTitle || item.product?.title, sku: item.productSku, quantity: Number(item.quantity), unitCostCents: Number(item.unitCostCents) })) } });
     }
     await sudoContext.db.PurchaseOrder.updateOne({
       where: { id: purchaseOrderId },
       data: { status }
     });
-    return { success: true, purchaseOrderId, status, receivedUnits: 0, message: status === "sent" ? "Purchase order queued for supplier delivery; inspect Communications for the delivery outcome." : `Purchase order moved to ${status}.` };
+    return { success: true, purchaseOrderId, status, receivedUnits: 0, message: status === "sent" ? "Purchase order marked sent. Send it to the supplier yourself." : `Purchase order moved to ${status}.` };
   }, { isolationLevel: "Serializable" }));
 }
 async function receivePurchaseOrder(_root, { purchaseOrderId, receipts }, context) {
@@ -15033,6 +17239,11 @@ function validateDraft(args) {
     throw new Error("Expected delivery date is invalid");
   }
 }
+function draftFingerprint(input) {
+  const day = input.expectedDeliveryDate ? new Date(input.expectedDeliveryDate).toISOString().slice(0, 10) : "";
+  const items = [...input.items].map((item) => `${item.productId}:${item.quantity}:${item.unitCostCents}`).sort();
+  return JSON.stringify([input.supplierId || "", day, String(input.notes || "").trim(), items]);
+}
 async function createPurchaseOrderDraft(_root, args, context) {
   await requireFreshCapability(context, "canManageInventory");
   validateDraft(args);
@@ -15046,10 +17257,23 @@ async function createPurchaseOrderDraft(_root, args, context) {
     const sudoContext = transactionContext.sudo();
     const existing = await sudoContext.query.PurchaseOrder.findOne({
       where: { idempotencyKey },
-      query: "id poNumber status totalAmount store { id } items { id }"
+      query: "id poNumber status totalAmount notes expectedDeliveryDate store { id } supplier { id } items { id quantity unitCostCents product { id } }"
     });
     if (existing && existing.store?.id !== store.id) throw new Error("Purchase order idempotency key belongs to another store");
     if (existing) {
+      if (draftFingerprint({
+        supplierId: existing.supplier?.id,
+        expectedDeliveryDate: existing.expectedDeliveryDate,
+        notes: existing.notes,
+        items: (existing.items || []).map((item) => ({ productId: item.product?.id, quantity: Number(item.quantity), unitCostCents: Number(item.unitCostCents) }))
+      }) !== draftFingerprint({
+        supplierId: args.supplierId,
+        expectedDeliveryDate: args.expectedDeliveryDate,
+        notes: args.notes,
+        items: args.items.map((item) => ({ productId: item.productId, quantity: item.quantity, unitCostCents: Math.round(item.unitCost * 100) }))
+      })) {
+        throw new Error("This purchase order request was already used for a different draft. Start a new purchase order.");
+      }
       return {
         success: true,
         purchaseOrderId: existing.id,
@@ -15077,12 +17301,14 @@ async function createPurchaseOrderDraft(_root, args, context) {
     const productsById = new Map(products.map((product) => [product.id, product]));
     const now = /* @__PURE__ */ new Date();
     const prefix = `PO-${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
-    const latest = await tx.purchaseOrder.findFirst({
-      where: { poNumber: { startsWith: prefix } },
-      orderBy: { poNumber: "desc" },
-      select: { poNumber: true }
-    });
-    const latestSequence = Number.parseInt(latest?.poNumber.slice(prefix.length + 1) || "0", 10) || 0;
+    const [latest] = await tx.$queryRawUnsafe(
+      // Prisma binds JS numbers as bigint; substring() only accepts int offsets.
+      `SELECT MAX(CAST(substring("poNumber" from $2::int) AS BIGINT)) AS "sequence" FROM "PurchaseOrder"
+        WHERE "poNumber" LIKE $1 AND substring("poNumber" from $2::int) ~ '^[0-9]+$'`,
+      `${prefix}-%`,
+      prefix.length + 2
+    );
+    const latestSequence = Number(latest?.sequence || 0);
     const poNumber = `${prefix}-${String(latestSequence + 1).padStart(4, "0")}`;
     const totalAmountCents = args.items.reduce((sum, item) => sum + item.quantity * Math.round(item.unitCost * 100), 0);
     const totalAmount = totalAmountCents / 100;
@@ -15298,7 +17524,7 @@ async function adjustInventoryLot(_root, args, context) {
 }
 
 // features/keystone/mutations/manageOrderFulfillment.ts
-init_groceryOutbox();
+init_publicError();
 init_access();
 init_serializableTransaction();
 var NEXT_STATUS = {
@@ -15311,7 +17537,7 @@ async function assertCanManageOrders(context) {
 async function advanceOrderFulfillment(_root, { orderId, target }, context) {
   const { storeId } = await assertCanManageOrders(context);
   if (!["picking", "packed", "ready_for_pickup"].includes(target)) {
-    throw new Error("Unsupported fulfillment target");
+    throw publicError("Unsupported fulfillment target");
   }
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     await transactionContext.prisma.$queryRawUnsafe(
@@ -15329,9 +17555,9 @@ async function advanceOrderFulfillment(_root, { orderId, target }, context) {
         }
       `
     });
-    if (!order || order.store?.id !== storeId) throw new Error("Order not found in active store");
+    if (!order || order.store?.id !== storeId) throw publicError("Order not found in active store");
     if (order.deliveryRoute?.id) {
-      throw new Error("Routed orders advance through the delivery route workflow");
+      throw publicError("Routed orders advance through the delivery route workflow");
     }
     const metadata = order.metadata || {};
     const fulfillmentMethod = metadata.fulfillmentMethod === "pickup" ? "pickup" : "delivery";
@@ -15348,13 +17574,13 @@ async function advanceOrderFulfillment(_root, { orderId, target }, context) {
     }
     const expectedTarget = order.status === "packed" && fulfillmentMethod === "pickup" ? "ready_for_pickup" : NEXT_STATUS[order.status];
     if (target !== expectedTarget) {
-      throw new Error(`Cannot move fulfillment from ${order.status} to ${target}`);
+      throw publicError(`Cannot move fulfillment from ${order.status} to ${target}`);
     }
     if (target === "packed" || target === "ready_for_pickup") await assertOrderInventoryEligible(transactionContext.prisma, orderId, storeId);
     if (target === "packed") {
       await getFulfillmentActualLines(transactionContext, orderId);
       if (metadata.finalSale?.status !== "finalized") {
-        throw new Error("Finalize the actual sale before packing this order");
+        throw publicError("Finalize the actual sale before packing this order");
       }
       const unresolved = (order.lineItems || []).some((lineItem) => {
         const linePreference = lineItem.metadata?.substitutionPreference;
@@ -15362,7 +17588,7 @@ async function advanceOrderFulfillment(_root, { orderId, target }, context) {
         return requiresApproval && lineItem.substitutions?.length && lineItem.substitutions[0].customerApproved !== true;
       });
       if (unresolved) {
-        throw new Error("Customer approval is required before packing substituted items");
+        throw publicError("Customer approval is required before packing substituted items");
       }
     }
     const settledPayments = await sudoContext.query.Payment.findMany({
@@ -15374,7 +17600,7 @@ async function advanceOrderFulfillment(_root, { orderId, target }, context) {
       query: "id"
     });
     if (!settledPayments.length) {
-      throw new Error("Order fulfillment requires an authorized payment for picking and a settled payment for packing");
+      throw publicError("Order fulfillment requires an authorized payment for picking and a settled payment for packing");
     }
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const nextMetadata = {
@@ -15383,8 +17609,8 @@ async function advanceOrderFulfillment(_root, { orderId, target }, context) {
       ...target === "packed" ? { packedAt: now } : {},
       ...target === "ready_for_pickup" ? { readyForPickup: true, pickupReadyAt: now } : {}
     };
-    if (target === "ready_for_pickup") await enqueueGroceryOutboxEvent(transactionContext.prisma, { storeId, eventKey: `order.ready:${orderId}`, eventType: "order.ready", aggregateType: "Order", aggregateId: orderId, occurredAt: now, payload: { orderId } });
     const nextStatus = target === "ready_for_pickup" ? "packed" : target;
+    assertTransition(ORDER_TRANSITIONS, "Order", order.status, nextStatus);
     await sudoContext.db.Order.updateOne({
       where: { id: orderId },
       data: { status: nextStatus, metadata: nextMetadata }
@@ -15402,26 +17628,26 @@ async function advanceOrderFulfillment(_root, { orderId, target }, context) {
 
 // features/keystone/mutations/cancelOrder.ts
 init_access();
-init_groceryOutbox();
 init_storeScope();
 init_inventoryMovements();
 init_serializableTransaction();
+init_publicError();
 function hasOutstandingSettledPayment(statuses) {
   return statuses.some((status) => status === "succeeded" || status === "partially_refunded");
 }
 function assertCancellationPaymentProof(payments, orderId, storeId, finalized) {
   for (const payment of payments) {
-    if (!payment.id || payment.orderId !== orderId || payment.storeId !== storeId || !Number.isSafeInteger(payment.amountCents) || payment.amountCents < 0 || !Array.isArray(payment.refunds)) throw new Error("Cancellation requires complete payment ownership, amount and refund evidence");
-    if (["processing", "unknown"].includes(payment.providerData?.authorizationVoid?.status)) throw new Error("Authorization void requires reconciliation before cancellation");
-    if (["authorized", "pending"].includes(payment.status)) throw new Error("Void the active payment authorization before cancelling this order");
-    if (payment.status === "processing") throw new Error("Payment reconciliation must complete before cancellation");
+    if (!payment.id || payment.orderId !== orderId || payment.storeId !== storeId || !Number.isSafeInteger(payment.amountCents) || payment.amountCents < 0 || !Array.isArray(payment.refunds)) throw publicError("Cancellation requires complete payment ownership, amount and refund evidence", "CANCEL_REFUSED");
+    if (["processing", "unknown"].includes(payment.providerData?.authorizationVoid?.status)) throw publicError("Authorization void requires reconciliation before cancellation", "CANCEL_REFUSED");
+    if (["authorized", "pending"].includes(payment.status)) throw publicError("Void the active payment authorization before cancelling this order", "CANCEL_REFUSED");
+    if (payment.status === "processing") throw publicError("Payment reconciliation must complete before cancellation", "CANCEL_REFUSED");
     let refundedCents = 0;
     for (const refund of payment.refunds) {
-      if (!refund.id || refund.paymentId !== payment.id || !Number.isSafeInteger(refund.amountCents) || refund.amountCents <= 0 || !["processing", "succeeded", "failed", "canceled"].includes(refund.status)) throw new Error("Cancellation requires complete and consistent refund evidence");
-      if (refund.status === "processing" || refund.providerStatus === "unknown") throw new Error("Refund reconciliation must complete before cancellation");
+      if (!refund.id || refund.paymentId !== payment.id || !Number.isSafeInteger(refund.amountCents) || refund.amountCents <= 0 || !["processing", "succeeded", "failed", "canceled"].includes(refund.status)) throw publicError("Cancellation requires complete and consistent refund evidence", "CANCEL_REFUSED");
+      if (refund.status === "processing" || refund.providerStatus === "unknown") throw publicError("Refund reconciliation must complete before cancellation", "CANCEL_REFUSED");
       if (refund.status === "succeeded") refundedCents += refund.amountCents;
     }
-    if (!Number.isSafeInteger(refundedCents) || refundedCents > payment.amountCents) throw new Error("Refund ledger exceeds the recorded payment amount");
+    if (!Number.isSafeInteger(refundedCents) || refundedCents > payment.amountCents) throw publicError("Refund ledger exceeds the recorded payment amount", "CANCEL_REFUSED");
     if (payment.amountCents === 0) {
       const noCharge = noChargeOrderPaymentState(payment);
       const checkoutZero = noCharge && payment.status === "succeeded" && !["capturedAmountCents", "authorizedAmountCents", "capturableAmountCents"].some((field) => payment.providerData?.[field] != null && payment.providerData[field] !== 0);
@@ -15433,21 +17659,24 @@ function assertCancellationPaymentProof(payments, orderId, storeId, finalized) {
       const revised = finalIdentity && noCharge && evidence.reauthorization?.paymentIntentId ? payments.find((row) => row.id !== payment.id && row.orderId === orderId && row.storeId === storeId && row.providerPaymentId === evidence.reauthorization.paymentIntentId && row.paymentProviderId === payment.paymentProviderId && row.providerData?.finalSettlementId === settlement.id && row.amountCents === evidence.amountCents) : null;
       const replacedZero = revised && revised.status === "refunded" && settlement.totalCents > 0 && ["succeeded", "captured"].includes(evidence.status) && Number.isSafeInteger(evidence.amountCents) && Number.isSafeInteger(evidence.refundedCents) && evidence.refundedCents >= 0 && evidence.amountCents - evidence.refundedCents === settlement.totalCents;
       const voidedToZero = finalIdentity && !noCharge && !evidence.reauthorization?.paymentIntentId && typeof payment.providerPaymentId === "string" && payment.providerPaymentId && !payment.providerPaymentId.startsWith("grocery_no_charge:") && settlement.totalCents === 0 && ["canceled", "cancelled"].includes(evidence.status) && evidence.amountCents === 0 && evidence.refundedCents === 0 && payment.providerData.captureRecognition?.basis === "no_capture";
-      if (payment.refunds.length || !(checkoutZero || replacedZero || voidedToZero)) throw new Error("Zero payment cancellation requires verified server no-charge evidence or finalized zero-exposure settlement proof");
+      if (payment.refunds.length || !(checkoutZero || replacedZero || voidedToZero)) throw publicError("Zero payment cancellation requires verified server no-charge evidence or finalized zero-exposure settlement proof", "CANCEL_REFUSED");
       continue;
     }
-    if (hasOutstandingSettledPayment([payment.status])) throw new Error("Settled payments must be fully refunded through the refund workflow before cancelling the order");
-    if (payment.status === "refunded" && refundedCents !== payment.amountCents) throw new Error("Fully refunded status requires matching succeeded refund evidence before cancellation");
-    if (!["refunded", "failed", "cancelled"].includes(payment.status)) throw new Error("Unknown payment state requires reconciliation before cancellation");
+    if (hasOutstandingSettledPayment([payment.status])) throw publicError("Settled payments must be fully refunded through the refund workflow before cancelling the order", "CANCEL_REFUSED");
+    if (payment.status === "refunded" && refundedCents !== payment.amountCents) throw publicError("Fully refunded status requires matching succeeded refund evidence before cancellation", "CANCEL_REFUSED");
+    if (!["refunded", "failed", "cancelled"].includes(payment.status)) throw publicError("Unknown payment state requires reconciliation before cancellation", "CANCEL_REFUSED");
   }
 }
 async function cancelGroceryOrder(_root, { orderId, reason, idempotencyKey, disposition, conditionNote }, context) {
   await requireFreshCapability(context, "canManageOrders");
   const store = await requireSessionStore(context);
+  return cancelGroceryOrderForStore({ orderId, reason, idempotencyKey, disposition, conditionNote }, context, store, context.session?.itemId || null);
+}
+async function cancelGroceryOrderForStore({ orderId, reason, idempotencyKey, disposition, conditionNote, allowedStatuses }, context, store, actorId) {
   const normalizedReason = reason.trim();
   const normalizedKey = idempotencyKey.trim();
-  if (normalizedReason.length < 3 || normalizedReason.length > 500) throw new Error("Cancellation reason must be between 3 and 500 characters");
-  if (normalizedKey.length < 12) throw new Error("Cancellation idempotency key is required");
+  if (normalizedReason.length < 3 || normalizedReason.length > 500) throw publicError("Cancellation reason must be between 3 and 500 characters", "CANCEL_REFUSED");
+  if (normalizedKey.length < 12) throw publicError("Cancellation idempotency key is required", "CANCEL_REFUSED");
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', orderId);
@@ -15467,26 +17696,26 @@ async function cancelGroceryOrder(_root, { orderId, reason, idempotencyKey, disp
         }
       }
     });
-    if (!order || order.storeId !== store.id) throw new Error("Order not found in active store");
+    if (!order || order.storeId !== store.id) throw publicError("Order not found in active store", "CANCEL_REFUSED");
     const cancellation = order.metadata?.cancellation;
     if (order.status === "cancelled") {
-      if (cancellation?.idempotencyKey !== normalizedKey || cancellation.reason !== normalizedReason || (cancellation.disposition || "return_to_stock") !== (disposition || "return_to_stock") || (cancellation.conditionNote || "") !== (conditionNote?.trim() || "")) throw new Error("Order was already cancelled by another operation");
+      if (cancellation?.idempotencyKey !== normalizedKey || cancellation.reason !== normalizedReason || (cancellation.disposition || "return_to_stock") !== (disposition || "return_to_stock") || (cancellation.conditionNote || "") !== (conditionNote?.trim() || "")) throw publicError("Order was already cancelled by another operation", "CANCEL_REFUSED");
       return { success: true, orderId, status: "cancelled", reused: true };
     }
     if (order.deliveryRouteId || order.status === "out_for_delivery" || order.status === "delivered") {
-      throw new Error("Dispatched or delivered orders cannot be cancelled");
+      throw publicError("Dispatched or delivered orders cannot be cancelled", "CANCEL_REFUSED");
     }
-    if (!["pending", "picking", "packed", "returned"].includes(order.status)) throw new Error(`Order status ${order.status} cannot be cancelled`);
+    if (!(allowedStatuses || ["pending", "picking", "packed", "returned"]).includes(order.status)) throw publicError(`Order status ${order.status} cannot be cancelled`, "CANCEL_REFUSED");
     const settlement = await tx.orderSettlement.findFirst({ where: { orderId, status: { in: ["processing", "requires_customer_authorization"] } } });
-    if (settlement) throw new Error("Resolve the reserved final sale before cancelling this order");
+    if (settlement) throw publicError("Resolve the reserved final sale before cancelling this order", "CANCEL_REFUSED");
     await tx.$queryRawUnsafe('SELECT "id" FROM "Payment" WHERE "order" = $1 ORDER BY "id" FOR UPDATE', orderId);
     const payments = await tx.payment.findMany({ where: { orderId }, include: { refunds: true }, orderBy: { id: "asc" } });
     const finalSale = order.metadata?.finalSale;
     const finalized = payments.some((payment) => payment.amountCents === 0 && payment.status === "cancelled") && finalSale?.settlementId ? { settlement: await tx.orderSettlement.findUnique({ where: { id: finalSale.settlementId } }), finalSale, currencyCode: order.currencyCode } : void 0;
     assertCancellationPaymentProof(payments, orderId, store.id, finalized);
-    if (["packed", "returned"].includes(order.status) && (!disposition || !conditionNote?.trim())) throw new Error("Packed goods require explicit return, waste or quarantine disposition and condition evidence");
+    if (["packed", "returned"].includes(order.status) && (!disposition || !conditionNote?.trim())) throw publicError("Packed goods require explicit return, waste or quarantine disposition and condition evidence", "CANCEL_REFUSED");
     const returnDisposition = disposition || "return_to_stock";
-    if (!["return_to_stock", "waste", "quarantine"].includes(returnDisposition)) throw new Error("Unsupported cancellation disposition");
+    if (!["return_to_stock", "waste", "quarantine"].includes(returnDisposition)) throw publicError("Unsupported cancellation disposition", "CANCEL_REFUSED");
     const originalAllocations = order.lineItems.flatMap((line) => {
       const allocations = line.fulfillment ? line.fulfillment.allocations || [] : line.inventoryAllocations.length ? line.inventoryAllocations : line.metadata?.inventoryAllocations || (line.inventoryLotId ? [{ inventoryLotId: line.inventoryLotId, quantity: line.quantity }] : []);
       return allocations.map((allocation) => ({ lineItemId: line.id, lotId: allocation.lotId || allocation.inventoryLotId, productId: allocation.productId || line.productId, quantity: Number(allocation.quantity) }));
@@ -15496,12 +17725,12 @@ async function cancelGroceryOrder(_root, { orderId, reason, idempotencyKey, disp
     for (const allocation of originalAllocations) {
       const key2 = JSON.stringify([allocation.lineItemId, allocation.lotId]);
       const existing = remaining.get(key2);
-      if (existing && existing.productId !== allocation.productId) throw new Error("Cancellation lot has conflicting product provenance");
+      if (existing && existing.productId !== allocation.productId) throw publicError("Cancellation lot has conflicting product provenance", "CANCEL_REFUSED");
       remaining.set(key2, { ...allocation, quantityMilli: quantityMilli(allocation.quantity) + (existing?.quantityMilli || 0) });
     }
     for (const prior of priorReturns) for (const returned of prior.returnedLots || []) {
       const allocation = remaining.get(JSON.stringify([prior.lineItemId, returned.lotId]));
-      if (!allocation || !Number.isSafeInteger(returned.quantityMilli) || returned.quantityMilli <= 0 || returned.quantityMilli > allocation.quantityMilli) throw new Error("Previously accepted return exceeds actual cancellation allocation");
+      if (!allocation || !Number.isSafeInteger(returned.quantityMilli) || returned.quantityMilli <= 0 || returned.quantityMilli > allocation.quantityMilli) throw publicError("Previously accepted return exceeds actual cancellation allocation", "CANCEL_REFUSED");
       allocation.quantityMilli -= returned.quantityMilli;
     }
     const effectiveAllocations = [...remaining.values()].filter((allocation) => allocation.quantityMilli > 0).map(({ quantityMilli: milli, ...allocation }) => ({ ...allocation, quantity: milli / 1e3 }));
@@ -15516,15 +17745,15 @@ async function cancelGroceryOrder(_root, { orderId, reason, idempotencyKey, disp
     for (const allocation of effectiveAllocations) {
       const lot = await tx.inventoryLot.findUnique({ where: { id: allocation.lotId } });
       const product = await tx.product.findUnique({ where: { id: allocation.productId } });
-      if (!lot || !product || lot.storeId !== store.id || product.storeId !== store.id || lot.productId !== product.id) throw new Error("Cancellation allocation is outside the active store");
-      if (returnDisposition === "return_to_stock" && ["packed", "returned"].includes(order.status) && !isInventoryLotEligible(lot)) throw new Error("Unsafe or expired packed stock requires quarantine or waste disposition");
+      if (!lot || !product || lot.storeId !== store.id || product.storeId !== store.id || lot.productId !== product.id) throw publicError("Cancellation allocation is outside the active store", "CANCEL_REFUSED");
+      if (returnDisposition === "return_to_stock" && ["packed", "returned"].includes(order.status) && !isInventoryLotEligible(lot)) throw publicError("Unsafe or expired packed stock requires quarantine or waste disposition", "CANCEL_REFUSED");
       const delta = returnDisposition === "waste" ? 0 : quantityMilli(allocation.quantity);
       const nextLot = (quantityMilli(lot.quantityRemaining) + delta) / 1e3;
       const nextStock = (quantityMilli(product.stockQuantity) + delta) / 1e3;
-      if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, store.id, lot)) throw new Error("Cancellation would exceed received lot quantity remaining after conversions");
+      if (quantityMilli(nextLot) > await unconvertedLotCapacityMilli(tx, store.id, lot)) throw publicError("Cancellation would exceed received lot quantity remaining after conversions", "CANCEL_REFUSED");
       await tx.inventoryLot.update({ where: { id: lot.id }, data: { quantityRemaining: nextLot, ...returnDisposition === "quarantine" && lot.safetyStatus !== "recalled" ? { safetyStatus: "quarantined", safetyReason: conditionNote?.trim() || normalizedReason } : {} } });
       await tx.product.update({ where: { id: product.id }, data: { stockQuantity: nextStock, inStock: nextStock > 0 } });
-      await appendInventoryMovement(tx, { storeId: store.id, productId: product.id, inventoryLotId: lot.id, orderId, sourceType: `cancellation_${returnDisposition}`, sourceId: orderId, idempotencyKey: `cancel:${normalizedKey}:${allocation.lineItemId}:${lot.id}`, actorId: context.session?.itemId, reason: normalizedReason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextStock, metadata: { disposition: returnDisposition, conditionNote: conditionNote?.trim() || null, quantity: allocation.quantity, lineItemId: allocation.lineItemId } });
+      await appendInventoryMovement(tx, { storeId: store.id, productId: product.id, inventoryLotId: lot.id, orderId, sourceType: `cancellation_${returnDisposition}`, sourceId: orderId, idempotencyKey: `cancel:${normalizedKey}:${allocation.lineItemId}:${lot.id}`, actorId: actorId || void 0, reason: normalizedReason, quantityBefore: lot.quantityRemaining, quantityAfter: nextLot, productStockBefore: product.stockQuantity, productStockAfter: nextStock, metadata: { disposition: returnDisposition, conditionNote: conditionNote?.trim() || null, quantity: allocation.quantity, lineItemId: allocation.lineItemId } });
     }
     if (order.deliverySlotId) {
       const slot = await tx.deliverySlot.findUnique({ where: { id: order.deliverySlotId }, select: { currentBookings: true } });
@@ -15545,14 +17774,14 @@ async function cancelGroceryOrder(_root, { orderId, reason, idempotencyKey, disp
     }
     const couponRelease = await releaseOrderCoupon(tx, { storeId: store.id, orderId, sourceId: `cancel:${normalizedKey}`, reason: normalizedReason });
     await restoreLoyaltyRedemptionForOrder(tx, { storeId: store.id, orderId, sourceId: `cancel:${normalizedKey}`, reason: normalizedReason });
-    await reconcileOrderLoyalty(tx, { storeId: store.id, orderId, sourceId: `cancel:${normalizedKey}`, reason: normalizedReason, netGoodsCents: 0, settled: true, actorId: context.session?.itemId });
+    await reconcileOrderLoyalty(tx, { storeId: store.id, orderId, sourceId: `cancel:${normalizedKey}`, reason: normalizedReason, netGoodsCents: 0, settled: true, actorId: actorId || void 0 });
     const cancelledAt = /* @__PURE__ */ new Date();
     const metadata = {
       ...couponRelease.metadata,
       cancellation: {
         idempotencyKey: normalizedKey,
         reason: normalizedReason,
-        cancelledBy: context.session?.itemId,
+        cancelledBy: actorId,
         cancelledAt: cancelledAt.toISOString(),
         inventoryRestored: returnDisposition !== "waste",
         disposition: returnDisposition,
@@ -15563,24 +17792,57 @@ async function cancelGroceryOrder(_root, { orderId, reason, idempotencyKey, disp
         couponRedemptionReleased: couponRelease.released
       }
     };
-    await tx.order.update({ where: { id: orderId }, data: { status: "cancelled", canceledAt: cancelledAt, metadata } });
-    await enqueueGroceryOutboxEvent(tx, {
-      storeId: store.id,
-      eventKey: `order.cancelled:${orderId}:${normalizedKey}`,
-      eventType: "order.cancelled",
-      aggregateType: "Order",
-      aggregateId: orderId,
-      occurredAt: cancelledAt.toISOString(),
-      payload: { orderId, reason: normalizedReason, idempotencyKey: normalizedKey, inventoryRestored: returnDisposition !== "waste", disposition: returnDisposition, fulfillmentCapacityReleased: true, couponRedemptionReleased: couponRelease.released }
-    });
+    assertTransition(ORDER_TRANSITIONS, "Order", order.status, "cancelled");
+    const cancelMoved = await tx.order.updateMany({ where: { id: orderId, status: order.status }, data: { status: "cancelled", canceledAt: cancelledAt, metadata } });
+    if (cancelMoved.count !== 1) throw publicError("Order changed while cancelling; refresh and retry", "CANCEL_REFUSED");
     return { success: true, orderId, status: "cancelled", reused: false };
   }, { isolationLevel: "Serializable" }));
+}
+
+// features/keystone/mutations/cancelMyGroceryOrder.ts
+init_publicError();
+var CUSTOMER_CANCELLABLE_STATUSES = ["pending"];
+var CUSTOMER_CANCEL_REASON = "Cancelled by the customer before shopping started";
+function customerOwnsOrder(order, session, args, now = Date.now()) {
+  if (!order) return false;
+  if (session?.itemId) return order.userId === session.itemId;
+  return Boolean(!order.userId && args.sessionId && args.token && order.metadata?.guestSessionId === args.sessionId && verifyGuestOrderToken(order.id, args.sessionId, args.token, Math.floor(now / 1e3), order.createdAt));
+}
+function customerCancellationBlocker(payments) {
+  for (const payment of payments) {
+    if (["authorized", "pending", "cancelled", "failed", "refunded"].includes(payment.status)) continue;
+    if (payment.status === "succeeded" && payment.amountCents === 0 && noChargeOrderPaymentState(payment)) continue;
+    return "This order has already been charged. Contact the store to cancel it and arrange a refund.";
+  }
+  if (payments.some((payment) => ["processing", "unknown"].includes(payment.providerData?.authorizationVoid?.status))) return "Your card hold is still being released. Refresh in a moment.";
+  return null;
+}
+async function cancelMyGroceryOrder(_root, args, context) {
+  const orderId = args.orderId?.trim();
+  if (!orderId) throw publicError("Order not found", "NOT_FOUND");
+  const prisma = context.sudo().prisma;
+  const order = await prisma.order.findUnique({ where: { id: orderId }, include: { store: true, payments: { orderBy: { id: "asc" } } } });
+  if (!customerOwnsOrder(order, context.session, args) || !order.store?.isActive) throw publicError("Order not found", "NOT_FOUND");
+  if (order.status === "cancelled") return { success: true, orderId, status: "cancelled", reused: true };
+  if (!CUSTOMER_CANCELLABLE_STATUSES.includes(order.status) || order.deliveryRouteId) {
+    throw publicError("The store has started shopping this order, so it can no longer be cancelled online. Contact the store.");
+  }
+  const blocker = customerCancellationBlocker(order.payments || []);
+  if (blocker) throw publicError(blocker);
+  const actorId = context.session?.itemId || null;
+  const sudo = context.sudo();
+  for (const payment of order.payments || []) {
+    if (!["authorized", "pending"].includes(payment.status)) continue;
+    await voidGroceryPaymentAuthorizationForStore({ paymentId: payment.id, reason: CUSTOMER_CANCEL_REASON, idempotencyKey: `customer-cancel:${payment.id}` }, sudo, order.store, actorId);
+  }
+  return cancelGroceryOrderForStore({ orderId, reason: CUSTOMER_CANCEL_REASON, idempotencyKey: `customer-cancel:${orderId}`, allowedStatuses: CUSTOMER_CANCELLABLE_STATUSES }, sudo, order.store, actorId);
 }
 
 // features/keystone/mutations/reconcileCheckoutAttempts.ts
 init_access();
 init_storeScope();
 init_paymentProviderAdapter();
+init_stripeEnabled();
 function isSettled(status) {
   return ["succeeded", "captured", "requires_capture", "authorized"].includes(status);
 }
@@ -15610,9 +17872,26 @@ async function reconcileCheckoutAttempts(_root, { limit = 20 }, context) {
   for (const attempt of attempts) {
     const provider = await context.prisma.paymentProvider.findUnique({
       where: { code: attempt.providerCode },
-      select: { id: true, code: true, isInstalled: true, metadata: true }
+      select: {
+        id: true,
+        code: true,
+        isInstalled: true,
+        publicCheckout: true,
+        supportsIdempotentCapture: true,
+        captureIdempotencyEvidence: true,
+        credentials: true,
+        metadata: true,
+        createPaymentFunction: true,
+        capturePaymentFunction: true,
+        refundPaymentFunction: true,
+        getPaymentStatusFunction: true,
+        getRefundStatusFunction: true,
+        cancelPaymentFunction: true,
+        generatePaymentLinkFunction: true,
+        handleWebhookFunction: true
+      }
     });
-    if (!provider?.isInstalled) continue;
+    if (!provider || !isPaymentProviderInstalled(provider)) continue;
     const action = attempt.status === "compensation_required" || attempt.status === "compensation_processing" ? "compensate" : "finalize";
     const lease = await context.transaction(async (transactionContext) => claimCheckoutAttempt(transactionContext.prisma, attempt.id, action));
     if (!lease) continue;
@@ -15701,38 +17980,41 @@ async function reconcileCheckoutAttempts(_root, { limit = 20 }, context) {
 init_refundAllocations();
 var import_node_crypto24 = require("node:crypto");
 init_access();
-init_groceryOutbox();
 init_storeScope();
 init_paymentProviderAdapter();
 init_serializableTransaction();
 init_refundRecovery();
+init_stripeEnabled();
 var REFUND_RECONCILIATION_LEASE_MS = 3e4;
 var REFUND_RECONCILIATION_MAX_ATTEMPTS = 5;
 var DEFAULT_PROVIDER_TIMEOUT_MS = 1e4;
 function retryDelayMs(attempts) {
   return Math.min(5 * 6e4, 1e4 * 2 ** Math.max(0, attempts - 1));
 }
-async function withTimeout(promise, timeoutMs) {
-  let timer;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Payment provider reconciliation timed out")), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+function providerDeadlineMs() {
+  const configured = Math.max(25, Number(process.env.REFUND_RECONCILIATION_PROVIDER_TIMEOUT_MS || DEFAULT_PROVIDER_TIMEOUT_MS));
+  return Math.min(configured, REFUND_RECONCILIATION_LEASE_MS - 5e3);
 }
 async function claimNextRefund(context, owner, storeId, currencyCode) {
   const token = (0, import_node_crypto24.randomUUID)();
+  await context.prisma.$executeRawUnsafe(
+    `UPDATE "PaymentRefund" r
+        SET "reconciliationDeadLetterAt" = NOW(), "reconciliationOwner" = NULL, "reconciliationToken" = NULL,
+            "reconciliationLeaseExpiresAt" = NULL, "reconciliationNextAttemptAt" = NULL, "updatedAt" = NOW(),
+            "reconciliationLastError" = 'Refund reconciliation attempts exhausted after interrupted workers; operator review required'
+      WHERE r."status" = 'processing' AND r."reconciliationDeadLetterAt" IS NULL AND r."reconciliationAttempts" >= $2
+        AND (r."reconciliationLeaseExpiresAt" IS NULL OR r."reconciliationLeaseExpiresAt" <= NOW())
+        AND EXISTS (SELECT 1 FROM "Payment" scoped_payment WHERE scoped_payment."id" = r."payment" AND scoped_payment."store" = $1)`,
+    storeId,
+    REFUND_RECONCILIATION_MAX_ATTEMPTS
+  );
   const rows = await context.prisma.$queryRawUnsafe(
     `WITH candidate AS (
        SELECT r."id"
        FROM "PaymentRefund" r
        WHERE r."status" = 'processing'
          AND r."reconciliationDeadLetterAt" IS NULL
+         AND r."reconciliationAttempts" < $5
          AND (r."reconciliationNextAttemptAt" IS NULL OR r."reconciliationNextAttemptAt" <= NOW())
          AND (r."reconciliationLeaseExpiresAt" IS NULL OR r."reconciliationLeaseExpiresAt" <= NOW())
          AND EXISTS (SELECT 1 FROM "Payment" scoped_payment WHERE scoped_payment."id" = r."payment" AND scoped_payment."store" = $4)
@@ -15745,16 +18027,24 @@ async function claimNextRefund(context, owner, storeId, currencyCode) {
          "reconciliationToken" = $2,
          "reconciliationLeaseExpiresAt" = NOW() + ($3 * INTERVAL '1 millisecond'),
          "reconciliationAttempts" = r."reconciliationAttempts" + 1,
-         "reconciliationLastError" = NULL
+         "reconciliationLastError" = NULL,
+         "updatedAt" = NOW()
      FROM candidate c, "Payment" p, "PaymentProvider" pp
      WHERE r."id" = c."id" AND p."id" = r."payment" AND pp."id" = p."paymentProvider"
      RETURNING r."id", r."payment" AS "paymentId", p."store" AS "storeId", r."providerCode",
        r."providerPaymentId", r."providerRefundId", r."requestedAt", r."amountCents", r."idempotencyKey", r."reconciliationAttempts" AS "attempts",
-       pp."id" AS "providerId", pp."code" AS "providerProviderCode", pp."isInstalled" AS "providerInstalled", pp."metadata" AS "providerMetadata"`,
+       pp."id" AS "providerId", pp."code" AS "providerProviderCode", pp."isInstalled" AS "providerInstalled",
+       pp."publicCheckout" AS "providerPublicCheckout", pp."supportsIdempotentCapture" AS "providerSupportsIdempotentCapture",
+       pp."captureIdempotencyEvidence" AS "providerCaptureIdempotencyEvidence", pp."credentials" AS "providerCredentials", pp."metadata" AS "providerMetadata",
+       pp."createPaymentFunction" AS "providerCreatePaymentFunction", pp."capturePaymentFunction" AS "providerCapturePaymentFunction",
+       pp."refundPaymentFunction" AS "providerRefundPaymentFunction", pp."getPaymentStatusFunction" AS "providerGetPaymentStatusFunction",
+       pp."getRefundStatusFunction" AS "providerGetRefundStatusFunction", pp."cancelPaymentFunction" AS "providerCancelPaymentFunction",
+       pp."generatePaymentLinkFunction" AS "providerGeneratePaymentLinkFunction", pp."handleWebhookFunction" AS "providerHandleWebhookFunction"`,
     owner,
     token,
     REFUND_RECONCILIATION_LEASE_MS,
-    storeId
+    storeId,
+    REFUND_RECONCILIATION_MAX_ATTEMPTS
   );
   const row = rows[0];
   if (!row) return null;
@@ -15769,7 +18059,24 @@ async function claimNextRefund(context, owner, storeId, currencyCode) {
     providerRefundId: row.providerRefundId || null,
     requestedAt: row.requestedAt,
     currencyCode,
-    provider: { id: row.providerId, code: row.providerProviderCode, isInstalled: row.providerInstalled, metadata: row.providerMetadata },
+    provider: {
+      id: row.providerId,
+      code: row.providerProviderCode,
+      isInstalled: row.providerInstalled,
+      publicCheckout: row.providerPublicCheckout,
+      supportsIdempotentCapture: row.providerSupportsIdempotentCapture,
+      captureIdempotencyEvidence: row.providerCaptureIdempotencyEvidence,
+      credentials: row.providerCredentials,
+      metadata: row.providerMetadata,
+      createPaymentFunction: row.providerCreatePaymentFunction,
+      capturePaymentFunction: row.providerCapturePaymentFunction,
+      refundPaymentFunction: row.providerRefundPaymentFunction,
+      getPaymentStatusFunction: row.providerGetPaymentStatusFunction,
+      getRefundStatusFunction: row.providerGetRefundStatusFunction,
+      cancelPaymentFunction: row.providerCancelPaymentFunction,
+      generatePaymentLinkFunction: row.providerGeneratePaymentLinkFunction,
+      handleWebhookFunction: row.providerHandleWebhookFunction
+    },
     owner,
     token,
     attempts: Number(row.attempts)
@@ -15836,7 +18143,6 @@ async function completeClaim(context, claim, response) {
       const payment = await tx.payment.findUnique({ where: { id: claim.paymentId }, select: { amountCents: true, status: true, providerData: true } });
       const paymentCents = Number(payment?.amountCents || 0);
       await tx.payment.update({ where: { id: claim.paymentId }, data: { status: refundedCents >= paymentCents ? "refunded" : "partially_refunded", providerRefundId: providerRefundId || void 0, providerData: { ...payment?.providerData || {}, lastRefundId: providerRefundId, refundedAmountCents: refundedCents } } });
-      await enqueueGroceryOutboxEvent(tx, { storeId: claim.storeId, eventKey: `payment-refund:${claim.id}:completed:v1`, eventType: "payment.refunded", aggregateType: "payment", aggregateId: claim.paymentId, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { paymentId: claim.paymentId, refundId: claim.id, amountCents: claim.amountCents, cumulativeRefundedCents: refundedCents, providerCode: claim.providerCode, providerPaymentId: claim.providerPaymentId, providerRefundId } });
     }
     return status;
   }, { isolationLevel: "Serializable" }));
@@ -15849,7 +18155,7 @@ async function runRefundReconciliationOnce(context, { limit = 20, owner }) {
   for (let index = 0; index < boundedLimit; index += 1) {
     const claim = await claimNextRefund(context, owner, store.id, store.currencyCode.toLowerCase());
     if (!claim) break;
-    if (!claim.provider.isInstalled) {
+    if (!isPaymentProviderInstalled(claim.provider)) {
       results.push({ refundId: claim.id, status: await releaseForRetry(context, claim, "Refund provider is unavailable") });
       continue;
     }
@@ -15864,8 +18170,8 @@ async function runRefundReconciliationOnce(context, { limit = 20, owner }) {
         claim.providerRefundId = current.providerRefundId || null;
       });
       assertRefundCreationWindow(claim.requestedAt, claim.providerRefundId);
-      const providerTimeoutMs = Math.max(25, Number(process.env.REFUND_RECONCILIATION_PROVIDER_TIMEOUT_MS || DEFAULT_PROVIDER_TIMEOUT_MS));
-      const response = await withTimeout(claim.providerRefundId ? getRefundStatus({ provider: claim.provider, refundId: claim.providerRefundId }) : refundPayment({ provider: claim.provider, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey }), providerTimeoutMs);
+      const timeoutMs = providerDeadlineMs();
+      const response = claim.providerRefundId ? await getRefundStatus({ provider: claim.provider, refundId: claim.providerRefundId, timeoutMs }) : await refundPayment({ provider: claim.provider, paymentId: claim.providerPaymentId, amount: claim.amountCents, idempotencyKey: claim.idempotencyKey, timeoutMs });
       results.push({ refundId: claim.id, status: await completeClaim(context, claim, response) });
     } catch (error) {
       results.push({ refundId: claim.id, status: await releaseForRetry(context, claim, error instanceof Error ? error.message : "Refund provider failed") });
@@ -15895,7 +18201,6 @@ async function updateSupplierMinimumOrder(_root, { supplierId, minimumOrderCents
 
 // features/keystone/mutations/manageOrderSubstitution.ts
 init_access();
-init_groceryOutbox();
 init_storeScope();
 init_serializableTransaction();
 function normalize(args) {
@@ -15978,25 +18283,6 @@ async function recordOrderItemSubstitution(_root, rawArgs, context) {
       if (!matches) {
         throw new Error("Substitution idempotency key was reused with different substitution input");
       }
-      await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-        storeId: store.id,
-        eventKey: `substitution:${args.idempotencyKey}:recorded:v1`,
-        eventType: "substitution.recorded",
-        aggregateType: "order_line_item",
-        aggregateId: args.orderItemId,
-        occurredAt: new Date(existing.createdAt).toISOString(),
-        payload: {
-          substitutionId: existing.id,
-          orderId: order.id,
-          orderItemId: args.orderItemId,
-          originalProduct: existing.originalProduct,
-          substitutedProduct: existing.substitutedProduct,
-          reason: existing.reason || "",
-          customerApproved: Boolean(existing.customerApproved),
-          approvedAt: existing.approvedAt ? new Date(existing.approvedAt).toISOString() : null,
-          recordedById: existing.recordedBy?.id || null
-        }
-      });
       return {
         success: true,
         substitutionId: existing.id,
@@ -16018,25 +18304,6 @@ async function recordOrderItemSubstitution(_root, rawArgs, context) {
         customerApproved: args.customerApproved
       }
     });
-    await enqueueGroceryOutboxEvent(transactionContext.prisma, {
-      storeId: store.id,
-      eventKey: `substitution:${args.idempotencyKey}:recorded:v1`,
-      eventType: "substitution.recorded",
-      aggregateType: "order_line_item",
-      aggregateId: args.orderItemId,
-      occurredAt: new Date(substitution.createdAt).toISOString(),
-      payload: {
-        substitutionId: substitution.id,
-        orderId: order.id,
-        orderItemId: args.orderItemId,
-        originalProduct: lineItem.title,
-        substitutedProduct: args.substitutedProduct,
-        reason: args.reason,
-        customerApproved: args.customerApproved,
-        approvedAt: substitution.approvedAt ? new Date(substitution.approvedAt).toISOString() : null,
-        recordedById: context.session?.itemId || null
-      }
-    });
     if (process.env.GROCERY_SUBSTITUTION_ROLLBACK_PROOF === args.idempotencyKey) {
       throw new Error("Injected substitution rollback proof");
     }
@@ -16051,124 +18318,383 @@ async function recordOrderItemSubstitution(_root, rawArgs, context) {
   }, { isolationLevel: "ReadCommitted" }));
 }
 
+// features/keystone/mutations/manageSubstitutionProposals.ts
+var import_node_crypto25 = require("node:crypto");
+init_access();
+init_publicError();
+init_storeScope();
+init_serializableTransaction();
+var NO_SUBSTITUTION = ["none", "remove", "no_substitutions", "refund"];
+function substitutionProposals(metadata) {
+  const value = metadata?.substitutionProposals;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+async function proposeOrderLineSubstitution(_root, args, context) {
+  await requireFreshCapability(context, "canManageOrders");
+  const store = await requireSessionStore(context);
+  const orderId = args.orderId?.trim(), lineItemId = args.lineItemId?.trim(), productId = args.productId?.trim();
+  const reason = args.reason?.trim() || "", idempotencyKey = args.idempotencyKey?.trim() || "";
+  if (!orderId || !lineItemId || !productId) throw publicError("Choose the order line and a replacement product");
+  if (!reason || reason.length > 500) throw publicError("Tell the customer why a replacement is needed (up to 500 characters)");
+  if (idempotencyKey.length < 12 || idempotencyKey.length > 200) throw publicError("A valid request identity is required");
+  const enteredMilli = measureMilli(String(args.quantity || "").trim());
+  return withSerializableRetry(() => context.transaction(async (tx) => {
+    await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', orderId);
+    const order = await tx.prisma.order.findUnique({ where: { id: orderId }, select: { id: true, displayId: true, storeId: true, status: true, substitutionPreference: true, metadata: true } });
+    if (!order || order.storeId !== store.id) throw publicError("Order not found in active store");
+    if (order.status !== "picking" || order.metadata?.finalSale) throw publicError("Replacements can only be proposed while picking, before the sale is finalized");
+    const sudo = tx.sudo();
+    const line = await sudo.query.OrderLineItem.findOne({ where: { id: lineItemId }, query: "id title metadata order { id } product { id } fulfillment { id }" });
+    if (!line || line.order?.id !== order.id) throw publicError("Line does not belong to this order");
+    const proposals = substitutionProposals(order.metadata);
+    const existing = proposals[lineItemId];
+    const product = await sudo.query.Product.findOne({ where: { id: productId }, query: `id title sku status priceCents taxRateBasisPoints pricingMethod unitOfMeasure ${MATERIAL_INFORMATION_FIELDS} store { id }` });
+    if (!product || product.store?.id !== store.id) throw publicError("Replacement product is not available");
+    const quantityMilli2 = convertMeasureMilli(enteredMilli, String(args.unitOfMeasure || product.unitOfMeasure).trim(), product.unitOfMeasure);
+    if (existing?.idempotencyKey === idempotencyKey) {
+      if (existing.productId !== productId || Number(existing.quantityMilli) !== quantityMilli2 || existing.unitOfMeasure !== product.unitOfMeasure || existing.reason !== reason) {
+        throw publicError("This request was already used for a different replacement");
+      }
+      return { proposalId: existing.id, status: existing.status, reused: true };
+    }
+    if (line.fulfillment?.id) throw publicError("This line is already resolved");
+    if (order.substitutionPreference === "refund" || NO_SUBSTITUTION.includes(line.metadata?.substitutionPreference)) throw publicError("Customer preferences prohibit substitutions");
+    if (existing?.status === "pending") throw publicError("A replacement is already waiting for the customer\u2019s answer");
+    if (existing?.status === "approved") throw publicError("The customer already approved a replacement; resolve this line with it");
+    if (product.status !== "published") throw publicError("Replacement product is not available");
+    if (product.id === line.product?.id) throw publicError("Select a different replacement product");
+    if (quantityMilli2 <= 0) throw publicError("Enter the replacement quantity");
+    if (product.pricingMethod === "unit" && quantityMilli2 % 1e3 !== 0) throw publicError("Unit products require whole quantities");
+    const unitPriceCents = Number(product.priceCents);
+    const settings = await tx.prisma.storeSettings.findUnique({ where: { storeId: store.id }, select: { taxRateBps: true } });
+    const taxRateBasisPoints = Number(product.taxRateBasisPoints ?? settings?.taxRateBps ?? 0);
+    const informationVersions = await latestInformationVersionIds(tx.prisma, [product.id]);
+    const materialInformation = materialInformationSnapshot(product, informationVersions.get(product.id) || null);
+    const { previous: earlier = [], ...prior } = existing || {};
+    const proposal = {
+      id: (0, import_node_crypto25.randomUUID)(),
+      lineItemId,
+      originalTitle: line.title,
+      productId: product.id,
+      productTitle: product.title,
+      productSku: product.sku || "",
+      quantityMilli: quantityMilli2,
+      unitOfMeasure: product.unitOfMeasure,
+      unitPriceCents,
+      estimatedSubtotalCents: measuredSubtotalCents(unitPriceCents, quantityMilli2),
+      taxRateBasisPoints,
+      materialInformation,
+      offerFingerprint: (0, import_node_crypto25.createHash)("sha256").update(JSON.stringify([store.id, order.id, lineItemId, product.id, quantityMilli2, product.unitOfMeasure, reason, unitPriceCents, taxRateBasisPoints, materialInformation.fingerprint])).digest("hex"),
+      reason,
+      status: "pending",
+      proposedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      proposedById: String(context.session?.itemId || ""),
+      idempotencyKey,
+      ...existing ? { previous: [...earlier, prior].slice(-10) } : {}
+    };
+    await tx.prisma.order.update({ where: { id: order.id }, data: { metadata: { ...order.metadata, substitutionProposals: { ...proposals, [lineItemId]: proposal } } } });
+    return { proposalId: proposal.id, status: proposal.status, reused: false };
+  }, { isolationLevel: "ReadCommitted" }));
+}
+async function respondToOrderLineSubstitution(_root, args, context) {
+  const decision = args.decision === "approve" ? "approved" : args.decision === "reject" ? "rejected" : null;
+  if (!decision) throw publicError("Choose approve or decline");
+  const orderId = args.orderId?.trim(), lineItemId = args.lineItemId?.trim(), proposalId = args.proposalId?.trim();
+  if (!orderId || !lineItemId || !proposalId) throw publicError("Replacement not found");
+  return withSerializableRetry(() => context.transaction(async (tx) => {
+    await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', orderId);
+    const order = await tx.prisma.order.findUnique({ where: { id: orderId }, include: { store: true } });
+    const owns = context.session?.itemId ? order?.userId === context.session.itemId : !order?.userId && args.sessionId && args.token && order?.metadata?.guestSessionId === args.sessionId && verifyGuestOrderToken(orderId, args.sessionId, args.token, Math.floor(Date.now() / 1e3), order.createdAt);
+    if (!owns || !order?.store?.isActive) throw publicError("Order not found", "NOT_FOUND");
+    const proposals = substitutionProposals(order.metadata);
+    const proposal = proposals[lineItemId];
+    if (!proposal || proposal.id !== proposalId) throw publicError("This replacement is no longer offered. Refresh your order.");
+    if (proposal.status !== "pending") {
+      if (proposal.status === decision) return { proposalId, status: proposal.status, reused: true };
+      throw publicError("You already answered this replacement. Contact the store to change it.");
+    }
+    if (order.status !== "picking" || order.metadata?.finalSale) throw publicError("The store has finished picking this order. Contact the store about this item.");
+    const fulfillment = await tx.prisma.orderLineFulfillment.findFirst({ where: { lineItemId }, select: { id: true } });
+    if (fulfillment) throw publicError("The store has already resolved this item. Refresh your order.");
+    const decided = { ...proposal, status: decision, decidedAt: (/* @__PURE__ */ new Date()).toISOString(), decidedBy: context.session?.itemId ? `customer:${context.session.itemId}` : "guest-order-link", channel: "online" };
+    await tx.prisma.order.update({ where: { id: order.id }, data: { metadata: { ...order.metadata, substitutionProposals: { ...proposals, [lineItemId]: decided } } } });
+    return { proposalId, status: decision, reused: false };
+  }, { isolationLevel: "ReadCommitted" }));
+}
+
+// features/keystone/mutations/submitGroceryContactMessage.ts
+var import_node_crypto28 = require("node:crypto");
+
+// features/keystone/lib/graphqlRateLimit.ts
+var import_node_crypto27 = require("node:crypto");
+var import_graphql5 = require("graphql");
+
+// features/keystone/lib/graphqlSecurity.ts
+var import_graphql4 = require("graphql");
+
+// features/keystone/lib/clientIp.ts
+var import_node_net = require("node:net");
+function normalizeClientIp(value) {
+  const candidate = value?.trim() || "";
+  if (!candidate || candidate.length > 64 || candidate.includes(",") || (0, import_node_net.isIP)(candidate) === 0) return null;
+  const ipv4Mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(candidate);
+  return ipv4Mapped?.[1] || candidate.toLowerCase();
+}
+function isLoopbackPeer(peer) {
+  return !peer || /^127\./.test(peer) || peer === "::1";
+}
+function edgeClientIp(getHeader, peer) {
+  if (process.env.TRUSTED_PROXY !== "true" || !process.env.RAILWAY_ENVIRONMENT) return null;
+  if (isLoopbackPeer(normalizeClientIp(peer))) return null;
+  return normalizeClientIp(getHeader("x-real-ip"));
+}
+
+// features/keystone/security/internalIdentity.ts
+var import_node_crypto26 = require("node:crypto");
+var INTERNAL_IDENTITY_MAX_AGE_MS = 9e4;
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && (0, import_node_crypto26.timingSafeEqual)(leftBuffer, rightBuffer);
+}
+function verifiedInternalIdentity(headers, socketAddress, secret2, now) {
+  const loopback = /^(?:127\.|::1$|::ffff:127\.)/.test(String(socketAddress || ""));
+  if (!loopback || secret2.length < 32) return null;
+  const identity2 = String(headers["x-openfront-client-identity"] || "");
+  const timestamp40 = String(headers["x-openfront-client-timestamp"] || "");
+  const signature2 = String(headers["x-openfront-client-signature"] || "");
+  if (!/^[a-f0-9]{64}$/.test(identity2) || !/^\d{10}$/.test(timestamp40) || !/^[a-f0-9]{64}$/.test(signature2)) return null;
+  const age = Math.abs(now - Number(timestamp40) * 1e3);
+  if (!Number.isFinite(age) || age > INTERNAL_IDENTITY_MAX_AGE_MS) return null;
+  const expected = (0, import_node_crypto26.createHmac)("sha256", secret2).update(`${timestamp40}:${identity2}`).digest("hex");
+  return safeEqual(signature2, expected) ? `forwarded:${identity2}` : null;
+}
+
+// features/keystone/lib/graphqlSecurity.ts
+var MAX_GRAPHQL_DEPTH = 12;
+function fragmentMap(document2) {
+  return new Map(document2.definitions.filter((definition) => definition.kind === import_graphql4.Kind.FRAGMENT_DEFINITION).map((fragment) => [fragment.name.value, fragment]));
+}
+var MAX_DEPTH_VALIDATION_WORK = 2e4;
+var DepthBudgetExceeded = class extends Error {
+};
+function selectionDepth(selectionSet, fragments, memo, visiting, work) {
+  if (!selectionSet) return 0;
+  let maximum = 0;
+  for (const selection of selectionSet.selections) {
+    if (++work.count > MAX_DEPTH_VALIDATION_WORK) throw new DepthBudgetExceeded();
+    let depth = 0;
+    if (selection.kind === import_graphql4.Kind.FIELD) depth = 1 + selectionDepth(selection.selectionSet, fragments, memo, visiting, work);
+    else if (selection.kind === import_graphql4.Kind.INLINE_FRAGMENT) depth = selectionDepth(selection.selectionSet, fragments, memo, visiting, work);
+    else {
+      const name = selection.name.value;
+      if (memo.has(name)) depth = memo.get(name) ?? 0;
+      else if (!visiting.has(name)) {
+        visiting.add(name);
+        depth = selectionDepth(fragments.get(name)?.selectionSet, fragments, memo, visiting, work);
+        visiting.delete(name);
+        memo.set(name, depth);
+      }
+    }
+    if (depth > maximum) maximum = depth;
+    if (maximum > MAX_GRAPHQL_DEPTH) return maximum;
+  }
+  return maximum;
+}
+var boundedGraphqlDepthRule = (context) => ({
+  Document(node) {
+    const fragments = fragmentMap(node);
+    const memo = /* @__PURE__ */ new Map();
+    const work = { count: 0 };
+    for (const definition of node.definitions) {
+      if (definition.kind !== import_graphql4.Kind.OPERATION_DEFINITION) continue;
+      try {
+        if (selectionDepth(definition.selectionSet, fragments, memo, /* @__PURE__ */ new Set(), work) > MAX_GRAPHQL_DEPTH) {
+          context.reportError(new import_graphql4.GraphQLError(`GraphQL query depth exceeds ${MAX_GRAPHQL_DEPTH}`, { nodes: definition }));
+        }
+      } catch (error) {
+        if (!(error instanceof DepthBudgetExceeded)) throw error;
+        context.reportError(new import_graphql4.GraphQLError("GraphQL query is too complex", { nodes: definition }));
+        return;
+      }
+    }
+  }
+});
+var rejectIntrospectionInProduction = (context) => ({
+  Field(node) {
+    if (process.env.NODE_ENV === "production" && (node.name.value === "__schema" || node.name.value === "__type")) {
+      context.reportError(new import_graphql4.GraphQLError("GraphQL introspection is disabled in production", { nodes: node }));
+    }
+  }
+});
+var MAX_BODY_BYTES = 1024 * 1024;
+var MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+
+// features/keystone/lib/graphqlRateLimit.ts
+var WINDOW_MS = 6e4;
+async function consumeSharedBucket(prisma, key2, limit) {
+  const now = /* @__PURE__ */ new Date();
+  const result = await prisma.$queryRawUnsafe(`
+    INSERT INTO "RateLimitBucket" ("id", "key", "windowStartedAt", "requestCount", "createdAt", "updatedAt")
+    VALUES (md5($1 || $2::text), $1, $2, 1, $2, $2)
+    ON CONFLICT ("key") DO UPDATE SET
+      "windowStartedAt" = CASE WHEN EXTRACT(EPOCH FROM ($2 - "RateLimitBucket"."windowStartedAt")) * 1000 >= ${WINDOW_MS} THEN $2 ELSE "RateLimitBucket"."windowStartedAt" END,
+      "requestCount" = CASE WHEN EXTRACT(EPOCH FROM ($2 - "RateLimitBucket"."windowStartedAt")) * 1000 >= ${WINDOW_MS} THEN 1 ELSE "RateLimitBucket"."requestCount" + 1 END,
+      "updatedAt" = $2
+    RETURNING "requestCount"
+  `, key2, now);
+  if (Number(result[0]?.requestCount || 0) > limit) throw new import_graphql5.GraphQLError("Too many requests; retry later", { extensions: { code: "RATE_LIMITED" } });
+}
+var PRUNE_BATCH = 200;
+function isPrivateOrLoopback(ip) {
+  return /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || ip === "::1" || /^f[cd][0-9a-f]{2}:/i.test(ip) || /^fe80:/i.test(ip);
+}
+function abuseActor(context) {
+  if (context.session?.itemId) return `user:${context.session.itemId}`;
+  const req = context.req;
+  if (!req) return null;
+  const header = (name) => {
+    const value = typeof req.headers?.get === "function" ? req.headers.get(name) : req.headers?.[name];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const internal = verifiedInternalIdentity({
+    "x-openfront-client-identity": header("x-openfront-client-identity"),
+    "x-openfront-client-timestamp": header("x-openfront-client-timestamp"),
+    "x-openfront-client-signature": header("x-openfront-client-signature")
+  }, req.socket?.remoteAddress, String(process.env.SESSION_SECRET || ""), Date.now());
+  if (internal) return `ip:${internal}`;
+  const edge = edgeClientIp(header, req.socket?.remoteAddress);
+  if (edge) return `ip:${edge}`;
+  const ip = normalizeClientIp(req.socket?.remoteAddress);
+  if (!ip || isPrivateOrLoopback(ip)) return null;
+  return `ip:${ip}`;
+}
+function bucketKey(action, kind, value) {
+  return `${action}:${kind}:${(0, import_node_crypto27.createHash)("sha256").update(value).digest("hex").slice(0, 32)}`;
+}
+async function consumeActionBuckets(context, action, { target, targetLimit, actorLimit }) {
+  await context.prisma.$executeRawUnsafe(
+    `DELETE FROM "RateLimitBucket" WHERE "id" IN (SELECT "id" FROM "RateLimitBucket" WHERE "windowStartedAt" < $1 LIMIT ${PRUNE_BATCH})`,
+    new Date(Date.now() - WINDOW_MS)
+  );
+  const actor = abuseActor(context);
+  if (actor) await consumeSharedBucket(context.prisma, bucketKey(action, "actor", actor), actorLimit);
+  await consumeSharedBucket(context.prisma, bucketKey(action, "target", target), targetLimit);
+}
+
+// features/keystone/mutations/submitGroceryContactMessage.ts
+init_publicError();
+init_storeScope();
+var CONTACT_TOPICS = {
+  order_problem: "Missing, wrong or damaged item",
+  order_change: "Change an order, address or time",
+  substitution: "Replacement or substitution",
+  refund: "Refund or payment",
+  account: "Account or sign-in",
+  other: "Something else"
+};
+var singleLine = (value, max) => {
+  const text63 = typeof value === "string" ? value.trim() : "";
+  return text63.length <= max && !/[\r\n\u0000-\u001f]/.test(text63) ? text63 : null;
+};
+async function submitGroceryContactMessage(_root, { data }, context) {
+  const name = singleLine(data?.name, 100), email = singleLine(data?.email, 254)?.toLowerCase(), phone = singleLine(data?.phone ?? "", 40);
+  const topic = typeof data?.topic === "string" && CONTACT_TOPICS[data.topic] ? data.topic : null;
+  const orderNumber = singleLine(data?.orderNumber ?? "", 20)?.replace(/^#/, "") ?? null;
+  const message = typeof data?.message === "string" ? data.message.trim() : "";
+  const rawPath = singleLine(data?.sourcePath ?? "", 300) || "";
+  const sourcePath = rawPath.startsWith("/") && !rawPath.startsWith("//") ? rawPath : "";
+  if (!name) throw publicError("Enter your name (up to 100 characters).");
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw publicError("Enter a valid email address so the store can reply.");
+  if (phone === null) throw publicError("Enter a phone number of up to 40 characters, or leave it blank.");
+  if (!topic) throw publicError("Choose what your message is about.");
+  if (orderNumber === null || orderNumber && !/^\d{1,10}$/.test(orderNumber)) throw publicError("Enter the order number as digits, for example 1024, or leave it blank.");
+  if (message.length < 10 || message.length > 5e3) throw publicError("Write a message of 10 to 5,000 characters.");
+  const store = await publicStore(context);
+  await consumeActionBuckets(context, "contact", { target: `${store.id}:${email}`, targetLimit: 3, actorLimit: 10 });
+  const customerId = context.session?.itemId ? await context.prisma.user.findUnique({ where: { id: context.session.itemId }, select: { id: true, storeId: true } }) : null;
+  const now = /* @__PURE__ */ new Date();
+  let referenceDay;
+  try {
+    referenceDay = zonedDateKey(now, store.timezone || "UTC");
+  } catch {
+    referenceDay = now.toISOString().slice(0, 10);
+  }
+  const reference = `JUN-${referenceDay.replace(/-/g, "")}-${(0, import_node_crypto28.randomBytes)(4).toString("hex").toUpperCase()}`;
+  await context.sudo().db.ContactMessage.createOne({
+    data: {
+      store: { connect: { id: store.id } },
+      ...customerId?.storeId === store.id ? { customer: { connect: { id: customerId.id } } } : {},
+      reference,
+      name,
+      email,
+      phone,
+      topic: CONTACT_TOPICS[topic],
+      orderNumber,
+      message,
+      sourcePath,
+      subject: `${CONTACT_TOPICS[topic]}${orderNumber ? ` \xB7 order #${orderNumber}` : ""}`
+    }
+  });
+  return { reference, receivedAt: now.toISOString() };
+}
+
+// features/keystone/mutations/registerGroceryCustomer.ts
+init_publicError();
+init_storeScope();
+async function registerGroceryCustomer(_root, args, context) {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const email = typeof args.email === "string" ? args.email.trim().toLowerCase() : "";
+  const password2 = typeof args.password === "string" ? args.password : "";
+  if (name.length < 1 || name.length > 120 || /[\r\n]/.test(name)) throw publicError("Enter your name (up to 120 characters).");
+  if (email.length > SHOPPER_EMAIL_MAX || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw publicError("Enter a valid email address.");
+  const passwordProblem = shopperPasswordProblem(password2);
+  if (passwordProblem) throw publicError(passwordProblem);
+  const store = await publicStore(context);
+  await consumeActionBuckets(context, "signup", { target: `${store.id}:${email}`, targetLimit: 3, actorLimit: 10 });
+  const existing = await context.prisma.user.findUnique({ where: { email }, select: { id: true } });
+  if (existing) throw publicError("An account already exists for this email. Sign in, or reset your password if you forgot it.", "ACCOUNT_EXISTS");
+  const user = await context.sudo().db.User.createOne({
+    data: { name, email, password: password2, store: { connect: { id: store.id } }, onboardingStatus: "not_started" }
+  });
+  return { success: true, customerId: user.id, email };
+}
+
+// features/keystone/mutations/saveFavoriteProduct.ts
+init_publicError();
+init_storeScope();
+async function saveFavoriteProduct(_root, { productId }, context) {
+  const userId = context.session?.itemId;
+  if (!userId) throw publicError("Sign in to save favorites.", "UNAUTHENTICATED");
+  const store = await publicStore(context);
+  return context.transaction(async (tx) => {
+    await tx.prisma.$queryRawUnsafe("SELECT pg_advisory_xact_lock(hashtext('grocery-favorite'), hashtext($1))", `${userId}:${productId}`);
+    const [user, product] = await Promise.all([
+      tx.prisma.user.findUnique({ where: { id: userId }, select: { storeId: true, privacyErasedAt: true } }),
+      tx.prisma.product.findUnique({ where: { id: String(productId || "") }, select: { id: true, title: true, status: true, storeId: true } })
+    ]);
+    if (!user || user.privacyErasedAt || user.storeId !== store.id) throw publicError("Sign in to save favorites.", "UNAUTHENTICATED");
+    if (!product || product.storeId !== store.id || product.status !== "published") throw publicError("This product is not available to save.");
+    const existing = await tx.prisma.favoriteProduct.findFirst({ where: { userId, productRefId: product.id }, select: { id: true } });
+    if (existing) return { id: existing.id, productId: product.id, reused: true };
+    const favorite = await tx.sudo().db.FavoriteProduct.createOne({ data: { user: { connect: { id: userId } }, product: product.title, productRef: { connect: { id: product.id } } } });
+    return { id: favorite.id, productId: product.id, reused: false };
+  });
+}
+
 // features/keystone/mutations/index.ts
 init_managePaymentRefund();
 
-// features/keystone/mutations/manageGroceryOutbox.ts
-init_access();
-init_groceryOutbox();
-init_storeScope();
-async function assertCanManageOutbox(context) {
-  await requireFreshCapability(context, "canManageOnboarding");
-}
-function eventResult(event) {
-  return {
-    eventId: event.id,
-    eventKey: event.eventKey,
-    eventType: event.eventType,
-    aggregateType: event.aggregateType,
-    aggregateId: event.aggregateId,
-    schemaVersion: event.schemaVersion,
-    payload: event.payload,
-    payloadHash: event.payloadHash,
-    occurredAt: new Date(event.occurredAt).toISOString(),
-    status: event.status,
-    attempts: event.attempts,
-    claimToken: event.claimToken || null
-  };
-}
-async function groceryOutboxStatus(_root, _args, context) {
-  await assertCanManageOutbox(context);
-  const store = await requireSessionStore(context);
-  const groups = await context.prisma.groceryOutboxEvent.groupBy({ by: ["status"], where: { storeId: store.id }, _count: { _all: true } });
-  const counts = Object.fromEntries(groups.map((group) => [group.status, group._count._all]));
-  return {
-    pending: counts.pending || 0,
-    processing: counts.processing || 0,
-    delivered: counts.delivered || 0,
-    failed: counts.failed || 0
-  };
-}
-async function claimGroceryOutboxEvents(_root, { workerId, limit = 20 }, context) {
-  await assertCanManageOutbox(context);
-  const store = await requireSessionStore(context);
-  const normalizedWorkerId = workerId.trim();
-  if (!/^[a-zA-Z0-9:_-]{3,80}$/.test(normalizedWorkerId)) throw new Error("A valid outbox worker ID is required");
-  const boundedLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
-  return context.transaction(async (txContext) => {
-    await txContext.prisma.groceryOutboxEvent.updateMany({ where: { storeId: store.id, status: "processing", attempts: { gte: 10 }, claimedAt: { lt: new Date(Date.now() - 3e5) } }, data: { status: "failed", claimToken: "", claimedAt: null, lastError: "Delivery claim expired after ten attempts; operator replay required" } });
-    const rows = await txContext.prisma.$queryRawUnsafe(
-      `SELECT "id" FROM "GroceryOutboxEvent"
-       WHERE ("status" = 'pending' OR ("status" = 'failed' AND "nextAttemptAt" <= NOW()) OR ("status" = 'processing' AND "claimedAt" < NOW() - INTERVAL '5 minutes')) AND "store" = $2 AND "attempts" < 10
-       ORDER BY "occurredAt" ASC, "id" ASC
-       LIMIT $1
-       FOR UPDATE SKIP LOCKED`,
-      boundedLimit,
-      store.id
-    );
-    if (!rows.length) return [];
-    const ids = rows.map((row) => row.id);
-    const claimToken = newGroceryOutboxClaimToken(normalizedWorkerId);
-    await txContext.prisma.groceryOutboxEvent.updateMany({
-      where: { id: { in: ids } },
-      data: {
-        status: "processing",
-        attempts: { increment: 1 },
-        claimToken,
-        claimedAt: /* @__PURE__ */ new Date(),
-        lastError: ""
-      }
-    });
-    const events = await txContext.prisma.groceryOutboxEvent.findMany({
-      where: { id: { in: ids } },
-      orderBy: [{ occurredAt: "asc" }, { id: "asc" }]
-    });
-    return events.map(eventResult);
-  }, { isolationLevel: "ReadCommitted" });
-}
-async function completeGroceryOutboxEvent(_root, { eventId, claimToken, succeeded, error }, context) {
-  await assertCanManageOutbox(context);
-  const store = await requireSessionStore(context);
-  if (!claimToken.trim()) throw new Error("Outbox claim token is required");
-  const normalizedError = error?.trim().slice(0, 2e3) || "";
-  return context.transaction(async (txContext) => {
-    await txContext.prisma.$queryRawUnsafe('SELECT "id" FROM "GroceryOutboxEvent" WHERE "id" = $1 FOR UPDATE', eventId);
-    const event = await txContext.prisma.groceryOutboxEvent.findUnique({ where: { id: eventId } });
-    if (!event || event.storeId !== store.id || event.status !== "processing" || event.claimToken !== claimToken) {
-      throw new Error("Outbox event is not owned by this active claim");
-    }
-    const updated = await txContext.prisma.groceryOutboxEvent.update({
-      where: { id: event.id },
-      data: succeeded ? { status: "delivered", deliveredAt: /* @__PURE__ */ new Date(), claimToken: "", claimedAt: null, lastError: "" } : { status: "failed", claimToken: "", claimedAt: null, nextAttemptAt: Number(event.attempts || 0) < 10 ? new Date(Date.now() + Math.min(36e5, 3e4 * 2 ** Number(event.attempts || 0))) : null, lastError: normalizedError || "Delivery failed" }
-    });
-    return eventResult(updated);
-  }, { isolationLevel: "ReadCommitted" });
-}
-async function replayGroceryOutboxEvent(_root, { eventId }, context) {
-  await assertCanManageOutbox(context);
-  const store = await requireSessionStore(context);
-  return context.transaction(async (txContext) => {
-    await txContext.prisma.$queryRawUnsafe('SELECT "id" FROM "GroceryOutboxEvent" WHERE "id" = $1 FOR UPDATE', eventId);
-    const event = await txContext.prisma.groceryOutboxEvent.findUnique({ where: { id: eventId } });
-    if (!event || event.storeId !== store.id || event.status !== "failed") throw new Error("Only failed outbox events can be replayed");
-    const updated = await txContext.prisma.groceryOutboxEvent.update({
-      where: { id: event.id },
-      data: { status: "pending", attempts: 0, claimToken: "", claimedAt: null, deliveredAt: null }
-    });
-    return eventResult(updated);
-  }, { isolationLevel: "ReadCommitted" });
-}
-
 // features/keystone/mutations/manageStoreCapacity.ts
 init_access();
-init_groceryOutbox();
 init_storeScope();
+init_publicError();
 async function assertDelivery(context) {
   await requireFreshCapability(context, "canManageDelivery");
 }
 function key(value) {
   const result = value.trim();
-  if (result.length < 12) throw new Error("Idempotency key required");
+  if (result.length < 12) throw publicError("Idempotency key required", "CAPACITY_REFUSED");
   return result;
 }
 async function configureDeliverySlot(_root, args, context) {
@@ -16178,15 +18704,14 @@ async function configureDeliverySlot(_root, args, context) {
   return context.transaction(async (tx) => {
     await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "DeliverySlot" WHERE "id" = $1 FOR UPDATE', args.slotId);
     const slot = await tx.prisma.deliverySlot.findUnique({ where: { id: args.slotId } });
-    if (!slot || slot.storeId !== store.id) throw new Error("Delivery slot not found in active store");
+    if (!slot || slot.storeId !== store.id) throw publicError("Delivery slot not found in active store", "CAPACITY_REFUSED");
     const capacity = args.capacity ?? slot.capacity;
     const fee = args.deliveryFee ?? slot.deliveryFee ?? 0;
     const active = args.isActive ?? slot.isActive;
-    if (!Number.isInteger(capacity) || capacity < 1 || capacity < (slot.currentBookings || 0)) throw new Error("Capacity cannot be below current bookings");
-    if (!Number.isInteger(fee) || fee < 0) throw new Error("Delivery fee must be non-negative cents");
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity < (slot.currentBookings || 0)) throw publicError("Capacity cannot be below current bookings", "CAPACITY_REFUSED");
+    if (!Number.isInteger(fee) || fee < 0) throw publicError("Delivery fee must be non-negative cents", "CAPACITY_REFUSED");
     const reused = capacity === slot.capacity && fee === (slot.deliveryFee || 0) && active === slot.isActive;
     const updated = reused ? slot : await tx.prisma.deliverySlot.update({ where: { id: slot.id }, data: { capacity, deliveryFee: fee, isActive: active } });
-    await enqueueGroceryOutboxEvent(tx.prisma, { storeId: store.id, eventKey: `delivery-slot:${eventKey}:configured:v1`, eventType: "delivery_slot.configured", aggregateType: "delivery_slot", aggregateId: slot.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { slotId: slot.id, capacity: updated.capacity, deliveryFee: updated.deliveryFee || 0, isActive: updated.isActive, currentBookings: updated.currentBookings || 0 } });
     return { slotId: slot.id, capacity: updated.capacity, currentBookings: updated.currentBookings || 0, isAvailable: updated.isActive, fee: updated.deliveryFee || 0, reused };
   }, { isolationLevel: "ReadCommitted" });
 }
@@ -16197,14 +18722,13 @@ async function configurePickupSlot(_root, args, context) {
   return context.transaction(async (tx) => {
     await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "PickupSlot" WHERE "id" = $1 FOR UPDATE', args.slotId);
     const slot = await tx.prisma.pickupSlot.findUnique({ where: { id: args.slotId } });
-    if (!slot || slot.storeId !== store.id) throw new Error("Pickup slot not found in active store");
+    if (!slot || slot.storeId !== store.id) throw publicError("Pickup slot not found in active store", "CAPACITY_REFUSED");
     const maxOrders = args.maxOrders ?? slot.maxOrders;
     const active = args.isAvailable ?? slot.isActive;
-    if (!Number.isInteger(maxOrders) || maxOrders < 1 || maxOrders < (slot.currentOrders || 0)) throw new Error("Maximum orders cannot be below current orders");
+    if (!Number.isInteger(maxOrders) || maxOrders < 1 || maxOrders < (slot.currentOrders || 0)) throw publicError("Maximum orders cannot be below current orders", "CAPACITY_REFUSED");
     const derivedAvailability = active && (slot.currentOrders || 0) < maxOrders;
     const reused = maxOrders === slot.maxOrders && active === slot.isActive && derivedAvailability === slot.isAvailable;
     const updated = reused ? slot : await tx.prisma.pickupSlot.update({ where: { id: slot.id }, data: { maxOrders, isActive: active, isAvailable: derivedAvailability } });
-    await enqueueGroceryOutboxEvent(tx.prisma, { storeId: store.id, eventKey: `pickup-slot:${eventKey}:configured:v1`, eventType: "pickup_slot.configured", aggregateType: "pickup_slot", aggregateId: slot.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { slotId: slot.id, maxOrders: updated.maxOrders, currentOrders: updated.currentOrders || 0, isAvailable: updated.isAvailable } });
     return { slotId: slot.id, capacity: updated.maxOrders, currentBookings: updated.currentOrders || 0, isAvailable: updated.isAvailable, fee: 0, reused };
   }, { isolationLevel: "ReadCommitted" });
 }
@@ -16215,7 +18739,7 @@ async function configureParkingSpot(_root, args, context) {
   return context.transaction(async (tx) => {
     await tx.prisma.$queryRawUnsafe('SELECT "id" FROM "ParkingSpot" WHERE "id" = $1 FOR UPDATE', args.spotId);
     const spot = await tx.prisma.parkingSpot.findUnique({ where: { id: args.spotId } });
-    if (!spot || spot.storeId !== store.id) throw new Error("Parking spot not found in active store");
+    if (!spot || spot.storeId !== store.id) throw publicError("Parking spot not found in active store", "CAPACITY_REFUSED");
     if (args.isAvailable) {
       const occupiedOrders = await tx.prisma.order.count({
         where: {
@@ -16224,26 +18748,28 @@ async function configureParkingSpot(_root, args, context) {
           metadata: { path: ["parkingSpotId"], equals: spot.id }
         }
       });
-      if (occupiedOrders > 0) throw new Error("Occupied parking spots must be released through pickup handoff");
+      if (occupiedOrders > 0) throw publicError("Occupied parking spots must be released through pickup handoff", "CAPACITY_REFUSED");
     }
     const reused = spot.isAvailable === args.isAvailable;
     const updated = reused ? spot : await tx.prisma.parkingSpot.update({ where: { id: spot.id }, data: { isAvailable: args.isAvailable } });
-    await enqueueGroceryOutboxEvent(tx.prisma, { storeId: store.id, eventKey: `parking-spot:${eventKey}:configured:v1`, eventType: "parking_spot.configured", aggregateType: "parking_spot", aggregateId: spot.id, occurredAt: (/* @__PURE__ */ new Date()).toISOString(), payload: { spotId: spot.id, spotNumber: spot.spotNumber, isAvailable: updated.isAvailable } });
     return { slotId: spot.id, capacity: 1, currentBookings: updated.isAvailable ? 0 : 1, isAvailable: updated.isAvailable, fee: 0, reused };
   }, { isolationLevel: "ReadCommitted" });
 }
 
 // features/keystone/mutations/provisionCustomer.ts
 init_access();
+init_publicError();
 async function provisionGroceryCustomer(_root, { name, email, temporaryPassword }, context) {
   const { storeId } = await requireFreshCapability(context, "canManageUsers");
-  const normalizedName = name.trim();
-  const normalizedEmail = email.trim().toLowerCase();
-  if (normalizedName.length < 2 || normalizedName.length > 120) throw new Error("Customer name must be between 2 and 120 characters");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) throw new Error("A valid customer email is required");
-  if (temporaryPassword.length < 12 || temporaryPassword.length > 200) throw new Error("Temporary password must be between 12 and 200 characters");
+  const normalizedName = typeof name === "string" ? name.trim() : "";
+  const normalizedEmail = normalizeAccountEmail(email);
+  if (normalizedName.length < 1 || normalizedName.length > 120 || /[\r\n]/.test(normalizedName)) throw publicError("Enter the customer\u2019s name (up to 120 characters).");
+  const emailProblem = accountEmailProblem(normalizedEmail);
+  if (emailProblem) throw publicError(emailProblem);
+  const passwordProblem = shopperPasswordProblem(typeof temporaryPassword === "string" ? temporaryPassword : "");
+  if (passwordProblem) throw publicError(passwordProblem.replace("Choose a password", "Choose a temporary password"));
   const existing = await context.prisma.user.findUnique({ where: { email: normalizedEmail }, select: { id: true } });
-  if (existing) throw new Error("A customer with this email already exists");
+  if (existing) throw publicError("A customer with this email already exists.");
   const customer = await context.sudo().db.User.createOne({
     data: {
       name: normalizedName,
@@ -16260,10 +18786,20 @@ async function provisionGroceryCustomer(_root, { name, email, temporaryPassword 
 init_payment();
 init_access();
 init_storeScope();
+init_stripeEnabled();
 function requirePermission(context, capability, message) {
   return requireFreshCapability(context, capability).catch(() => {
     throw new Error(message);
   });
+}
+async function hasFreshCapability(context, capability) {
+  try {
+    await requireFreshCapability(context, capability);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message === `Missing current capability: ${capability}`) return false;
+    throw error;
+  }
 }
 function iso(value) {
   return value ? new Date(value).toISOString() : null;
@@ -16271,6 +18807,7 @@ function iso(value) {
 function number(value) {
   return value === null || value === void 0 ? null : Number(value);
 }
+var WEEKDAY_CODES = { monday: "mon", tuesday: "tue", wednesday: "wed", thursday: "thu", friday: "fri", saturday: "sat", sunday: "sun", mon: "mon", tue: "tue", wed: "wed", thu: "thu", fri: "fri", sat: "sat", sun: "sun" };
 function pageArgs(args) {
   const page = Number(args?.page ?? 1), pageSize = Number(args?.pageSize ?? 50);
   if (!Number.isInteger(page) || page < 1 || page > 1e6 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
@@ -16326,6 +18863,42 @@ function mapPayment(payment) {
     refunds: (payment.refunds || []).map(mapRefund)
   };
 }
+function mapPaymentProviderTruth(provider) {
+  return {
+    id: provider.id,
+    name: provider.name,
+    code: provider.code,
+    isInstalled: isPaymentProviderInstalled(provider),
+    publicCheckout: isPublicPaymentProviderEnabled(provider),
+    runtimeConfigured: isPaymentProviderConfigured(provider)
+  };
+}
+var ORDER_ACTIVE_STATUSES = ["pending", "picking", "packed", "out_for_delivery"];
+var ORDER_EXCEPTION_STATUSES = ["delivery_failed", "delivery_refused", "returned"];
+var ORDER_SINGLE_STATUSES = ["pending", "picking", "packed", "out_for_delivery", "delivered", "cancelled", ...ORDER_EXCEPTION_STATUSES];
+function orderViewWhere(view) {
+  if (view === "active") return { status: { in: ORDER_ACTIVE_STATUSES } };
+  if (view === "exceptions") return { status: { in: ORDER_EXCEPTION_STATUSES } };
+  if (view === "attention") return { payments: { some: { OR: [{ status: "failed" }, { refunds: { some: { reconciliationDeadLetterAt: { not: null } } } }] } } };
+  if (ORDER_SINGLE_STATUSES.includes(view)) return { status: view };
+  return {};
+}
+function orderSearchWhere(search) {
+  if (!search) return {};
+  const number2 = /^#?(\d{1,9})$/.exec(search);
+  return { OR: [
+    ...number2 ? [{ displayId: Number(number2[1]) }] : [],
+    { email: { contains: search, mode: "insensitive" } },
+    { id: { equals: search } },
+    { lineItems: { some: { OR: [{ id: { equals: search } }, { title: { contains: search, mode: "insensitive" } }, { sku: { contains: search, mode: "insensitive" } }] } } }
+  ] };
+}
+var ORDER_SORTS = {
+  newest: [{ createdAt: "desc" }, { id: "asc" }],
+  oldest: [{ createdAt: "asc" }, { id: "asc" }],
+  value: [{ totalCents: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+  status: [{ status: "asc" }, { createdAt: "desc" }, { id: "asc" }]
+};
 async function groceryPlatformOrders(_root, args, context) {
   await requirePermission(context, "canManageOrders", "Orders projection requires order-management permission");
   const store = await requireSessionStore(context);
@@ -16334,11 +18907,14 @@ async function groceryPlatformOrders(_root, args, context) {
   const today = zonedStartOfDay(now, store.timezone);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1e3);
   const commercialOrderWhere = { storeId: store.id };
-  const orderWhere = { storeId: store.id, ...searchFields(pagination.search, ["email"]), ...pagination.status ? { status: pagination.status } : {} };
-  const [orders, totalOrders, statuses, todaySales, thirtyDaySales, thirtyDayRefunds] = await Promise.all([
+  const view = args.view || (pagination.status || "all");
+  const orderWhere = args.orderId ? { storeId: store.id, id: args.orderId } : { storeId: store.id, AND: [orderViewWhere(view), orderSearchWhere(pagination.search)] };
+  const viewCount = (name) => context.prisma.order.count({ where: { storeId: store.id, AND: [orderViewWhere(name), orderSearchWhere(pagination.search)] } });
+  const viewNames = ["active", "exceptions", "attention", "all", ...ORDER_SINGLE_STATUSES];
+  const [orders, totalOrders, statuses, todaySales, thirtyDaySales, thirtyDayRefunds, viewCountRows] = await Promise.all([
     context.prisma.order.findMany({
       where: orderWhere,
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      orderBy: ORDER_SORTS[args.sort || "newest"] || ORDER_SORTS.newest,
       skip: pagination.skip,
       take: pagination.pageSize,
       select: {
@@ -16347,6 +18923,7 @@ async function groceryPlatformOrders(_root, args, context) {
         email: true,
         status: true,
         deliveryDate: true,
+        substitutionPreference: true,
         deliveryTimeWindow: true,
         metadata: true,
         createdAt: true,
@@ -16406,11 +18983,14 @@ async function groceryPlatformOrders(_root, args, context) {
     context.prisma.paymentRefund.aggregate({
       where: { status: "succeeded", processedAt: { gte: thirtyDaysAgo }, payment: { storeId: store.id } },
       _sum: { amountCents: true }
-    })
+    }),
+    Promise.all(viewNames.map(async (name) => [name, await viewCount(name)]))
   ]);
   const counts = Object.fromEntries(statuses);
+  const viewCounts = Object.fromEntries(viewCountRows);
   return {
     currencyCode: store.currencyCode,
+    timezone: store.timezone,
     orders: orders.map((order) => ({
       ...order,
       deliveryDate: iso(order.deliveryDate),
@@ -16427,6 +19007,9 @@ async function groceryPlatformOrders(_root, args, context) {
       thirtyDayNetCents: (thirtyDaySales._sum.totalCents || 0) - (thirtyDayRefunds._sum.amountCents || 0),
       averageBasketCents: Math.round(thirtyDaySales._avg.totalCents || 0)
     },
+    view,
+    viewCounts,
+    actorCanRefund: await hasFreshCapability(context, "canManagePayments"),
     pending: counts.pending || 0,
     picking: counts.picking || 0,
     packed: counts.packed || 0,
@@ -16439,10 +19022,10 @@ async function groceryPlatformOrders(_root, args, context) {
     totalPages: Math.max(1, Math.ceil(totalOrders / pagination.pageSize))
   };
 }
-async function ordersByStatus(context, storeId, status, orderBy, pagination) {
+async function ordersByStatus(context, where, orderBy, pagination) {
   return context.prisma.order.findMany({
-    where: { storeId, status, ...searchFields(pagination.search, ["email"]) },
-    orderBy: [{ [orderBy]: orderBy === "createdAt" ? "asc" : "desc" }, { id: "asc" }],
+    where,
+    orderBy,
     take: pagination.pageSize,
     skip: pagination.skip,
     select: {
@@ -16497,11 +19080,28 @@ async function groceryPlatformFulfillment(_root, args, context) {
   await requirePermission(context, "canManageOrders", "Fulfillment projection requires order-management permission");
   const store = await requireSessionStore(context);
   const pagination = pageArgs(args);
-  const [pending, picking, packed, counts] = await Promise.all([
-    ordersByStatus(context, store.id, "pending", "createdAt", pagination),
-    ordersByStatus(context, store.id, "picking", "createdAt", pagination),
-    ordersByStatus(context, store.id, "packed", "updatedAt", pagination),
-    Promise.all(["pending", "picking", "packed"].map((status) => context.prisma.order.count({ where: { storeId: store.id, status, ...searchFields(pagination.search, ["email"]) } })))
+  const orderNumber = /^#?(\d{1,9})$/.exec(pagination.search);
+  const search = pagination.search ? { OR: [
+    { email: { contains: pagination.search, mode: "insensitive" } },
+    ...orderNumber ? [{ displayId: Number(orderNumber[1]) }] : [],
+    { lineItems: { some: { OR: [{ title: { contains: pagination.search, mode: "insensitive" } }, { sku: { contains: pagination.search, mode: "insensitive" } }] } } }
+  ] } : {};
+  const views = {
+    pickup: { metadata: { path: ["fulfillmentMethod"], equals: "pickup" } },
+    delivery: { metadata: { path: ["fulfillmentMethod"], equals: "delivery" } },
+    substitutions: { lineItems: { some: { substitutions: { some: {} } } } }
+  };
+  const view = views[args.view || ""] ? args.view : "all";
+  const laneWhere = (status) => ({ storeId: store.id, status, AND: [search, views[view] || {}] });
+  const orderBy = args.sort === "newest" ? [{ createdAt: "desc" }, { id: "asc" }] : args.sort === "items" ? [{ lineItems: { _count: "desc" } }, { createdAt: "asc" }, { id: "asc" }] : [{ createdAt: "asc" }, { id: "asc" }];
+  const [pending, picking, packed, counts, reviewCount, pickupNotReady] = await Promise.all([
+    ordersByStatus(context, laneWhere("pending"), orderBy, pagination),
+    ordersByStatus(context, laneWhere("picking"), orderBy, pagination),
+    ordersByStatus(context, laneWhere("packed"), orderBy, pagination),
+    Promise.all(["pending", "picking", "packed"].map((status) => context.prisma.order.count({ where: laneWhere(status) }))),
+    // Store-wide work, independent of search and paging.
+    context.prisma.orderItemSubstitution.count({ where: { customerApproved: false, lineItem: { order: { storeId: store.id, status: { in: ["pending", "picking", "packed"] } } } } }),
+    context.prisma.order.count({ where: { storeId: store.id, status: "packed", metadata: { path: ["fulfillmentMethod"], equals: "pickup" }, NOT: { metadata: { path: ["readyForPickup"], equals: true } } } })
   ]);
   const lineIds = [...pending, ...picking, ...packed].flatMap((order) => order.lineItems.map((line) => line.id));
   const substitutions = lineIds.length ? await context.prisma.orderItemSubstitution.findMany({
@@ -16513,28 +19113,62 @@ async function groceryPlatformFulfillment(_root, args, context) {
   }) : [];
   const mapOrder = (order) => ({ ...order, deliveryDate: iso(order.deliveryDate), createdAt: iso(order.createdAt), lineItems: order.lineItems.map(mapLineItem), payments: order.payments.map(mapPayment) });
   return {
+    timezone: store.timezone,
+    view,
     pending: pending.map(mapOrder),
     picking: picking.map(mapOrder),
     packed: packed.map(mapOrder),
     orderItemSubstitutions: substitutions.map((item) => ({ ...item, approvedAt: iso(item.approvedAt) })),
+    summary: { pending: counts[0], picking: counts[1], packed: counts[2], substitutionsToReview: reviewCount, pickupNotReady },
     pagination: collectionPage(pagination, { pending: counts[0], picking: counts[1], packed: counts[2] })
   };
 }
 async function groceryPlatformDelivery(_root, args, context) {
   await requirePermission(context, "canManageDelivery", "Delivery projection requires delivery-management permission");
   const store = await requireSessionStore(context);
-  const pagination = pageArgs(args);
+  const base = pageArgs(args);
+  const routePaging = pageArgs({ ...args, page: args.routePage ?? args.page ?? 1 });
+  const readyPaging = pageArgs({ ...args, page: args.readyPage ?? 1 });
+  const slotPaging = pageArgs({ ...args, page: args.slotPage ?? 1 });
+  const search = base.search;
+  const orderNumber = /^#?(\d{1,9})$/.exec(search);
   const slotWindowStart = zonedStartOfDateKey(zonedDateKeyOffset(/* @__PURE__ */ new Date(), store.timezone, -1), store.timezone);
-  const routeWhere = { storeId: store.id, ...pagination.status ? { status: pagination.status } : {} };
-  const readyWhere = { storeId: store.id, status: "packed", deliveryRouteId: null, metadata: { path: ["fulfillmentMethod"], equals: "delivery" }, ...searchFields(pagination.search, ["email"]) };
-  const driverWhere = { storeId: store.id, role: { canManageDelivery: true }, ...searchFields(pagination.search, ["name", "email"]) };
-  const slotWhere = { storeId: store.id, date: { gte: slotWindowStart } };
-  const [routes, readyCandidates, drivers, slots] = await Promise.all([
+  const routeSearch = search ? { OR: [
+    { driver: { OR: [{ name: { contains: search, mode: "insensitive" } }, { email: { contains: search, mode: "insensitive" } }] } },
+    ...orderNumber ? [{ orders: { some: { displayId: Number(orderNumber[1]) } } }] : []
+  ] } : {};
+  const routeViews = {
+    open: { OR: [{ status: { in: ["planning", "in_progress"] } }, { status: null }] },
+    planning: { OR: [{ status: "planning" }, { status: null }] },
+    in_progress: { status: "in_progress" },
+    completed: { status: "completed" }
+  };
+  const routeView = args.routeView && (routeViews[args.routeView] || args.routeView === "all") ? args.routeView : "open";
+  const routeScope = (view) => ({ storeId: store.id, AND: [routeSearch, routeViews[view] || {}] });
+  const routeWhere = routeScope(routeView);
+  const readyBase = { storeId: store.id, status: "packed", deliveryRouteId: null, metadata: { path: ["fulfillmentMethod"], equals: "delivery" } };
+  const readyWhere = { ...readyBase, AND: [search ? { OR: [{ email: { contains: search, mode: "insensitive" } }, ...orderNumber ? [{ displayId: Number(orderNumber[1]) }] : []] } : {}] };
+  const driverWhere = { storeId: store.id, role: { canManageDelivery: true } };
+  const slotView = ["open", "closed", "pressure"].includes(args.slotView || "") ? args.slotView : "all";
+  const slotSort = ["pressure", "capacity"].includes(args.slotSort || "") ? args.slotSort : "date";
+  const slotParams = [store.id, slotWindowStart];
+  const slotConditions = ['"store" = $1', '"date" >= $2'];
+  if (slotView === "open") slotConditions.push('"isActive" = true');
+  if (slotView === "closed") slotConditions.push('"isActive" = false');
+  if (slotView === "pressure") slotConditions.push('"capacity" > 0 AND COALESCE("currentBookings", 0) * 5 >= "capacity" * 4');
+  if (search) {
+    slotParams.push(`%${search.replace(/[%_\\]/g, (char) => `\\${char}`)}%`);
+    slotConditions.push(`("startTime" ILIKE $${slotParams.length} OR "endTime" ILIKE $${slotParams.length} OR to_char("date", 'YYYY-MM-DD') ILIKE $${slotParams.length})`);
+  }
+  const slotOrder = slotSort === "pressure" ? '(COALESCE("currentBookings", 0)::float / NULLIF("capacity", 0)) DESC NULLS LAST, "date" ASC, "startTime" ASC, "id" ASC' : slotSort === "capacity" ? '("capacity" - COALESCE("currentBookings", 0)) ASC, "date" ASC, "startTime" ASC, "id" ASC' : '"date" ASC, "startTime" ASC, "id" ASC';
+  const slotWhereSql = slotConditions.join(" AND ");
+  const prisma = context.prisma;
+  const [routes, readyOrders, drivers, slotIdRows, slotCountRows, routeCountRows, readyCount, driverCount, capacityRows] = await Promise.all([
     context.prisma.deliveryRoute.findMany({
       where: routeWhere,
       orderBy: [{ date: "desc" }, { id: "asc" }],
-      take: pagination.pageSize,
-      skip: pagination.skip,
+      take: routePaging.pageSize,
+      skip: routePaging.skip,
       select: {
         id: true,
         date: true,
@@ -16547,122 +19181,184 @@ async function groceryPlatformDelivery(_root, args, context) {
         orders: { select: { id: true, displayId: true, status: true, metadata: true } }
       }
     }),
-    context.prisma.order.findMany({
+    prisma.order.findMany({
       where: readyWhere,
-      orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
-      take: pagination.pageSize,
-      skip: pagination.skip,
-      select: {
-        id: true,
-        displayId: true,
-        email: true,
-        status: true,
-        deliveryDate: true,
-        deliveryTimeWindow: true,
-        createdAt: true,
-        currencyCode: true,
-        subtotalCents: true,
-        taxCents: true,
-        deliveryFeeCents: true,
-        discountCents: true,
-        totalCents: true,
-        substitutionPreference: true,
-        metadata: true,
-        lineItems: { select: { product: { select: { id: true, pricingMethod: true, unitOfMeasure: true } }, fulfillment: true, id: true, title: true, sku: true, quantity: true, unitPrice: true, unitPriceCents: true, thumbnail: true, metadata: true } },
-        payments: {
-          orderBy: { createdAt: "desc" },
-          select: {
-            id: true,
-            amountCents: true,
-            status: true,
-            providerPaymentId: true,
-            processedAt: true,
-            errorMessage: true,
-            paymentProvider: { select: { code: true } },
-            refunds: {
-              orderBy: { requestedAt: "desc" },
-              select: {
-                id: true,
-                amountCents: true,
-                status: true,
-                providerData: true,
-                requestedAt: true,
-                processedAt: true,
-                failureMessage: true,
-                reconciliationAttempts: true,
-                reconciliationNextAttemptAt: true,
-                reconciliationDeadLetterAt: true,
-                reconciliationLastError: true
-              }
-            }
-          }
-        }
-      }
+      orderBy: [{ deliveryDate: "asc" }, { deliveryTimeWindow: "asc" }, { id: "asc" }],
+      take: readyPaging.pageSize,
+      skip: readyPaging.skip,
+      select: { id: true, displayId: true, email: true, status: true, deliveryDate: true, deliveryTimeWindow: true, metadata: true, lineItems: { select: { id: true, quantity: true } } }
     }),
-    context.prisma.user.findMany({
-      where: driverWhere,
-      orderBy: [{ name: "asc" }, { id: "asc" }],
-      take: pagination.pageSize,
-      skip: pagination.skip,
-      select: { id: true, name: true, email: true }
-    }),
-    context.prisma.deliverySlot.findMany({
-      where: slotWhere,
-      orderBy: [{ date: "asc" }, { startTime: "asc" }, { id: "asc" }],
-      take: pagination.pageSize,
-      skip: pagination.skip,
-      select: { id: true, date: true, startTime: true, endTime: true, capacity: true, currentBookings: true, isActive: true, deliveryFee: true }
-    })
+    context.prisma.user.findMany({ where: driverWhere, orderBy: [{ name: "asc" }, { id: "asc" }], take: 200, select: { id: true, name: true, email: true } }),
+    context.prisma.$queryRawUnsafe(`SELECT "id" FROM "DeliverySlot" WHERE ${slotWhereSql} ORDER BY ${slotOrder} LIMIT ${slotPaging.pageSize} OFFSET ${slotPaging.skip}`, ...slotParams),
+    context.prisma.$queryRawUnsafe(`SELECT COUNT(*) AS count FROM "DeliverySlot" WHERE ${slotWhereSql}`, ...slotParams),
+    Promise.all(["open", "planning", "in_progress", "completed", "all"].map(async (view) => [view, await context.prisma.deliveryRoute.count({ where: routeScope(view) })])),
+    prisma.order.count({ where: readyWhere }),
+    context.prisma.user.count({ where: driverWhere }),
+    context.prisma.$queryRawUnsafe(
+      `SELECT COALESCE(SUM(GREATEST("capacity" - COALESCE("currentBookings", 0), 0)) FILTER (WHERE "isActive"), 0) AS open_capacity,
+              COUNT(*) FILTER (WHERE "capacity" > 0 AND COALESCE("currentBookings", 0) * 5 >= "capacity" * 4) AS high_pressure
+         FROM "DeliverySlot" WHERE "store" = $1 AND "date" >= $2`,
+      store.id,
+      slotWindowStart
+    )
   ]);
-  const counts = await Promise.all([context.prisma.deliveryRoute.count({ where: routeWhere }), context.prisma.order.count({ where: readyWhere }), context.prisma.user.count({ where: driverWhere }), context.prisma.deliverySlot.count({ where: slotWhere })]);
-  const readyOrders = readyCandidates.filter((order) => order.metadata?.fulfillmentMethod === "delivery");
+  const slotIds = slotIdRows.map((row) => row.id);
+  const slotRecords = slotIds.length ? await context.prisma.deliverySlot.findMany({ where: { id: { in: slotIds } }, select: { id: true, date: true, startTime: true, endTime: true, capacity: true, currentBookings: true, isActive: true, deliveryFee: true } }) : [];
+  const slotsById = new Map(slotRecords.map((slot) => [slot.id, slot]));
+  const slots = slotIds.flatMap((id) => slotsById.get(id) ? [slotsById.get(id)] : []);
+  const routeCounts = Object.fromEntries(routeCountRows);
+  const slotTotal = Number(slotCountRows[0]?.count || 0);
+  const [readyStoreWide, openRoutes, inProgress] = await Promise.all([
+    prisma.order.count({ where: readyBase }),
+    context.prisma.deliveryRoute.count({ where: { storeId: store.id, ...routeViews.open } }),
+    context.prisma.deliveryRoute.count({ where: { storeId: store.id, status: "in_progress" } })
+  ]);
+  const paged = (paging, name, total) => collectionPage(paging, { [name]: total });
   return {
-    pagination: collectionPage(pagination, { deliveryRoutes: counts[0], readyOrders: counts[1], drivers: counts[2], deliverySlots: counts[3] }),
+    timezone: store.timezone,
+    routeView,
+    routeViewCounts: routeCounts,
+    slotView,
+    slotSort,
+    pagination: paged(routePaging, "deliveryRoutes", routeCounts[routeView] ?? 0),
+    readyPagination: paged(readyPaging, "readyOrders", readyCount),
+    slotPagination: paged(slotPaging, "deliverySlots", slotTotal),
+    summary: {
+      readyToRoute: readyStoreWide,
+      openRoutes,
+      inProgress,
+      drivers: driverCount,
+      openCapacity: Number(capacityRows[0]?.open_capacity || 0),
+      highPressureSlots: Number(capacityRows[0]?.high_pressure || 0)
+    },
     deliveryRoutes: routes.map((route) => ({ ...route, date: iso(route.date), status: route.status || "planning", startedAt: iso(route.startedAt), completedAt: iso(route.completedAt) })),
-    readyOrders: readyOrders.map((order) => ({
-      ...order,
-      deliveryDate: iso(order.deliveryDate),
-      createdAt: iso(order.createdAt),
-      lineItems: order.lineItems.map(mapLineItem),
-      payments: order.payments.map(mapPayment)
-    })),
+    readyOrders: readyOrders.map((order) => ({ ...order, deliveryDate: iso(order.deliveryDate) })),
     drivers,
+    driversTruncated: driverCount > drivers.length,
     deliverySlots: slots.map((slot) => ({ ...slot, date: iso(slot.date), currentBookings: slot.currentBookings || 0, deliveryFee: slot.deliveryFee || 0 }))
   };
+}
+function likePattern(search) {
+  return `%${search.replace(/[%_\\]/g, (char) => `\\${char}`)}%`;
 }
 async function groceryPlatformPickup(_root, args, context) {
   await requirePermission(context, "canManageDelivery", "Pickup projection requires delivery-management permission");
   const store = await requireSessionStore(context);
-  const pagination = pageArgs(args);
+  const base = pageArgs(args);
+  const arrivalPaging = pageArgs({ ...args, page: args.arrivalPage ?? 1 });
+  const stagedPaging = pageArgs({ ...args, page: args.stagedPage ?? 1 });
+  const slotPaging = pageArgs({ ...args, page: args.slotPage ?? 1 });
+  const search = base.search;
+  const orderNumber = /^#?(\d{1,9})$/.exec(search);
   const slotWindowStart = zonedStartOfDateKey(zonedDateKeyOffset(/* @__PURE__ */ new Date(), store.timezone, -1), store.timezone);
-  const orderWhere = { storeId: store.id, status: "packed", metadata: { path: ["fulfillmentMethod"], equals: "pickup" }, ...searchFields(pagination.search, ["email"]) };
-  const slotWhere = { storeId: store.id, date: { gte: slotWindowStart } };
-  const parkingWhere = { storeId: store.id, ...searchFields(pagination.search, ["spotNumber"]) };
-  const [slots, parkingSpots, orders] = await Promise.all([
-    context.prisma.pickupSlot.findMany({ where: slotWhere, orderBy: [{ date: "asc" }, { startTime: "asc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, date: true, startTime: true, endTime: true, maxOrders: true, currentOrders: true, isAvailable: true } }),
-    context.prisma.parkingSpot.findMany({ where: parkingWhere, orderBy: [{ spotNumber: "asc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, spotNumber: true, description: true, isAccessible: true, isAvailable: true } }),
-    context.prisma.order.findMany({ where: orderWhere, orderBy: [{ updatedAt: "desc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, displayId: true, email: true, status: true, metadata: true } })
+  const queueParams = [store.id];
+  const pickupBase = `"store" = $1 AND "status" = 'packed' AND "metadata"->>'fulfillmentMethod' = 'pickup'`;
+  let searchSql = "";
+  if (search) {
+    queueParams.push(likePattern(search));
+    const like = `$${queueParams.length}`;
+    searchSql = ` AND ("email" ILIKE ${like} OR "metadata"->>'parkingSpotNumber' ILIKE ${like} OR "metadata"->>'vehicleDescription' ILIKE ${like}${orderNumber ? ` OR "displayId" = ${Number(orderNumber[1])}` : ""})`;
+  }
+  const arrivedSql = `${pickupBase} AND "metadata"->'customerArrived' = 'true'::jsonb`;
+  const stagedSql = `${pickupBase} AND "metadata"->'readyForPickup' = 'true'::jsonb AND "metadata"->'customerArrived' IS DISTINCT FROM 'true'::jsonb`;
+  const slotView = ["open", "closed", "pressure"].includes(args.slotView || "") ? args.slotView : "all";
+  const slotSort = ["pressure", "capacity"].includes(args.slotSort || "") ? args.slotSort : "date";
+  const slotParams = [store.id, slotWindowStart];
+  const slotConditions = ['"store" = $1', '"date" >= $2'];
+  if (slotView === "open") slotConditions.push('"isAvailable" = true');
+  if (slotView === "closed") slotConditions.push('"isAvailable" = false');
+  if (slotView === "pressure") slotConditions.push('"maxOrders" > 0 AND COALESCE("currentOrders", 0) * 5 >= "maxOrders" * 4');
+  if (search) {
+    slotParams.push(likePattern(search));
+    slotConditions.push(`("startTime" ILIKE $${slotParams.length} OR "endTime" ILIKE $${slotParams.length} OR to_char("date", 'YYYY-MM-DD') ILIKE $${slotParams.length})`);
+  }
+  const slotOrder = slotSort === "pressure" ? '(COALESCE("currentOrders", 0)::float / NULLIF("maxOrders", 0)) DESC NULLS LAST, "date" ASC, "startTime" ASC, "id" ASC' : slotSort === "capacity" ? '("maxOrders" - COALESCE("currentOrders", 0)) ASC, "date" ASC, "startTime" ASC, "id" ASC' : '"date" ASC, "startTime" ASC, "id" ASC';
+  const slotWhereSql = slotConditions.join(" AND ");
+  const raw = (sql, params) => context.prisma.$queryRawUnsafe(sql, ...params);
+  const [arrivalIds, stagedIds, arrivalCount, stagedCount, slotIdRows, slotCountRows, parkingSpots, occupiedRows, summaryRows] = await Promise.all([
+    raw(`SELECT "id" FROM "Order" WHERE ${arrivedSql}${searchSql} ORDER BY "metadata"->>'checkInTime' ASC NULLS LAST, "id" ASC LIMIT ${arrivalPaging.pageSize} OFFSET ${arrivalPaging.skip}`, queueParams),
+    raw(`SELECT "id" FROM "Order" WHERE ${stagedSql}${searchSql} ORDER BY "metadata"->>'pickupReadyAt' ASC NULLS LAST, "id" ASC LIMIT ${stagedPaging.pageSize} OFFSET ${stagedPaging.skip}`, queueParams),
+    raw(`SELECT COUNT(*) AS count FROM "Order" WHERE ${arrivedSql}${searchSql}`, queueParams),
+    raw(`SELECT COUNT(*) AS count FROM "Order" WHERE ${stagedSql}${searchSql}`, queueParams),
+    raw(`SELECT "id" FROM "PickupSlot" WHERE ${slotWhereSql} ORDER BY ${slotOrder} LIMIT ${slotPaging.pageSize} OFFSET ${slotPaging.skip}`, slotParams),
+    raw(`SELECT COUNT(*) AS count FROM "PickupSlot" WHERE ${slotWhereSql}`, slotParams),
+    context.prisma.parkingSpot.findMany({ where: { storeId: store.id }, orderBy: [{ spotNumber: "asc" }, { id: "asc" }], take: 200, select: { id: true, spotNumber: true, description: true, isAccessible: true, isAvailable: true } }),
+    // A bay is occupied while any arrived, unfinished pickup order holds it — across every page.
+    raw(`SELECT DISTINCT "metadata"->>'parkingSpotId' AS spot FROM "Order" WHERE ${arrivedSql} AND "metadata"->>'parkingSpotId' IS NOT NULL`, [store.id]),
+    raw(
+      `SELECT (SELECT COUNT(*) FROM "Order" WHERE ${arrivedSql}) AS waiting,
+              (SELECT COUNT(*) FROM "Order" WHERE ${stagedSql}) AS staged,
+              (SELECT COALESCE(SUM(GREATEST("maxOrders" - COALESCE("currentOrders", 0), 0)) FILTER (WHERE "isAvailable"), 0) FROM "PickupSlot" WHERE "store" = $1 AND "date" >= $2) AS open_capacity,
+              (SELECT COUNT(*) FROM "PickupSlot" WHERE "store" = $1 AND "date" >= $2 AND "maxOrders" > 0 AND COALESCE("currentOrders", 0) * 5 >= "maxOrders" * 4) AS high_pressure`,
+      [store.id, slotWindowStart]
+    )
   ]);
-  const counts = await Promise.all([context.prisma.pickupSlot.count({ where: slotWhere }), context.prisma.parkingSpot.count({ where: parkingWhere }), context.prisma.order.count({ where: orderWhere })]);
-  const pickupOrders = orders.filter((order) => order.metadata?.fulfillmentMethod === "pickup");
+  const orderSelect = { id: true, displayId: true, email: true, status: true, metadata: true };
+  const byIds = async (rows) => {
+    if (!rows.length) return [];
+    const found = await context.prisma.order.findMany({ where: { id: { in: rows.map((row) => row.id) }, storeId: store.id }, select: orderSelect });
+    const map = new Map(found.map((order) => [order.id, order]));
+    return rows.flatMap((row) => map.get(row.id) ? [map.get(row.id)] : []);
+  };
+  const [arrivals, staged, slotRecords] = await Promise.all([
+    byIds(arrivalIds),
+    byIds(stagedIds),
+    slotIdRows.length ? context.prisma.pickupSlot.findMany({ where: { id: { in: slotIdRows.map((row) => row.id) } }, select: { id: true, date: true, startTime: true, endTime: true, maxOrders: true, currentOrders: true, isAvailable: true } }) : Promise.resolve([])
+  ]);
+  const slotsById = new Map(slotRecords.map((slot) => [slot.id, slot]));
+  const slots = slotIdRows.flatMap((row) => slotsById.get(row.id) ? [slotsById.get(row.id)] : []);
+  const occupiedSpotIds = occupiedRows.map((row) => row.spot).filter(Boolean);
+  const summary = summaryRows[0];
   return {
-    pagination: collectionPage(pagination, { pickupSlots: counts[0], parkingSpots: counts[1], pickupOrders: counts[2] }),
+    slotView,
+    slotSort,
+    pagination: collectionPage(arrivalPaging, { arrivals: Number(arrivalCount[0]?.count || 0) }),
+    stagedPagination: collectionPage(stagedPaging, { staged: Number(stagedCount[0]?.count || 0) }),
+    slotPagination: collectionPage(slotPaging, { pickupSlots: Number(slotCountRows[0]?.count || 0) }),
+    summary: {
+      waiting: Number(summary?.waiting || 0),
+      staged: Number(summary?.staged || 0),
+      openCapacity: Number(summary?.open_capacity || 0),
+      highPressureSlots: Number(summary?.high_pressure || 0),
+      parkingSpots: parkingSpots.length,
+      parkingInUse: parkingSpots.filter((spot) => !spot.isAvailable).length
+    },
     pickupSlots: slots.map((slot) => ({ ...slot, date: iso(slot.date), currentOrders: slot.currentOrders || 0 })),
     parkingSpots,
-    pickupOrders
+    occupiedSpotIds,
+    arrivals,
+    stagedOrders: staged
   };
 }
 async function groceryPlatformInventory(_root, args, context) {
   await requirePermission(context, "canManageInventory", "Inventory projection requires inventory-management permission");
   const store = await requireSessionStore(context), pagination = pageArgs(args), now = /* @__PURE__ */ new Date();
   const productWhere = { storeId: store.id, ...searchFields(pagination.search, ["title", "sku"]) };
-  const lotWhere = { storeId: store.id, ...searchFields(pagination.search, ["lotNumber"]), ...pagination.status ? { safetyStatus: pagination.status } : {} };
+  const soon = new Date(now.getTime() + 7 * 864e5);
+  const lotViews = {
+    attention: { OR: [{ expirationDate: { lte: soon } }, { quantityRemaining: 0 }] },
+    expired: { expirationDate: { lte: now } },
+    expiring: { expirationDate: { gt: now, lte: soon } },
+    empty: { quantityRemaining: 0 }
+  };
+  const lotSearch = pagination.search ? { OR: [
+    { lotNumber: { contains: pagination.search, mode: "insensitive" } },
+    { location: { contains: pagination.search, mode: "insensitive" } },
+    { product: { OR: [{ title: { contains: pagination.search, mode: "insensitive" } }, { sku: { contains: pagination.search, mode: "insensitive" } }] } },
+    { supplier: { name: { contains: pagination.search, mode: "insensitive" } } }
+  ] } : {};
+  const lotScope = (view) => ({ storeId: store.id, AND: [lotSearch, lotViews[view] || {}, pagination.status ? { safetyStatus: pagination.status } : {}] });
+  const lotWhere = lotScope(args.view || "");
+  const lotOrder = args.sort === "product" ? [{ product: { title: "asc" } }, { id: "asc" }] : args.sort === "quantity" ? [{ quantityRemaining: "asc" }, { id: "asc" }] : [{ expirationDate: "asc" }, { id: "asc" }];
   const prisma = context.prisma;
-  const [products, inventoryLots, productCount, lotCount] = await Promise.all([
-    prisma.product.findMany({ where: productWhere, orderBy: [{ updatedAt: "desc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, title: true, sku: true, stockQuantity: true, lowStockThreshold: true, department: true, supplier: { select: { id: true, name: true } }, _count: { select: { backInStockAlerts: { where: { isActive: true } } } } } }),
-    prisma.inventoryLot.findMany({ where: lotWhere, orderBy: [{ expirationDate: "asc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, lotNumber: true, expirationDate: true, quantity: true, quantityRemaining: true, safetyStatus: true, conditionStatus: true, location: true, productId: true, product: { select: { id: true, title: true } }, supplier: { select: { id: true, name: true } } } }),
+  const countedViews = ["attention", "expiring", "expired", "empty", "all"];
+  const [products, inventoryLots, productCount, lotCount, viewCountRows] = await Promise.all([
+    prisma.product.findMany({ where: productWhere, orderBy: [{ updatedAt: "desc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, title: true, sku: true, stockQuantity: true, lowStockThreshold: true, department: true, unitOfMeasure: true, supplier: { select: { id: true, name: true } }, _count: { select: { backInStockAlerts: { where: { isActive: true } } } } } }),
+    prisma.inventoryLot.findMany({ where: lotWhere, orderBy: lotOrder, take: pagination.pageSize, skip: pagination.skip, select: { id: true, lotNumber: true, expirationDate: true, quantity: true, quantityRemaining: true, safetyStatus: true, conditionStatus: true, location: true, productId: true, product: { select: { id: true, title: true, unitOfMeasure: true } }, supplier: { select: { id: true, name: true } } } }),
     prisma.product.count({ where: productWhere }),
-    prisma.inventoryLot.count({ where: lotWhere })
+    prisma.inventoryLot.count({ where: lotWhere }),
+    // Tab counts use the same search and view predicates as the lot list.
+    Promise.all(countedViews.map(async (view) => [view, await prisma.inventoryLot.count({ where: lotScope(view) })]))
   ]);
   const balances = products.length ? await prisma.inventoryLot.groupBy({
     by: ["productId"],
@@ -16671,7 +19367,8 @@ async function groceryPlatformInventory(_root, args, context) {
       productId: { in: products.map((product) => product.id) },
       expirationDate: { gt: now },
       quantityRemaining: { gt: 0 },
-      AND: [{ OR: [{ safetyStatus: "available" }, { safetyStatus: null }] }, { OR: [{ conditionStatus: "accepted" }, { conditionStatus: null }] }]
+      safetyStatus: "available",
+      conditionStatus: "accepted"
     },
     _sum: { quantityRemaining: true }
   }) : [];
@@ -16689,17 +19386,33 @@ async function groceryPlatformInventory(_root, args, context) {
       isExpired: lot.expirationDate.getTime() <= now.getTime(),
       isExpiringSoon: lot.expirationDate.getTime() > now.getTime() && lot.expirationDate.getTime() <= now.getTime() + 7 * 864e5
     })),
+    lotViewCounts: Object.fromEntries(viewCountRows),
     pagination: collectionPage(pagination, { products: productCount, inventoryLots: lotCount })
   };
 }
 async function groceryPlatformSuppliers(_root, args, context) {
   await requirePermission(context, "canManageSuppliers", "Suppliers projection requires supplier-management permission");
   const store = await requireSessionStore(context), pagination = pageArgs(args);
-  const where = { storeId: store.id, ...searchFields(pagination.search, ["name", "email"]) };
-  const [suppliers, total] = await Promise.all([
+  const weekday = WEEKDAY_CODES[pagination.search.toLowerCase()];
+  const supplierSearch = pagination.search ? { OR: [
+    ...["name", "contactName", "email", "phone"].map((field) => ({ [field]: { contains: pagination.search, mode: "insensitive" } })),
+    ...weekday ? [{ deliveryDays: { array_contains: [weekday] } }] : []
+  ] } : {};
+  const supplierViews = {
+    open_po: { purchaseOrders: { some: { status: { in: ["draft", "sent", "confirmed"] } } } },
+    no_products: { products: { none: {} } },
+    cod: { paymentTerms: "cod" },
+    net_30: { paymentTerms: "net_30" },
+    net_60: { paymentTerms: "net_60" }
+  };
+  const scoped = (view) => ({ storeId: store.id, AND: [supplierSearch, supplierViews[view] || {}] });
+  const where = scoped(args.view || "");
+  const supplierOrder = args.sort === "minimum" ? [{ minimumOrderCents: "desc" }, { id: "asc" }] : args.sort === "products" ? [{ products: { _count: "desc" } }, { id: "asc" }] : [{ name: "asc" }, { id: "asc" }];
+  const countedViews = ["all", "open_po", "no_products", "cod", "net_30", "net_60"];
+  const [suppliers, total, viewCountRows, openPurchaseOrders] = await Promise.all([
     context.prisma.supplier.findMany({
       where,
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      orderBy: supplierOrder,
       take: pagination.pageSize,
       skip: pagination.skip,
       select: {
@@ -16715,53 +19428,133 @@ async function groceryPlatformSuppliers(_root, args, context) {
         _count: { select: { products: true, purchaseOrders: true } }
       }
     }),
-    context.prisma.supplier.count({ where })
+    context.prisma.supplier.count({ where }),
+    // Tab counts share the list's search and view predicates.
+    Promise.all(countedViews.map(async (view) => [view, await context.prisma.supplier.count({ where: scoped(view) })])),
+    context.prisma.purchaseOrder.count({ where: { storeId: store.id, status: { in: ["draft", "sent", "confirmed"] } } })
   ]);
   const openOrders = await context.prisma.purchaseOrder.groupBy({ by: ["supplierId"], where: { storeId: store.id, supplierId: { in: suppliers.map((supplier) => supplier.id) }, status: { in: ["draft", "sent", "confirmed"] } }, _count: { _all: true } });
   const openCounts = new Map(openOrders.map((row) => [row.supplierId, row._count._all]));
   return {
     currencyCode: store.currencyCode,
     suppliers: suppliers.map(({ _count, ...supplier }) => ({ ...supplier, products: [], purchaseOrders: [], openPurchaseOrderCount: openCounts.get(supplier.id) || 0, productCount: _count.products, purchaseOrderCount: _count.purchaseOrders })),
+    viewCounts: Object.fromEntries(viewCountRows),
+    openPurchaseOrders,
     pagination: collectionPage(pagination, { suppliers: total })
   };
+}
+async function groceryPurchasingOptions(_root, args, context) {
+  await requirePermission(context, "canManageInventory", "Purchasing options require inventory-management permission");
+  const store = await requireSessionStore(context);
+  const search = args.search.trim().slice(0, 100);
+  const prisma = context.prisma;
+  if (args.kind === "supplier") {
+    const suppliers = await prisma.supplier.findMany({
+      where: { storeId: store.id, ...searchFields(search, ["name"]) },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      take: 50,
+      select: { id: true, name: true }
+    });
+    return suppliers.map((supplier) => ({ id: supplier.id, name: supplier.name, title: null }));
+  }
+  if (args.kind === "product") {
+    const products = await prisma.product.findMany({
+      where: { storeId: store.id, ...searchFields(search, ["title", "sku"]) },
+      orderBy: [{ title: "asc" }, { id: "asc" }],
+      take: 50,
+      select: { id: true, title: true }
+    });
+    return products.map((product) => ({ id: product.id, name: null, title: product.title }));
+  }
+  throw new Error("Unsupported purchasing lookup");
 }
 async function groceryPlatformPurchasing(_root, args, context) {
   await requirePermission(context, "canManageInventory", "Purchasing projection requires inventory-management permission");
   const store = await requireSessionStore(context);
   const pagination = pageArgs(args);
   const dueSoonBoundary = new Date(Date.now() + 3 * 864e5);
-  const where = { storeId: store.id, ...searchFields(pagination.search, ["poNumber"]), ...pagination.status ? { status: pagination.status } : {} };
+  const purchaseSearch = pagination.search ? { OR: [
+    { poNumber: { contains: pagination.search, mode: "insensitive" } },
+    { supplierName: { contains: pagination.search, mode: "insensitive" } },
+    { supplier: { name: { contains: pagination.search, mode: "insensitive" } } },
+    { items: { some: { OR: [{ productTitle: { contains: pagination.search, mode: "insensitive" } }, { productSku: { contains: pagination.search, mode: "insensitive" } }] } } }
+  ] } : {};
+  const view = args.view || pagination.status || "open";
+  const purchaseView = view === "all" ? {} : view === "open" ? { status: { notIn: ["received", "cancelled"] } } : { status: view };
+  const supplierFilter = args.supplierId ? { supplierId: String(args.supplierId) } : {};
+  const where = { storeId: store.id, AND: [purchaseSearch, purchaseView, supplierFilter] };
+  const purchaseOrder = args.sort === "oldest" ? [{ orderDate: "asc" }, { id: "asc" }] : args.sort === "eta" ? [{ expectedDeliveryDate: { sort: "asc", nulls: "last" } }, { id: "asc" }] : args.sort === "value" ? [{ totalAmountCents: "desc" }, { id: "asc" }] : [{ orderDate: "desc" }, { id: "asc" }];
   const total = await context.prisma.purchaseOrder.count({ where });
+  const statusCounts = Object.fromEntries(await Promise.all(["draft", "sent", "confirmed", "received", "cancelled"].map(async (status) => [status, await context.prisma.purchaseOrder.count({ where: { storeId: store.id, AND: [purchaseSearch, supplierFilter, { status }] } })])));
+  statusCounts.open = statusCounts.draft + statusCounts.sent + statusCounts.confirmed;
+  statusCounts.all = statusCounts.open + statusCounts.received + statusCounts.cancelled;
+  const openWhere = { storeId: store.id, AND: [purchaseSearch, supplierFilter, { status: { in: ["draft", "sent", "confirmed"] } }] };
+  const [dueSoonCount, openValue] = await Promise.all([
+    context.prisma.purchaseOrder.count({ where: { ...openWhere, expectedDeliveryDate: { lte: dueSoonBoundary } } }),
+    context.prisma.purchaseOrder.aggregate({ where: openWhere, _sum: { totalAmountCents: true } })
+  ]);
   const purchaseOrders = await context.prisma.purchaseOrder.findMany({
     where,
-    orderBy: [{ orderDate: "desc" }, { id: "asc" }],
+    orderBy: purchaseOrder,
     take: pagination.pageSize,
     skip: pagination.skip,
     select: { id: true, poNumber: true, orderDate: true, expectedDeliveryDate: true, status: true, totalAmount: true, totalAmountCents: true, notes: true, supplier: { select: { id: true, name: true } }, items: { select: { id: true, productTitle: true, productSku: true, quantity: true, quantityReceived: true, unitCost: true, unitCostCents: true } } }
   });
-  return { currencyCode: store.currencyCode, pagination: collectionPage(pagination, { purchaseOrders: total }), purchaseOrders: purchaseOrders.map((order) => ({ ...order, orderDate: iso(order.orderDate), expectedDeliveryDate: iso(order.expectedDeliveryDate), isDueSoon: Boolean(order.expectedDeliveryDate && order.expectedDeliveryDate <= dueSoonBoundary), totalAmount: Number(order.totalAmountCents || Math.round(Number(order.totalAmount || 0) * 100)) / 100, totalAmountCents: order.totalAmountCents, items: order.items.map((item) => ({ ...item, unitCost: Number(item.unitCostCents || Math.round(Number(item.unitCost || 0) * 100)) / 100, unitCostCents: item.unitCostCents })) })) };
+  return { currencyCode: store.currencyCode, statusCounts, dueSoonCount, openCommittedCents: Number(openValue._sum.totalAmountCents || 0), pagination: collectionPage(pagination, { purchaseOrders: total }), purchaseOrders: purchaseOrders.map((order) => ({ ...order, orderDate: iso(order.orderDate), expectedDeliveryDate: iso(order.expectedDeliveryDate), isDueSoon: Boolean(order.expectedDeliveryDate && order.expectedDeliveryDate <= dueSoonBoundary), totalAmount: Number(order.totalAmountCents || Math.round(Number(order.totalAmount || 0) * 100)) / 100, totalAmountCents: order.totalAmountCents, items: order.items.map((item) => ({ ...item, unitCost: Number(item.unitCostCents || Math.round(Number(item.unitCost || 0) * 100)) / 100, unitCostCents: item.unitCostCents })) })) };
 }
 async function groceryPlatformMerchandising(_root, args, context) {
   await requirePermission(context, "canManageProducts", "Merchandising projection requires product-management permission");
   const store = await requireSessionStore(context);
   const pagination = pageArgs(args);
-  const departmentWhere = { storeId: store.id, ...searchFields(pagination.search, ["name", "handle"]) };
-  const couponWhere = { storeId: store.id, ...searchFields(pagination.search, ["code"]) };
+  const now = /* @__PURE__ */ new Date();
+  const view = args.view || "all";
+  const departmentBase = { storeId: store.id, ...searchFields(pagination.search, ["name", "handle"]) };
+  const departmentWhere = { ...departmentBase, ...view === "departments_inactive" ? { isActive: false } : {} };
+  const couponSearch = pagination.search ? { OR: [{ code: { contains: pagination.search, mode: "insensitive" } }, { productCategories: { array_contains: [pagination.search.toLowerCase()] } }] } : {};
+  const exhausted = { maxUses: { gt: 0 }, currentUses: { gte: context.prisma.coupon.fields.maxUses } };
+  const usable = { isActive: true, AND: [{ OR: [{ validFrom: null }, { validFrom: { lte: now } }] }, { OR: [{ validTo: null }, { validTo: { gte: now } }] }], NOT: exhausted };
+  const couponViews = { active: usable, exhausted, inactive: { NOT: usable } };
+  const couponScope = (name) => ({ storeId: store.id, AND: [couponSearch, couponViews[name] || {}] });
+  const couponWhere = couponScope(view);
+  const departmentOrder = args.sort === "name" ? [{ name: "asc" }, { id: "asc" }] : args.sort === "products" ? [{ products: { _count: "desc" } }, { id: "asc" }] : [{ sortOrder: "asc" }, { id: "asc" }];
+  const couponOrder = args.sort === "usage" ? [{ currentUses: "desc" }, { id: "asc" }] : args.sort === "expiry" ? [{ validTo: { sort: "asc", nulls: "last" } }, { id: "asc" }] : [{ code: "asc" }, { id: "asc" }];
   const [departments, coupons] = await Promise.all([
-    context.prisma.department.findMany({ where: departmentWhere, orderBy: [{ sortOrder: "asc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, name: true, handle: true, sortOrder: true, isActive: true, temperatureZone: true, _count: { select: { products: true } } } }),
-    context.prisma.coupon.findMany({ where: couponWhere, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, code: true, discountType: true, discountValue: true, discountValueCents: true, minPurchase: true, minPurchaseCents: true, maxUses: true, currentUses: true, productCategories: true, isActive: true, validFrom: true, validTo: true } })
+    context.prisma.department.findMany({ where: departmentWhere, orderBy: departmentOrder, take: pagination.pageSize, skip: pagination.skip, select: { id: true, name: true, handle: true, description: true, imageUrl: true, sortOrder: true, isActive: true, temperatureZone: true, requiredLicenses: true, _count: { select: { products: true } } } }),
+    context.prisma.coupon.findMany({ where: couponWhere, orderBy: couponOrder, take: pagination.pageSize, skip: pagination.skip, select: { id: true, code: true, discountType: true, discountValue: true, discountValueCents: true, minPurchase: true, minPurchaseCents: true, maxUses: true, currentUses: true, productCategories: true, isActive: true, validFrom: true, validTo: true } })
   ]);
   const counts = await Promise.all([context.prisma.department.count({ where: departmentWhere }), context.prisma.coupon.count({ where: couponWhere })]);
-  return { pagination: collectionPage(pagination, { departments: counts[0], coupons: counts[1] }), currencyCode: store.currencyCode, departments: departments.map(({ _count, ...department }) => ({ ...department, products: [], productCount: _count.products })), coupons: coupons.map((coupon) => ({ ...coupon, discountValue: number(coupon.discountValue), minPurchase: number(coupon.minPurchase), validFrom: iso(coupon.validFrom), validTo: iso(coupon.validTo) })) };
+  const [allDepartments, inactiveDepartments, allCoupons, activeCoupons, inactiveCoupons, exhaustedCoupons] = await Promise.all([
+    context.prisma.department.count({ where: departmentBase }),
+    context.prisma.department.count({ where: { ...departmentBase, isActive: false } }),
+    context.prisma.coupon.count({ where: couponScope("") }),
+    context.prisma.coupon.count({ where: couponScope("active") }),
+    context.prisma.coupon.count({ where: couponScope("inactive") }),
+    context.prisma.coupon.count({ where: couponScope("exhausted") })
+  ]);
+  return {
+    pagination: collectionPage(pagination, { departments: counts[0], coupons: counts[1] }),
+    currencyCode: store.currencyCode,
+    viewCounts: { departments: allDepartments, departments_inactive: inactiveDepartments, coupons: allCoupons, active: activeCoupons, inactive: inactiveCoupons, exhausted: exhaustedCoupons },
+    departments: departments.map(({ _count, requiredLicenses, ...department }) => ({ ...department, requiredLicenses: Array.isArray(requiredLicenses) ? requiredLicenses : [], products: [], productCount: _count.products })),
+    coupons: coupons.map(({ productCategories, ...coupon }) => {
+      const categories = productCategories === null || productCategories === void 0 ? null : Array.isArray(productCategories) && productCategories.every((entry) => typeof entry === "string") ? productCategories : void 0;
+      return { ...coupon, productCategories: categories ?? null, categoryRestrictionValid: categories !== void 0, discountValue: number(coupon.discountValue), minPurchase: number(coupon.minPurchase), validFrom: iso(coupon.validFrom), validTo: iso(coupon.validTo) };
+    })
+  };
 }
 async function groceryPlatformCustomers(_root, args, context) {
   await requirePermission(context, "canManageUsers", "Customers projection requires user-management permission");
   const store = await requireSessionStore(context), pagination = pageArgs(args);
-  const where = { storeId: store.id, roleId: null, ...searchFields(pagination.search, ["name", "email"]) };
-  const [users, totalCustomers, savedCarts] = await Promise.all([
-    context.prisma.user.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: pagination.pageSize, skip: pagination.skip, select: { id: true, name: true, email: true, onboardingStatus: true, createdAt: true } }),
+  const base = { storeId: store.id, roleId: null, staffAccessEvents: { none: {} } };
+  const customerViews = { with_orders: { from_Order_user: { some: { storeId: store.id } } }, without_orders: { from_Order_user: { none: { storeId: store.id } } } };
+  const where = { ...base, AND: [searchFields(pagination.search, ["name", "email"]), customerViews[args.view || ""] || {}] };
+  const customerOrder = args.sort === "name" ? [{ name: "asc" }, { id: "asc" }] : args.sort === "oldest" ? [{ createdAt: "asc" }, { id: "asc" }] : [{ createdAt: "desc" }, { id: "asc" }];
+  const [users, totalCustomers, savedCarts, customersWithOrders, allCustomers] = await Promise.all([
+    context.prisma.user.findMany({ where, orderBy: customerOrder, take: pagination.pageSize, skip: pagination.skip, select: { id: true, name: true, email: true, onboardingStatus: true, createdAt: true } }),
     context.prisma.user.count({ where }),
-    context.prisma.cart.count({ where: { storeId: store.id, itemCount: { gt: 0 } } })
+    context.prisma.cart.count({ where: { storeId: store.id, itemCount: { gt: 0 } } }),
+    context.prisma.user.count({ where: { ...base, ...customerViews.with_orders } }),
+    context.prisma.user.count({ where: base })
   ]);
   const ids = users.map((user) => user.id);
   const [orderStats, shoppingListStats, latestOrders] = await Promise.all([
@@ -16787,18 +19580,31 @@ async function groceryPlatformCustomers(_root, args, context) {
       shoppingListCount: listCounts.get(user.id) || 0,
       lastOrder: last ? { displayId: last.displayId, status: last.status, createdAt: iso(last.createdAt) } : null
     };
-  }), totalCustomers, savedCarts, pagination: collectionPage(pagination, { users: totalCustomers }) };
+  }), totalCustomers, allCustomers, customersWithOrders, savedCarts, pagination: collectionPage(pagination, { users: totalCustomers }) };
 }
 async function groceryPlatformPayments(_root, args, context) {
   await requirePermission(context, "canManagePayments", "Payments projection requires payment-management permission");
   const store = await requireSessionStore(context);
   const pagination = pageArgs(args);
-  const paymentWhere = { storeId: store.id, ...searchFields(pagination.search, ["providerPaymentId"]), ...pagination.status ? { status: pagination.status } : {} };
-  const supportedCodes = Object.keys(paymentProviderDefinitions);
+  const canReadProviderConfiguration = await hasFreshCapability(context, "canManageOnboarding");
+  const canEditProviderConfiguration = await canAdministerPaymentProviders({ session: context.session, context });
+  const orderNumber = /^#?(\d{1,9})$/.exec(pagination.search);
+  const paymentSearch = pagination.search ? { OR: [
+    { id: { equals: pagination.search } },
+    { providerPaymentId: { contains: pagination.search, mode: "insensitive" } },
+    { paymentProvider: { code: { contains: pagination.search, mode: "insensitive" } } },
+    ...orderNumber ? [{ order: { displayId: Number(orderNumber[1]) } }] : []
+  ] } : {};
+  const attention = { OR: [{ status: { in: ["failed", "processing"] } }, { refunds: { some: { OR: [{ status: "failed" }, { reconciliationDeadLetterAt: { not: null } }] } } }] };
+  const paymentView = args.view || pagination.status || "all";
+  const paymentViews = { attention, refunds: { refunds: { some: {} } } };
+  const paymentWhere = { storeId: store.id, AND: [paymentSearch, paymentView === "all" ? {} : paymentViews[paymentView] || { status: paymentView }] };
+  const paymentOrder = args.sort === "amount" ? [{ amountCents: "desc" }, { id: "asc" }] : args.sort === "oldest" ? [{ createdAt: "asc" }, { id: "asc" }] : [{ createdAt: "desc" }, { id: "asc" }];
+  const attentionCount = await context.prisma.payment.count({ where: { storeId: store.id, ...attention } });
   const [payments, providers, paymentCount, failedCount, processingCount, captured2, refunded, recoveryCounts] = await Promise.all([
     context.prisma.payment.findMany({
       where: paymentWhere,
-      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      orderBy: paymentOrder,
       take: pagination.pageSize,
       skip: pagination.skip,
       select: {
@@ -16830,11 +19636,26 @@ async function groceryPlatformPayments(_root, args, context) {
         }
       }
     }),
-    context.prisma.paymentProvider.findMany({
-      where: { code: { in: supportedCodes } },
+    canReadProviderConfiguration ? context.prisma.paymentProvider.findMany({
       orderBy: [{ code: "asc" }, { id: "asc" }],
-      select: { id: true, name: true, code: true, isInstalled: true }
-    }),
+      select: {
+        id: true,
+        name: true,
+        code: true,
+        isInstalled: true,
+        publicCheckout: true,
+        credentials: true,
+        metadata: true,
+        createPaymentFunction: true,
+        capturePaymentFunction: true,
+        refundPaymentFunction: true,
+        getPaymentStatusFunction: true,
+        getRefundStatusFunction: true,
+        cancelPaymentFunction: true,
+        generatePaymentLinkFunction: true,
+        handleWebhookFunction: true
+      }
+    }) : Promise.resolve([]),
     context.prisma.payment.count({ where: { storeId: store.id } }),
     context.prisma.payment.count({ where: { storeId: store.id, status: "failed" } }),
     context.prisma.payment.count({ where: { storeId: store.id, status: "processing" } }),
@@ -16853,6 +19674,20 @@ async function groceryPlatformPayments(_root, args, context) {
     })
   ]);
   const filteredCount = await context.prisma.payment.count({ where: paymentWhere });
+  const searchScope = { storeId: store.id, AND: [paymentSearch] };
+  const [statusRows, searchAll, searchAttention, searchWithRefunds] = await Promise.all([
+    context.prisma.payment.groupBy({ by: ["status"], where: searchScope, _count: { _all: true } }),
+    context.prisma.payment.count({ where: searchScope }),
+    context.prisma.payment.count({ where: { storeId: store.id, AND: [paymentSearch, attention] } }),
+    context.prisma.payment.count({ where: { storeId: store.id, AND: [paymentSearch, paymentViews.refunds] } })
+  ]);
+  const viewCounts = { all: searchAll, attention: searchAttention, refunds: searchWithRefunds };
+  for (const row of statusRows) if (row.status) viewCounts[row.status] = row._count._all;
+  const orderIds = payments.flatMap((payment) => payment.order?.id ? [payment.order.id] : []);
+  const unresolvedSaleOrders = new Set(orderIds.length ? (await context.prisma.orderSettlement.findMany({
+    where: { orderId: { in: orderIds }, status: "requires_customer_authorization" },
+    select: { orderId: true }
+  })).map((settlement) => settlement.orderId) : []);
   return {
     pagination: collectionPage(pagination, { payments: filteredCount }),
     currencyCode: store.currencyCode,
@@ -16861,17 +19696,19 @@ async function groceryPlatformPayments(_root, args, context) {
       createdAt: iso(payment.createdAt),
       processedAt: iso(payment.processedAt),
       providerCode: payment.paymentProvider?.code || "",
-      refunds: payment.refunds.map(mapRefund)
+      refunds: payment.refunds.map(mapRefund),
+      voidable: ["authorized", "pending"].includes(payment.status) || ["succeeded", "partially_refunded", "refunded"].includes(payment.status) && unresolvedSaleOrders.has(payment.order?.id),
+      // A captured payment whose revised sale awaits the customer's new authorization.
+      awaitingRevisedAuthorization: ["succeeded", "partially_refunded", "refunded"].includes(payment.status) && unresolvedSaleOrders.has(payment.order?.id)
     })),
-    providers: providers.map((provider) => {
-      const definition = paymentProviderDefinitions[provider.code];
-      return {
-        ...provider,
-        publicCheckout: Boolean(definition?.publicCheckout),
-        runtimeConfigured: Boolean(definition) && definition.credentialEnv.every((name) => Boolean(process.env[name]))
-      };
-    }),
+    providers: providers.map(mapPaymentProviderTruth),
+    viewCounts,
+    actorCanManageOrders: await hasFreshCapability(context, "canManageOrders"),
+    // Restricted is not "no providers": the actor simply cannot see deployment configuration.
+    providerConfiguration: canReadProviderConfiguration ? "visible" : "restricted",
+    providerConfigurationEditable: canEditProviderConfiguration,
     summary: {
+      attentionCount,
       paymentCount,
       failedCount,
       processingCount,
@@ -16897,7 +19734,10 @@ async function groceryPlatformSettings(_root, args, context) {
         contactEmail: true,
         contactPhone: true,
         address: true,
+        policyNotes: true,
         logoUrl: true,
+        logoIcon: true,
+        logoColor: true,
         brandHue: true,
         currencyCode: true,
         deliveryPolicy: true,
@@ -16920,32 +19760,61 @@ async function groceryPlatformSettings(_root, args, context) {
   if (!settings) throw new Error("Store settings are not initialized");
   return {
     store: { id: store.id, name: store.name, timezone: store.timezone, currencyCode: store.currencyCode, isActive: store.isActive },
-    settings,
+    settings: { ...settings, logoIcon: sanitizeStoreLogoSvg(settings.logoIcon || "") || null, logoColor: normalizeStoreLogoColor(settings.logoColor) },
     counts: { products: counts[0], suppliers: counts[1], deliverySlots: counts[2], pickupSlots: counts[3], parkingSpots: counts[4] }
+  };
+}
+async function groceryPlatformCustomer(_root, args, context) {
+  await requirePermission(context, "canManageUsers", "Customer details require user-management permission");
+  const store = await requireSessionStore(context);
+  const user = await context.prisma.user.findFirst({
+    where: { id: args.id, storeId: store.id, roleId: null, staffAccessEvents: { none: {} } },
+    select: { id: true, name: true, email: true, createdAt: true, privacyErasedAt: true }
+  });
+  if (!user) return null;
+  const [orderCount, shoppingListCount, addressCount, recentOrders] = await Promise.all([
+    context.prisma.order.count({ where: { storeId: store.id, userId: user.id } }),
+    context.prisma.shoppingList.count({ where: { userId: user.id } }),
+    context.prisma.address.count({ where: { userId: user.id, isSaved: true } }),
+    context.prisma.order.findMany({
+      where: { storeId: store.id, userId: user.id },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      take: 20,
+      select: { id: true, displayId: true, status: true, totalCents: true, currencyCode: true, createdAt: true }
+    })
+  ]);
+  return {
+    ...user,
+    createdAt: iso(user.createdAt),
+    privacyErasedAt: iso(user.privacyErasedAt),
+    orderCount,
+    shoppingListCount,
+    addressCount,
+    recentOrders: recentOrders.map((order) => ({ ...order, createdAt: iso(order.createdAt) }))
   };
 }
 
 // features/keystone/mutations/index.ts
-var graphql = String.raw;
+var graphql3 = String.raw;
 function parseJSONLiteral(ast) {
   switch (ast.kind) {
-    case import_graphql.Kind.STRING:
-    case import_graphql.Kind.BOOLEAN:
+    case import_graphql6.Kind.STRING:
+    case import_graphql6.Kind.BOOLEAN:
       return ast.value;
-    case import_graphql.Kind.INT:
-    case import_graphql.Kind.FLOAT:
+    case import_graphql6.Kind.INT:
+    case import_graphql6.Kind.FLOAT:
       return Number(ast.value);
-    case import_graphql.Kind.OBJECT:
+    case import_graphql6.Kind.OBJECT:
       return Object.fromEntries(ast.fields.map((field) => [field.name.value, parseJSONLiteral(field.value)]));
-    case import_graphql.Kind.LIST:
+    case import_graphql6.Kind.LIST:
       return ast.values.map(parseJSONLiteral);
-    case import_graphql.Kind.NULL:
+    case import_graphql6.Kind.NULL:
       return null;
     default:
       return null;
   }
 }
-var JSONScalar = new import_graphql.GraphQLScalarType({
+var JSONScalar = new import_graphql6.GraphQLScalarType({
   name: "JSON",
   description: "Arbitrary JSON payload for provider webhook events.",
   parseValue: (value) => value,
@@ -16955,11 +19824,12 @@ var JSONScalar = new import_graphql.GraphQLScalarType({
 function extendGraphqlSchema(baseSchema) {
   return (0, import_schema.mergeSchemas)({
     schemas: [baseSchema],
-    typeDefs: graphql`
+    typeDefs: graphql3`
       input UserUpdateProfileInput {
         email: String
         name: String
         onboardingStatus: String
+        currentPassword: String
       }
 
       type GroceryCartProduct {
@@ -17155,11 +20025,13 @@ function extendGraphqlSchema(baseSchema) {
         addedCount: Int!
         skippedCount: Int!
         skippedItems: [String!]!
+        replayed: Boolean!
       }
 
       type PublicGroceryStorefrontSettings {
         id: ID!
-        name: String!
+        name: String
+        setupIncomplete: Boolean!
         tagline: String
         homepageTitle: String
         homepageDescription: String
@@ -17167,12 +20039,39 @@ function extendGraphqlSchema(baseSchema) {
         contactPhone: String
         address: String
         logoUrl: String
+        logoIcon: String
+        logoColor: String!
         brandHue: Int
         effectiveBrandHue: Int!
         currencyCode: String
         locale: String
         timezone: String
         countryCode: String
+        openingHours: JSON!
+        policyNotes: String
+        deliveryPostalPrefixes: [String!]!
+        deliveryMinimumCents: Int!
+        pickupMinimumCents: Int!
+      }
+
+      input GroceryContactMessageInput {
+        name: String!
+        email: String!
+        phone: String
+        topic: String!
+        orderNumber: String
+        message: String!
+        sourcePath: String
+      }
+
+      type GroceryContactMessageReceipt {
+        reference: String!
+        receivedAt: String!
+      }
+
+      type GroceryStoreLogoResult {
+        logoIcon: String
+        logoColor: String!
       }
 
       type StorefrontBrandHueResult {
@@ -17219,10 +20118,63 @@ function extendGraphqlSchema(baseSchema) {
         totalCount: Int!
       }
 
+      type CustomerOrderSubstitution {
+        id: ID!
+        orderItem: ID!
+        originalProduct: String
+        substitutedProduct: String
+        reason: String
+        customerApproved: Boolean
+        approvedAt: String
+      }
+
+      input GroceryStoreHoursInput {
+        monday: String
+        tuesday: String
+        wednesday: String
+        thursday: String
+        friday: String
+        saturday: String
+        sunday: String
+      }
+
+      input GroceryStoreProfileInput {
+        name: String
+        tagline: String
+        homepageTitle: String
+        homepageDescription: String
+        contactEmail: String
+        contactPhone: String
+        address: String
+        countryCode: String
+        locale: String
+        timezone: String
+        taxRateBps: Int
+        policyNotes: String
+        hours: GroceryStoreHoursInput
+      }
+
+      type GroceryStoreProfileResult {
+        success: Boolean!
+      }
+
+      type RevisedAuthorizationRecovery {
+        recovered: Boolean!
+        alreadyRecorded: Boolean!
+        paymentIntentId: String
+      }
+
+      type PriceAlertRequestResult {
+        requested: Boolean!
+        emailDisabled: Boolean!
+        message: String!
+      }
+
       type BackInStockRequestResult {
         requested: Boolean!
         reused: Boolean!
         productId: ID!
+        emailDisabled: Boolean!
         message: String!
       }
 
@@ -17234,6 +20186,7 @@ function extendGraphqlSchema(baseSchema) {
         minPurchase: Float!
         validTo: String
         productCategories: [String!]!
+        excludedProductNames: [String!]!
       }
 
       type PublicDeliveryWindow {
@@ -17337,6 +20290,8 @@ function extendGraphqlSchema(baseSchema) {
 
       type OrderCancellationResult { success: Boolean!, orderId: ID!, status: String!, reused: Boolean! }
       type ProvisionGroceryCustomerResult { success: Boolean!, customerId: ID!, name: String!, email: String! }
+      type RegisterGroceryCustomerResult { success: Boolean!, customerId: ID!, email: String! }
+      type SaveFavoriteProductResult { id: ID!, productId: ID!, reused: Boolean! }
       type CheckoutReconciliationResult { processed: Int!, results: JSON! }
       type RefundReconciliationResult { scanned: Int!, results: JSON! }
       type SupplierMinimumOrderResult { success: Boolean!, id: ID!, minimumOrder: Float!, minimumOrderCents: Int! }
@@ -17356,28 +20311,6 @@ function extendGraphqlSchema(baseSchema) {
         customerApproved: Boolean!
         approvedAt: String
         reused: Boolean!
-      }
-
-      type GroceryOutboxEventResult {
-        eventId: ID!
-        eventKey: String!
-        eventType: String!
-        aggregateType: String!
-        aggregateId: String!
-        schemaVersion: Int!
-        payload: JSON!
-        payloadHash: String!
-        occurredAt: String!
-        status: String!
-        attempts: Int!
-        claimToken: String
-      }
-
-      type GroceryOutboxStatusResult {
-        pending: Int!
-        processing: Int!
-        delivered: Int!
-        failed: Int!
       }
 
       type StoreCapacityResult {
@@ -17450,6 +20383,7 @@ function extendGraphqlSchema(baseSchema) {
       type GroceryOnboardingResult {
         completed: Boolean!
         reused: Boolean!
+        missing: [String!]!
         counts: JSON!
       }
 
@@ -17544,6 +20478,10 @@ function extendGraphqlSchema(baseSchema) {
 
       type GroceryPlatformOrdersProjection {
         currencyCode: String!
+        timezone: String!
+        view: String!
+        viewCounts: JSON!
+        actorCanRefund: Boolean!
         orders: [GroceryPlatformOrder!]!
         page: Int!
         pageSize: Int!
@@ -17568,6 +20506,9 @@ function extendGraphqlSchema(baseSchema) {
       }
 
       type GroceryPlatformFulfillmentProjection { pagination: JSON!
+        timezone: String!
+        view: String!
+        summary: JSON!
         pending: [GroceryPlatformOrder!]!
         picking: [GroceryPlatformOrder!]!
         packed: [GroceryPlatformOrder!]!
@@ -17611,9 +20552,18 @@ function extendGraphqlSchema(baseSchema) {
       }
 
       type GroceryPlatformDeliveryProjection { pagination: JSON!
+        timezone: String!
+        routeView: String!
+        routeViewCounts: JSON!
+        slotView: String!
+        slotSort: String!
+        readyPagination: JSON!
+        slotPagination: JSON!
+        summary: JSON!
         deliveryRoutes: [GroceryPlatformRoute!]!
         readyOrders: [GroceryPlatformOrder!]!
         drivers: [GroceryPlatformDriver!]!
+        driversTruncated: Boolean!
         deliverySlots: [GroceryPlatformDeliverySlot!]!
       }
 
@@ -17644,9 +20594,16 @@ function extendGraphqlSchema(baseSchema) {
       }
 
       type GroceryPlatformPickupProjection { pagination: JSON!
+        slotView: String!
+        slotSort: String!
+        stagedPagination: JSON!
+        slotPagination: JSON!
+        summary: JSON!
         pickupSlots: [GroceryPlatformPickupSlot!]!
         parkingSpots: [GroceryPlatformParkingSpot!]!
-        pickupOrders: [GroceryPlatformPickupOrder!]!
+        occupiedSpotIds: [ID!]!
+        arrivals: [GroceryPlatformPickupOrder!]!
+        stagedOrders: [GroceryPlatformPickupOrder!]!
       }
 
       type GroceryPlatformInventoryProduct {
@@ -17659,6 +20616,7 @@ function extendGraphqlSchema(baseSchema) {
         inStock: Boolean!
         activeBackInStockAlerts: Int!
         department: String
+        unitOfMeasure: String
         supplier: GroceryPlatformSupplier
       }
 
@@ -17677,11 +20635,12 @@ function extendGraphqlSchema(baseSchema) {
         supplier: GroceryPlatformSupplier
       }
 
-      type GroceryPlatformInventoryProductRef { id: ID!, title: String! }
+      type GroceryPlatformInventoryProductRef { id: ID!, title: String!, unitOfMeasure: String }
       type GroceryPlatformSupplier { id: ID!, name: String! }
       type GroceryPlatformInventoryProjection { pagination: JSON!
         products: [GroceryPlatformInventoryProduct!]!
         inventoryLots: [GroceryPlatformInventoryLot!]!
+        lotViewCounts: JSON!
       }
 
       type GroceryPlatformSupplierRow {
@@ -17701,7 +20660,7 @@ function extendGraphqlSchema(baseSchema) {
         purchaseOrders: [GroceryPlatformPurchaseOrderRef!]!
       }
       type GroceryPlatformPurchaseOrderRef { id: ID!, status: String }
-      type GroceryPlatformSuppliersProjection { pagination: JSON!  currencyCode: String!, suppliers: [GroceryPlatformSupplierRow!]! }
+      type GroceryPlatformSuppliersProjection { pagination: JSON!  currencyCode: String!, suppliers: [GroceryPlatformSupplierRow!]!, viewCounts: JSON!, openPurchaseOrders: Int! }
 
       type GroceryPlatformPurchaseOrder {
         id: ID!
@@ -17717,7 +20676,8 @@ function extendGraphqlSchema(baseSchema) {
         items: [GroceryPlatformPurchaseItem!]!
       }
       type GroceryPlatformPurchaseItem { id: ID!, productTitle: String!, productSku: String!, quantity: Float!, quantityReceived: Float!, unitCost: Float!, unitCostCents: Int! }
-      type GroceryPlatformPurchasingProjection { pagination: JSON!  currencyCode: String!, purchaseOrders: [GroceryPlatformPurchaseOrder!]! }
+      type GroceryPlatformPurchasingProjection { pagination: JSON!  currencyCode: String!, statusCounts: JSON!, dueSoonCount: Int!, openCommittedCents: Int!, purchaseOrders: [GroceryPlatformPurchaseOrder!]! }
+      type GroceryPurchasingOption { id: ID!, name: String, title: String }
 
       type GroceryPlatformDepartment {
         productCount: Int!
@@ -17727,6 +20687,9 @@ function extendGraphqlSchema(baseSchema) {
         sortOrder: Int
         isActive: Boolean!
         temperatureZone: String
+        description: String
+        imageUrl: String
+        requiredLicenses: [String!]!
         products: [GroceryPlatformInventoryProductRef!]!
       }
       type GroceryPlatformCoupon {
@@ -17739,13 +20702,15 @@ function extendGraphqlSchema(baseSchema) {
         minPurchaseCents: Int!
         maxUses: Int!
         currentUses: Int!
-        productCategories: JSON
+        productCategories: [String!]
+        categoryRestrictionValid: Boolean!
         isActive: Boolean!
         validFrom: String
         validTo: String
       }
       type GroceryPlatformMerchandisingProjection { pagination: JSON!
         currencyCode: String!
+        viewCounts: JSON!
         departments: [GroceryPlatformDepartment!]!
         coupons: [GroceryPlatformCoupon!]!
       }
@@ -17761,9 +20726,24 @@ function extendGraphqlSchema(baseSchema) {
         lastOrder: GroceryPlatformCustomerLastOrder
       }
       type GroceryPlatformCustomerLastOrder { displayId: Int!, status: String!, createdAt: String! }
+      type GroceryPlatformCustomerOrder { id: ID!, displayId: Int!, status: String!, totalCents: Int!, currencyCode: String!, createdAt: String }
+      type GroceryPlatformCustomerDetail {
+        id: ID!
+        name: String!
+        email: String!
+        createdAt: String
+        privacyErasedAt: String
+        orderCount: Int!
+        shoppingListCount: Int!
+        addressCount: Int!
+        recentOrders: [GroceryPlatformCustomerOrder!]!
+      }
+
       type GroceryPlatformCustomersProjection { pagination: JSON!
         users: [GroceryPlatformCustomer!]!
         totalCustomers: Int!
+        allCustomers: Int!
+        customersWithOrders: Int!
         savedCarts: Int!
       }
 
@@ -17780,6 +20760,8 @@ function extendGraphqlSchema(baseSchema) {
         errorMessage: String
         order: GroceryPlatformPaymentOrder!
         refunds: [GroceryPlatformPaymentRefund!]!
+        voidable: Boolean!
+        awaitingRevisedAuthorization: Boolean!
       }
       type GroceryPlatformPaymentProviderTruth {
         id: ID!
@@ -17790,6 +20772,7 @@ function extendGraphqlSchema(baseSchema) {
         runtimeConfigured: Boolean!
       }
       type GroceryPlatformPaymentSummary {
+        attentionCount: Int!
         paymentCount: Int!
         failedCount: Int!
         processingCount: Int!
@@ -17802,7 +20785,11 @@ function extendGraphqlSchema(baseSchema) {
         currencyCode: String!
         payments: [GroceryPlatformPaymentRow!]!
         providers: [GroceryPlatformPaymentProviderTruth!]!
+        providerConfiguration: String!
+        providerConfigurationEditable: Boolean!
         summary: GroceryPlatformPaymentSummary!
+        viewCounts: JSON!
+        actorCanManageOrders: Boolean!
       }
 
       type GroceryPlatformStoreTruth { id: ID!, name: String!, timezone: String!, currencyCode: String!, isActive: Boolean! }
@@ -17815,7 +20802,10 @@ function extendGraphqlSchema(baseSchema) {
         contactEmail: String!
         contactPhone: String!
         address: String!
+        policyNotes: String
         logoUrl: String!
+        logoIcon: String
+        logoColor: String!
         brandHue: Int
         currencyCode: String!
         taxRateBps: Int!
@@ -17829,29 +20819,35 @@ function extendGraphqlSchema(baseSchema) {
       type GroceryPlatformSettingsCounts { products: Int!, suppliers: Int!, deliverySlots: Int!, pickupSlots: Int!, parkingSpots: Int! }
       type GroceryPlatformSettingsProjection { store: GroceryPlatformStoreTruth!, settings: GroceryPlatformSettingsTruth!, counts: GroceryPlatformSettingsCounts! }
 
+      type GroceryHealth { status: String!, database: String! }
+
       type Query {
         groceryDeliveryRescheduleSlots(orderId: ID!): JSON!
-        groceryRecurringOverview(page: Int, customerOnly: Boolean): JSON!
+        groceryRecurringOverview(page: Int, customerOnly: Boolean, search: String, outcome: String, schedule: String): JSON!
         groceryPaymentWebhookRecovery(page: Int): JSON!
         groceryCustomerPrivacy(page: Int, pageSize: Int): JSON!
-        groceryStaffDirectory(page: Int, pageSize: Int): JSON!
+        groceryStaffDirectory(page: Int, pageSize: Int, search: String, access: String): JSON!
         getGroceryOrderRefundLines(orderId: ID!): JSON!
         getGroceryLoyalty: JSON!
         groceryFinancialCloseExport(closeId: ID!): JSON!
         groceryFinancialCloses(page: Int, pageSize: Int): JSON!
-        groceryPlatformOrders(page: Int, pageSize: Int): GroceryPlatformOrdersProjection!
-        groceryPlatformFulfillment(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformFulfillmentProjection!
-        groceryPlatformDelivery(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformDeliveryProjection!
-        groceryPlatformPickup(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformPickupProjection!
-        groceryPlatformInventory(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformInventoryProjection!
-        groceryPlatformSuppliers(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformSuppliersProjection!
-        groceryPlatformPurchasing(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformPurchasingProjection!
-        groceryPlatformMerchandising(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformMerchandisingProjection!
-        groceryPlatformCustomers(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformCustomersProjection!
-        groceryPlatformPayments(page: Int, pageSize: Int, search: String, status: String): GroceryPlatformPaymentsProjection!
+        groceryPlatformOrders(page: Int, pageSize: Int, search: String, view: String, sort: String, orderId: ID): GroceryPlatformOrdersProjection!
+        groceryPlatformFulfillment(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformFulfillmentProjection!
+        groceryPlatformDelivery(page: Int, pageSize: Int, search: String, status: String, routeView: String, routePage: Int, readyPage: Int, slotPage: Int, slotView: String, slotSort: String): GroceryPlatformDeliveryProjection!
+        groceryPlatformPickup(page: Int, pageSize: Int, search: String, status: String, arrivalPage: Int, stagedPage: Int, slotPage: Int, slotView: String, slotSort: String): GroceryPlatformPickupProjection!
+        groceryPlatformInventory(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformInventoryProjection!
+        groceryPlatformSuppliers(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformSuppliersProjection!
+        groceryPlatformPurchasing(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String, supplierId: ID): GroceryPlatformPurchasingProjection!
+        groceryPurchasingOptions(kind: String!, search: String!): [GroceryPurchasingOption!]!
+        groceryPlatformMerchandising(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformMerchandisingProjection!
+        groceryPlatformCustomers(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformCustomersProjection!
+        groceryPlatformCustomer(id: ID!): GroceryPlatformCustomerDetail
+        groceryPlatformPayments(page: Int, pageSize: Int, search: String, status: String, view: String, sort: String): GroceryPlatformPaymentsProjection!
         groceryPlatformSettings: GroceryPlatformSettingsProjection!
         redirectToInit: Boolean
+        groceryHealth: GroceryHealth!
         groceryCart(sessionId: String): GroceryCart
+        customerOrderSubstitutions(orderId: ID!): [CustomerOrderSubstitution!]!
         clippedCoupons: [ClippedCoupon!]!
         activeCartPaymentProviders: [PaymentProvider!]!
         guestGroceryOrder(orderId: ID!, sessionId: String!, token: String!): Order
@@ -17860,7 +20856,6 @@ function extendGraphqlSchema(baseSchema) {
         publicGroceryProducts(department: String, search: String, availability: String, organic: Boolean, sort: String, take: Int, skip: Int, ids: [ID!]): PublicGroceryProductConnection!
         publicGroceryProduct(handle: String!): PublicGroceryProduct
         publicGroceryAvailability(days: Int): PublicGroceryAvailability!
-        groceryOutboxStatus: GroceryOutboxStatusResult!
 
         # Pickup Slot queries
         availablePickupSlots(days: Int, minCapacity: Int): [PickupSlotResult!]!
@@ -17893,7 +20888,7 @@ function extendGraphqlSchema(baseSchema) {
         inviteGroceryStaff(name: String!, email: String!, capabilities: JSON!): JSON!
         voidGroceryPaymentAuthorization(paymentId: ID!, reason: String!, idempotencyKey: String!): GroceryVoidResult!
         refundGroceryOrderLines(orderId: ID!, paymentId: ID!, idempotencyKey: String!, reason: String!, lines: JSON!): GroceryLineRefundResult!
-        updateGroceryNotificationPreferences(orderUpdates: Boolean!, deliveryAlerts: Boolean!, backInStock: Boolean!): Boolean!
+        updateGroceryNotificationPreferences(orderUpdates: Boolean!, deliveryAlerts: Boolean!, backInStock: Boolean!, emailEnabled: Boolean): Boolean!
         processDueGrocerySubscriptions(limit: Int): GrocerySubscriptionProcessingResult!
         manageGrocerySubscription(action: String!, subscriptionId: ID, productId: ID, quantity: Int, frequency: String, firstRunAt: String, pausedUntil: String, idempotencyKey: String!, approveEachOrder: Boolean): GrocerySubscriptionResult!
         redeemGroceryLoyalty(points: Int!, idempotencyKey: String!): GroceryLoyaltyRedemptionResult!
@@ -17902,17 +20897,24 @@ function extendGraphqlSchema(baseSchema) {
         importGrocerySettlementStatement(providerCode: String!, statementReference: String!, csv: String!, idempotencyKey: String!): JSON!
         createGroceryFinancialClose(startDate: String!, endDate: String!, timezone: String!, idempotencyKey: String!, note: String): JSON!
         manageSupplierSettlement(action: String!, idempotencyKey: String!, invoiceId: ID, creditId: ID, input: JSON!): JSON!
-        resolveDeliveryStop(routeId: ID!, orderId: ID!, status: String!, recipient: String, proofReference: String, reason: String, custody: String!, conditionEvidence: String!, retryAt: String, idempotencyKey: String!, approvalEvidence: String): JSON!
+        resolveDeliveryStop(routeId: ID!, orderId: ID!, status: String!, recipient: String, proofReference: String, reason: String, custody: String!, conditionEvidence: String!, retryAt: String, retryLocalTime: String, idempotencyKey: String!, approvalEvidence: String): JSON!
         updateProductInformation(productId: ID!, input: JSON!, idempotencyKey: String!): JSON!
         authorizeOrderAdjustment(orderId: ID!, sessionId: String, token: String): JSON!
-        requestGuestOrderAccess(orderId: ID!, email: String!): Boolean!
+        respondToOrderLineSubstitution(orderId: ID!, lineItemId: ID!, proposalId: String!, decision: String!, sessionId: String, token: String): JSON!
+        submitGroceryContactMessage(data: GroceryContactMessageInput!): GroceryContactMessageReceipt!
+        registerGroceryCustomer(name: String!, email: String!, password: String!): RegisterGroceryCustomerResult!
+        saveFavoriteProduct(productId: ID!): SaveFavoriteProductResult!
         resumeGroceryCheckout(paymentSessionId: ID!, sessionId: String): SubmitGroceryOrderResult!
+        restartGroceryCheckout(paymentSessionId: ID!, sessionId: String): PaymentSession
         updateGroceryDeliveryPolicy(policy: JSON!): JSON!
         manageInventoryCount(action: String!, inventoryLotId: ID, countId: ID, quantity: Float, reason: String!, idempotencyKey: String!): JSON!
         manageInventorySafety(action: String!, inventoryLotIds: [ID!], productId: ID, recallId: ID, reason: String!, idempotencyKey: String!, evidence: JSON): JSON!
         finalizeGroceryOrderActuals(orderId: ID!): JSON!
         resolveOrderLineFulfillment(orderId: ID!, lineItemId: ID!, resolution: String!, productId: ID, quantity: String!, tare: String, unitOfMeasure: String!, reason: String, consentChannel: String, consentCustomer: String, consentEvidence: String, idempotencyKey: String!): GroceryFulfillmentActualResult!
         updateActiveUser(data: UserUpdateProfileInput!): User
+        updateActiveUserPassword(currentPassword: String!, newPassword: String!): Boolean!
+        recoverRevisedAuthorization(orderId: ID!, providerPaymentId: String!, reason: String!): RevisedAuthorizationRecovery!
+        updateGroceryStoreProfile(input: GroceryStoreProfileInput!): GroceryStoreProfileResult!
         provisionGroceryCustomer(name: String!, email: String!, temporaryPassword: String!): ProvisionGroceryCustomerResult!
         initiatePaymentSession(cartId: ID!, paymentProviderId: String!, deliverySlotId: ID, pickupSlotId: ID, sessionId: String, couponCode: String, recovery: CheckoutRecoveryInput!): PaymentSession
         addItemToGroceryCart(productId: ID!, quantity: Int!, sessionId: String): GroceryCart
@@ -17921,16 +20923,18 @@ function extendGraphqlSchema(baseSchema) {
         clearGroceryCart(sessionId: String): GroceryCart
         mergeGuestGroceryCart(guestSessionId: String!): GroceryCart
         updateGrocerySubstitutionPreference(itemId: ID!, preference: String!, sessionId: String): GroceryCart
-        requestGroceryBackInStockAlert(productId: ID!): BackInStockRequestResult!
+        requestGroceryBackInStockAlert(productId: ID!, enableEmail: Boolean): BackInStockRequestResult!
+        requestGroceryPriceAlert(productId: ID!, targetPrice: String!, enableEmail: Boolean): PriceAlertRequestResult!
 
         # Shopping List mutations
         createCustomerShoppingList(name: String!): ShoppingList!
         deleteCustomerShoppingList(listId: ID!): DeleteShoppingListResult!
-        addToShoppingList(listId: ID!, product: String!, quantity: Int, unit: String, notes: String): ShoppingListResult!
+        addToShoppingList(listId: ID!, product: String, productId: ID, quantity: Int, unit: String, notes: String, mode: String): ShoppingListResult!
         removeFromShoppingList(listId: ID!, itemId: ID!): ShoppingListResult!
-        updateShoppingListItemQuantity(listId: ID!, itemId: ID!, quantity: Int!): ShoppingListResult!
+        updateShoppingListItemQuantity(listId: ID!, itemId: ID!, quantity: Int!, expectedQuantity: Int): ShoppingListResult!
         toggleShoppingListItemChecked(listId: ID!, itemId: ID!): ShoppingListResult!
-        addShoppingListToCart(listId: ID!, sessionId: String): AddListToCartResult!
+        addShoppingListToCart(listId: ID!, sessionId: String, requestKey: String): AddListToCartResult!
+        reorderGroceryOrder(orderId: ID!, requestKey: String!, sessionId: String): AddListToCartResult!
 
         # Customer Check-in mutations
         customerCheckIn(orderId: ID!, parkingSpotId: ID, vehicleDescription: String): CustomerCheckInResult!
@@ -17941,18 +20945,18 @@ function extendGraphqlSchema(baseSchema) {
         updateDeliveryRouteWorkflow(routeId: ID!, status: String!): DeliveryRouteWorkflowResult!
         submitGroceryOrder(data: SubmitGroceryOrderInput!): SubmitGroceryOrderResult!
         cancelGroceryOrder(orderId: ID!, reason: String!, idempotencyKey: String!, disposition: String, conditionNote: String): OrderCancellationResult!
+        cancelMyGroceryOrder(orderId: ID!, sessionId: String, token: String): OrderCancellationResult!
         reconcileCheckoutAttempts(limit: Int): CheckoutReconciliationResult!
         reconcilePaymentRefunds(limit: Int): RefundReconciliationResult!
         updateSupplierMinimumOrder(supplierId: ID!, minimumOrderCents: Int!): SupplierMinimumOrderResult!
         handlePaymentProviderWebhook(providerCode: String!, rawBody: String!, headers: JSON): PaymentWebhookResult!
         refundPayment(paymentId: ID!, amountCents: Int!, reason: String!, idempotencyKey: String!): PaymentRefundResult!
         runGroceryOnboarding(seed: JSON): GroceryOnboardingResult!
+        updateGroceryStoreLogo(logoIcon: String, logoColor: String!): GroceryStoreLogoResult!
         updateGroceryStorefrontBrandHue(brandHue: Int): StorefrontBrandHueResult!
         advanceOrderFulfillment(orderId: ID!, target: String!): OrderFulfillmentWorkflowResult!
         recordOrderItemSubstitution(orderItemId: ID!, substitutedProduct: String!, reason: String, customerApproved: Boolean, idempotencyKey: String!): OrderItemSubstitutionWorkflowResult!
-        claimGroceryOutboxEvents(workerId: String!, limit: Int): [GroceryOutboxEventResult!]!
-        completeGroceryOutboxEvent(eventId: ID!, claimToken: String!, succeeded: Boolean!, error: String): GroceryOutboxEventResult!
-        replayGroceryOutboxEvent(eventId: ID!): GroceryOutboxEventResult!
+        proposeOrderLineSubstitution(orderId: ID!, lineItemId: ID!, productId: ID!, quantity: String!, unitOfMeasure: String!, reason: String!, idempotencyKey: String!): JSON!
         configureDeliverySlot(slotId: ID!, capacity: Int, deliveryFee: Int, isActive: Boolean, idempotencyKey: String!): StoreCapacityResult!
         configurePickupSlot(slotId: ID!, maxOrders: Int, isAvailable: Boolean, idempotencyKey: String!): StoreCapacityResult!
         configureParkingSpot(spotId: ID!, isAvailable: Boolean!, idempotencyKey: String!): StoreCapacityResult!
@@ -17978,6 +20982,7 @@ function extendGraphqlSchema(baseSchema) {
         deliveryAddress: SubmitGroceryOrderAddressInput!
         substitutionPreference: String!
         deliveryInstructions: String
+        tipCents: Int
       }
 
       input SubmitGroceryOrderInput {
@@ -18026,21 +21031,30 @@ function extendGraphqlSchema(baseSchema) {
         groceryPlatformInventory,
         groceryPlatformSuppliers,
         groceryPlatformPurchasing,
+        groceryPurchasingOptions,
         groceryPlatformMerchandising,
         groceryPlatformCustomers,
+        groceryPlatformCustomer,
         groceryPlatformPayments,
         groceryPlatformSettings,
         redirectToInit: redirectToInit_default,
+        groceryHealth: groceryHealth_default,
         groceryCart: getCart,
+        customerOrderSubstitutions: getCustomerOrderSubstitutions,
         clippedCoupons: getClippedCoupons,
         activeCartPaymentProviders: async (_root, _args, context) => {
-          return context.sudo().query.PaymentProvider.findMany({
-            where: {
-              code: { equals: STRIPE_PROVIDER_CODE },
-              isInstalled: { equals: true }
-            },
-            query: "id name code isInstalled"
+          const providers = await context.sudo().query.PaymentProvider.findMany({
+            take: 100,
+            query: "id name code isInstalled publicCheckout supportsIdempotentCapture captureIdempotencyEvidence credentials metadata createPaymentFunction capturePaymentFunction refundPaymentFunction getPaymentStatusFunction getRefundStatusFunction cancelPaymentFunction generatePaymentLinkFunction handleWebhookFunction"
           });
+          return providers.filter((provider) => {
+            try {
+              assertPublicPaymentProvider(provider);
+              return true;
+            } catch {
+              return false;
+            }
+          }).map(({ id, name, code }) => ({ id, name, code, isInstalled: true }));
         },
         guestGroceryOrder: getGuestGroceryOrder,
         publicGroceryCoupons: getPublicGroceryCoupons,
@@ -18048,7 +21062,6 @@ function extendGraphqlSchema(baseSchema) {
         publicGroceryProducts: getPublicGroceryProducts,
         publicGroceryProduct: getPublicGroceryProduct,
         publicGroceryAvailability: getPublicGroceryAvailability,
-        groceryOutboxStatus,
         availablePickupSlots: getAvailablePickupSlots,
         pickupSlotsByDate: getPickupSlotsByDate,
         availableParkingSpots: getAvailableParkingSpots
@@ -18080,14 +21093,21 @@ function extendGraphqlSchema(baseSchema) {
         resolveDeliveryStop,
         updateProductInformation,
         authorizeOrderAdjustment,
-        requestGuestOrderAccess,
+        respondToOrderLineSubstitution,
+        submitGroceryContactMessage,
+        registerGroceryCustomer,
+        saveFavoriteProduct,
         resumeGroceryCheckout,
+        restartGroceryCheckout: restartGroceryCheckout_default,
         updateGroceryDeliveryPolicy,
         manageInventoryCount,
         manageInventorySafety,
         finalizeGroceryOrderActuals,
         resolveOrderLineFulfillment,
         updateActiveUser: updateActiveUser_default,
+        updateActiveUserPassword,
+        recoverRevisedAuthorization,
+        updateGroceryStoreProfile,
         provisionGroceryCustomer,
         initiatePaymentSession,
         addItemToGroceryCart: addToCart,
@@ -18097,6 +21117,7 @@ function extendGraphqlSchema(baseSchema) {
         mergeGuestGroceryCart: mergeGuestCart,
         updateGrocerySubstitutionPreference: updateSubstitutionPreference,
         requestGroceryBackInStockAlert,
+        requestGroceryPriceAlert,
         // Recipe mutations
         // Shopping List mutations
         createCustomerShoppingList: createShoppingList,
@@ -18106,6 +21127,7 @@ function extendGraphqlSchema(baseSchema) {
         updateShoppingListItemQuantity: updateListItemQuantity,
         toggleShoppingListItemChecked: toggleListItemChecked,
         addShoppingListToCart: addListToCart,
+        reorderGroceryOrder,
         // Customer Check-in mutations
         customerCheckIn,
         guestCustomerCheckIn,
@@ -18115,18 +21137,18 @@ function extendGraphqlSchema(baseSchema) {
         updateDeliveryRouteWorkflow,
         submitGroceryOrder,
         cancelGroceryOrder,
+        cancelMyGroceryOrder,
         reconcileCheckoutAttempts,
         reconcilePaymentRefunds,
         updateSupplierMinimumOrder,
         handlePaymentProviderWebhook,
         refundPayment: refundPaymentForOrder,
         runGroceryOnboarding,
+        updateGroceryStoreLogo,
         updateGroceryStorefrontBrandHue,
         advanceOrderFulfillment,
         recordOrderItemSubstitution,
-        claimGroceryOutboxEvents,
-        completeGroceryOutboxEvent,
-        replayGroceryOutboxEvent,
+        proposeOrderLineSubstitution,
         configureDeliverySlot,
         configurePickupSlot,
         configureParkingSpot,
@@ -18142,6 +21164,95 @@ function extendGraphqlSchema(baseSchema) {
 
 // features/keystone/lib/mail.ts
 var import_nodemailer = require("nodemailer");
+
+// features/keystone/lib/email-layout.ts
+var SUPPORT_EMAIL = "hello@grocery.openship.org";
+var FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif";
+var C = {
+  canvas: "#f4f4f5",
+  card: "#ffffff",
+  text: "#18181b",
+  muted: "#52525b",
+  subtle: "#71717a",
+  line: "#e4e4e7",
+  panel: "#fafafa",
+  button: "#18181b",
+  buttonText: "#ffffff",
+  link: "#18181b"
+};
+var escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+function storeNameFromEnv(fallback = "Grocery") {
+  const match = /^\s*"?([^"<]+?)"?\s*</.exec(process.env.SMTP_FROM || "");
+  return match?.[1]?.trim() || fallback;
+}
+var p = (html, style = "") => `<p class="em-text" style="margin:0 0 16px;font-family:${FONT};font-size:16px;line-height:24px;color:${C.text};${style}">${html}</p>`;
+var emailParagraph = p;
+var emailMuted = (html) => `<p class="em-muted" style="margin:0 0 16px;font-family:${FONT};font-size:14px;line-height:22px;color:${C.muted};">${html}</p>`;
+function emailButton(label, href) {
+  return `<table role="presentation" border="0" cellspacing="0" cellpadding="0" style="margin:8px 0 24px;">
+<tr><td class="em-btn" align="center" bgcolor="${C.button}" style="border-radius:8px;background:${C.button};">
+<a class="em-btn-a" href="${escapeHtml(href)}" target="_blank" style="display:inline-block;padding:14px 28px;font-family:${FONT};font-size:16px;font-weight:600;line-height:20px;color:${C.buttonText};text-decoration:none;border-radius:8px;">${escapeHtml(label)}</a>
+</td></tr></table>`;
+}
+function emailLayout(input) {
+  const store = escapeHtml(input.storeName || storeNameFromEnv());
+  const support = escapeHtml(input.supportEmail || SUPPORT_EMAIL);
+  return `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<title>${escapeHtml(input.title)}</title>
+<style>
+:root { color-scheme: light dark; supported-color-schemes: light dark; }
+body { margin:0; padding:0; -webkit-text-size-adjust:100%; }
+a { color:${C.link}; }
+@media (max-width: 620px) { .em-pad { padding-left:20px !important; padding-right:20px !important; } }
+@media (prefers-color-scheme: dark) {
+  .em-canvas { background:#09090b !important; }
+  .em-card { background:#18181b !important; border-color:#27272a !important; }
+  .em-text { color:#fafafa !important; }
+  .em-muted { color:#a1a1aa !important; }
+  .em-line { border-color:#3f3f46 !important; }
+  .em-panel { background:#27272a !important; border-color:#3f3f46 !important; color:#fafafa !important; }
+  .em-btn { background:#fafafa !important; }
+  .em-btn-a { color:#18181b !important; }
+  .em-link { color:#fafafa !important; }
+}
+[data-ogsc] .em-text { color:#fafafa !important; }
+[data-ogsc] .em-muted { color:#a1a1aa !important; }
+[data-ogsb] .em-canvas { background:#09090b !important; }
+[data-ogsb] .em-card { background:#18181b !important; }
+</style>
+</head>
+<body class="em-canvas" style="margin:0;padding:0;background:${C.canvas};">
+${input.preheader ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">${escapeHtml(input.preheader)}</div>` : ""}
+<table role="presentation" class="em-canvas" width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="${C.canvas}" style="background:${C.canvas};">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width:600px;">
+<tr><td class="em-pad" style="padding:8px 32px 20px;font-family:${FONT};font-size:18px;line-height:24px;font-weight:700;letter-spacing:-0.01em;"><span class="em-text" style="color:${C.text};">${store}</span></td></tr>
+<tr><td class="em-card" bgcolor="${C.card}" style="background:${C.card};border:1px solid ${C.line};border-radius:12px;">
+<table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+<tr><td class="em-pad" style="padding:32px 32px 16px;">
+<h1 class="em-text" style="margin:0 0 16px;font-family:${FONT};font-size:24px;line-height:32px;font-weight:700;letter-spacing:-0.02em;color:${C.text};">${escapeHtml(input.title)}</h1>
+${input.body}
+</td></tr>
+</table>
+</td></tr>
+<tr><td class="em-pad" style="padding:20px 32px 8px;font-family:${FONT};font-size:13px;line-height:20px;color:${C.subtle};">
+<span class="em-muted" style="color:${C.subtle};">${input.footerNote ? `${input.footerNote}<br>` : ""}Questions? Email <a class="em-link" href="mailto:${support}" style="color:${C.muted};text-decoration:underline;">${support}</a>.<br>${store}</span>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+// features/keystone/lib/mail.ts
 function getBaseUrlForEmails() {
   const value = process.env.NEXT_PUBLIC_SITE_URL;
   if (value) {
@@ -18152,51 +21263,32 @@ function getBaseUrlForEmails() {
     return value.replace(/\/$/, "");
   }
   if (process.env.NODE_ENV === "production") throw new Error("NEXT_PUBLIC_SITE_URL is required in production");
-  return "http://localhost:3000";
+  return developmentSiteOrigin();
 }
 var transport = (0, import_nodemailer.createTransport)({
   // @ts-ignore
   host: process.env.SMTP_HOST,
   port: process.env.SMTP_PORT,
+  // Same bounds as the customer-message transport: an unreachable SMTP host fails the
+  // request within seconds instead of holding it for nodemailer's multi-minute defaults.
+  connectionTimeout: 15e3,
+  greetingTimeout: 15e3,
+  socketTimeout: 3e4,
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASSWORD
   }
 });
 function passwordResetEmail({ url }) {
-  const backgroundColor = "#f9f9f9";
-  const textColor = "#444444";
-  const mainBackgroundColor = "#ffffff";
-  const buttonBackgroundColor = "#346df1";
-  const buttonBorderColor = "#346df1";
-  const buttonTextColor = "#ffffff";
-  return `
-    <body style="background: ${backgroundColor};">
-      <table width="100%" border="0" cellspacing="20" cellpadding="0" style="background: ${mainBackgroundColor}; max-width: 600px; margin: auto; border-radius: 10px;">
-        <tr>
-          <td align="center" style="padding: 10px 0px 0px 0px; font-size: 18px; font-family: Helvetica, Arial, sans-serif; color: ${textColor};">
-            Please click below to reset your password
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding: 20px 0;">
-            <table border="0" cellspacing="0" cellpadding="0">
-              <tr>
-                <td align="center" style="border-radius: 5px;" bgcolor="${buttonBackgroundColor}"><a href="${url}" target="_blank" style="font-size: 18px; font-family: Helvetica, Arial, sans-serif; color: ${buttonTextColor}; text-decoration: none; border-radius: 5px; padding: 10px 20px; border: 1px solid ${buttonBorderColor}; display: inline-block; font-weight: bold;">Reset Password</a></td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-        <tr>
-          <td align="center" style="padding: 0px 0px 10px 0px; font-size: 16px; line-height: 22px; font-family: Helvetica, Arial, sans-serif; color: ${textColor};">
-            If you did not request this email you can safely ignore it.
-          </td>
-        </tr>
-      </table>
-    </body>
-  `;
+  return emailLayout({
+    preheader: "Use this link to choose a new password.",
+    title: "Reset your password",
+    body: `${emailParagraph("We received a request to reset the password for your account. Use the button below to choose a new one.")}
+${emailButton("Reset password", url)}
+${emailMuted("If you did not request this, you can safely ignore this email. Your password will not change.")}`
+  });
 }
-async function sendPasswordResetEmail(resetToken, to, baseUrl) {
+async function sendPasswordResetEmail(resetToken, to, baseUrl, resetPath = "/dashboard/reset") {
   if (process.env.NODE_ENV === "production" && (!process.env.SMTP_HOST || !process.env.SMTP_FROM)) {
     throw new Error("SMTP_HOST and SMTP_FROM are required in production");
   }
@@ -18206,7 +21298,7 @@ async function sendPasswordResetEmail(resetToken, to, baseUrl) {
     from: process.env.SMTP_FROM,
     subject: "Your password reset token!",
     html: passwordResetEmail({
-      url: `${frontendUrl}/dashboard/reset?token=${resetToken}`
+      url: `${frontendUrl}${resetPath}?token=${encodeURIComponent(resetToken)}`
     })
   });
   if (process.env.MAIL_USER?.includes("ethereal.email")) {
@@ -18214,162 +21306,9 @@ async function sendPasswordResetEmail(resetToken, to, baseUrl) {
   }
 }
 
-// features/keystone/lib/graphqlSecurity.ts
-var import_graphql2 = require("graphql");
-
-// features/keystone/lib/proxyIdentity.ts
-var import_node_crypto25 = require("node:crypto");
-function normalizeIp(ip) {
-  const trimmed = ip.trim();
-  return trimmed.startsWith("::ffff:") ? trimmed.slice("::ffff:".length) : trimmed;
-}
-function verifyProxyIdentity(value, secret2, nowSeconds = Math.floor(Date.now() / 1e3)) {
-  const parts = value.trim().split(".");
-  if (parts.length !== 3 || parts[0] !== "v1" || !parts[1] || !parts[2]) return null;
-  const expected = (0, import_node_crypto25.createHmac)("sha256", secret2).update(`${parts[0]}.${parts[1]}`).digest("base64url");
-  if (parts[2].length !== expected.length || !(0, import_node_crypto25.timingSafeEqual)(Buffer.from(parts[2]), Buffer.from(expected))) return null;
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-  } catch {
-    return null;
-  }
-  if (payload?.version !== 1 || typeof payload.ip !== "string" || !payload.ip || !Number.isInteger(payload.issuedAt)) return null;
-  if (Math.abs(nowSeconds - payload.issuedAt) > 60) return null;
-  return { ...payload, ip: normalizeIp(payload.ip) };
-}
-
-// features/keystone/lib/graphqlSecurity.ts
-var MAX_GRAPHQL_QUERY_LENGTH = 1e5;
-var MAX_GRAPHQL_DEPTH = 12;
-function fragmentMap(document2) {
-  return new Map(document2.definitions.filter((definition) => definition.kind === import_graphql2.Kind.FRAGMENT_DEFINITION).map((fragment) => [fragment.name.value, fragment]));
-}
-function depthOfSelectionSet(selectionSet, fragments, depth, seen, report) {
-  if (!selectionSet) return depth;
-  let maximum = depth;
-  for (const selection of selectionSet.selections) {
-    if (selection.kind === import_graphql2.Kind.FRAGMENT_SPREAD) {
-      if (seen.has(selection.name.value)) continue;
-      const nextSeen = new Set(seen).add(selection.name.value);
-      maximum = Math.max(maximum, depthOfSelectionSet(fragments.get(selection.name.value)?.selectionSet, fragments, depth + 1, nextSeen, report));
-      continue;
-    }
-    if (selection.kind === import_graphql2.Kind.INLINE_FRAGMENT) {
-      maximum = Math.max(maximum, depthOfSelectionSet(selection.selectionSet, fragments, depth + 1, seen, report));
-      continue;
-    }
-    const nextDepth = depth + 1;
-    if (nextDepth > MAX_GRAPHQL_DEPTH) report(selection);
-    maximum = Math.max(maximum, depthOfSelectionSet(selection.selectionSet, fragments, nextDepth, seen, report));
-  }
-  return maximum;
-}
-var boundedGraphqlDepthRule = (context) => ({
-  Document(node) {
-    const fragments = fragmentMap(node);
-    for (const definition of node.definitions) {
-      if (definition.kind === import_graphql2.Kind.OPERATION_DEFINITION) {
-        depthOfSelectionSet(definition.selectionSet, fragments, 0, /* @__PURE__ */ new Set(), (selection) => context.reportError(new import_graphql2.GraphQLError(`GraphQL query depth exceeds ${MAX_GRAPHQL_DEPTH}`, { nodes: selection })));
-      }
-    }
-  }
-});
-var rejectIntrospectionInProduction = (context) => ({
-  Field(node) {
-    if (process.env.NODE_ENV === "production" && (node.name.value === "__schema" || node.name.value === "__type")) {
-      context.reportError(new import_graphql2.GraphQLError("GraphQL introspection is disabled in production", { nodes: node }));
-    }
-  }
-});
-function documentFor(query) {
-  try {
-    return (0, import_graphql2.parse)(query || "");
-  } catch {
-    return null;
-  }
-}
-function operationDefinitions(query) {
-  return documentFor(query)?.definitions.filter((definition) => definition.kind === import_graphql2.Kind.OPERATION_DEFINITION) || [];
-}
-function isGraphqlMutation(query) {
-  return operationDefinitions(query).some((definition) => definition.operation === "mutation" || definition.operation === "subscription");
-}
-function isDangerousAuthOperation(query) {
-  const document2 = documentFor(query);
-  if (!document2) return false;
-  const fragments = fragmentMap(document2);
-  const names = /* @__PURE__ */ new Set([
-    "authenticateUserWithPassword",
-    "createInitialUser",
-    "sendUserPasswordResetLink",
-    "redeemUserPasswordResetToken"
-  ]);
-  const visit = (selectionSet, seen) => selectionSet?.selections.some((selection) => {
-    if (selection.kind === import_graphql2.Kind.FIELD && names.has(selection.name.value)) return true;
-    if (selection.kind === import_graphql2.Kind.INLINE_FRAGMENT) return visit(selection.selectionSet, seen);
-    if (selection.kind === import_graphql2.Kind.FRAGMENT_SPREAD && !seen.has(selection.name.value)) return visit(fragments.get(selection.name.value)?.selectionSet, new Set(seen).add(selection.name.value));
-    return false;
-  }) || false;
-  return operationDefinitions(query).some((definition) => visit(definition.selectionSet, /* @__PURE__ */ new Set()));
-}
-function requestIp(headers) {
-  if (process.env.TRUSTED_PROXY !== "true") return "untrusted-proxy";
-  const identity2 = headers?.get("x-grocery-proxy-identity")?.trim() || "";
-  const secret2 = process.env.TRUSTED_PROXY_IDENTITY_SECRET?.trim() || "";
-  return verifyProxyIdentity(identity2, secret2)?.ip || "unverified-proxy";
-}
-
-// features/keystone/lib/graphqlRateLimit.ts
-var import_node_crypto26 = require("node:crypto");
-var import_graphql3 = require("graphql");
-var WINDOW_MS = 6e4;
-var ANONYMOUS_QUERY_LIMIT = 120;
-var AUTHENTICATED_QUERY_LIMIT = 600;
-var ANONYMOUS_MUTATION_LIMIT = 40;
-var AUTHENTICATED_MUTATION_LIMIT = 120;
-var AUTH_LIMIT = 8;
-async function consumeSharedBucket(prisma, key2, limit) {
-  const now = /* @__PURE__ */ new Date();
-  const result = await prisma.$queryRawUnsafe(`
-    INSERT INTO "RateLimitBucket" ("id", "key", "windowStartedAt", "requestCount", "createdAt", "updatedAt")
-    VALUES (md5($1 || $2::text), $1, $2, 1, $2, $2)
-    ON CONFLICT ("key") DO UPDATE SET
-      "windowStartedAt" = CASE WHEN EXTRACT(EPOCH FROM ($2 - "RateLimitBucket"."windowStartedAt")) * 1000 >= ${WINDOW_MS} THEN $2 ELSE "RateLimitBucket"."windowStartedAt" END,
-      "requestCount" = CASE WHEN EXTRACT(EPOCH FROM ($2 - "RateLimitBucket"."windowStartedAt")) * 1000 >= ${WINDOW_MS} THEN 1 ELSE "RateLimitBucket"."requestCount" + 1 END,
-      "updatedAt" = $2
-    RETURNING "requestCount"
-  `, key2, now);
-  if (Number(result[0]?.requestCount || 0) > limit) throw new import_graphql3.GraphQLError("Too many requests; retry later", { extensions: { code: "RATE_LIMITED" } });
-}
-async function enforceGraphqlRateLimit({
-  prisma,
-  headers,
-  identity: identity2,
-  query
-}) {
-  if (query.length > MAX_GRAPHQL_QUERY_LENGTH) throw new import_graphql3.GraphQLError("GraphQL request is too large", { extensions: { code: "QUERY_TOO_LARGE" } });
-  if (!prisma) throw new import_graphql3.GraphQLError("Rate limiter unavailable", { extensions: { code: "RATE_LIMITER_UNAVAILABLE" } });
-  const ip = requestIp(headers);
-  const operationClass = isDangerousAuthOperation(query) ? "auth" : isGraphqlMutation(query) ? "mutation" : "query";
-  const limit = operationClass === "auth" ? AUTH_LIMIT : operationClass === "mutation" ? identity2 ? AUTHENTICATED_MUTATION_LIMIT : ANONYMOUS_MUTATION_LIMIT : identity2 ? AUTHENTICATED_QUERY_LIMIT : ANONYMOUS_QUERY_LIMIT;
-  const key2 = (0, import_node_crypto26.createHash)("sha256").update(`${ip}:${identity2 || "anonymous"}:${operationClass}`).digest("hex");
-  await consumeSharedBucket(prisma, key2, limit);
-}
-function graphqlRateLimitPlugin() {
-  return {
-    async requestDidStart(requestContext) {
-      const context = requestContext.contextValue;
-      await enforceGraphqlRateLimit({
-        prisma: context?.prisma,
-        headers: requestContext.request.http?.headers,
-        identity: context?.session?.itemId,
-        query: requestContext.request.query || ""
-      });
-      return {};
-    }
-  };
-}
+// features/keystone/index.ts
+init_publicError();
+init_serializableTransaction();
 
 // lib/applicationOrigin.ts
 function firstHeaderValue(value) {
@@ -18407,9 +21346,28 @@ function resolveApplicationOrigin({
   return `http://localhost:${fallbackPort}`;
 }
 
+// features/keystone/database-url.ts
+var POOL_SIZES = { web: 15, worker: 5 };
+var OVERRIDE_ENV = {
+  web: "DATABASE_CONNECTION_LIMIT",
+  worker: "DATABASE_CONNECTION_LIMIT_WORKER"
+};
+function pooledDatabaseUrl(url, role = "web") {
+  if (!url || !/^postgres(ql)?:\/\//.test(url)) return url;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  if (parsed.searchParams.has("connection_limit")) return url;
+  const override = Number(process.env[OVERRIDE_ENV[role]]);
+  parsed.searchParams.set("connection_limit", String(Number.isInteger(override) && override > 0 ? override : POOL_SIZES[role]));
+  return parsed.toString();
+}
+
 // features/keystone/index.ts
 var databaseURL = getDatabaseUrl();
-assertProductionPaymentConfig();
 var publicStoreId = getPublicStoreId();
 var production = isProduction();
 var canonicalSiteUrl = production ? getCanonicalSiteUrl() : null;
@@ -18460,7 +21418,13 @@ var { withAuth } = (0, import_auth.createAuth)({
   },
   passwordResetLink: {
     async sendToken(args) {
-      await sendPasswordResetEmail(args.token, args.identity, passwordResetOrigin(args.context));
+      const account = await args.context.prisma.user.findUnique({ where: { id: String(args.itemId) }, select: { role: { select: { canAccessDashboard: true } } } }).catch(() => null);
+      const resetPath = account?.role?.canAccessDashboard ? "/dashboard/reset" : "/account/reset";
+      try {
+        await sendPasswordResetEmail(args.token, args.identity, passwordResetOrigin(args.context), resetPath);
+      } catch {
+        throw publicError("The reset email could not be sent. Try again later or contact the store.", "EMAIL_SEND_FAILED");
+      }
     }
   },
   sessionData: `
@@ -18483,10 +21447,11 @@ var { withAuth } = (0, import_auth.createAuth)({
   `
 });
 var keystone_default = withAuth(
-  (0, import_core65.config)({
+  (0, import_core66.config)({
     db: {
       provider: "postgresql",
-      url: databaseURL
+      url: pooledDatabaseUrl(databaseURL),
+      extendPrismaClient: extendPrismaClientWithErrorNormalization
     },
     lists: models,
     storage: {
@@ -18499,7 +21464,7 @@ var keystone_default = withAuth(
         secretAccessKey,
         endpoint,
         signed: { expiry: 5e3 },
-        forcePathStyle: true
+        forcePathStyle: s3ForcePathStyle(endpoint)
       }
     },
     ui: {
@@ -18515,8 +21480,7 @@ var keystone_default = withAuth(
       bodyParser: { limit: "1mb" },
       cors: { origin: canonicalSiteUrl || true, credentials: true },
       apolloConfig: {
-        validationRules: [boundedGraphqlDepthRule, rejectIntrospectionInProduction],
-        plugins: [graphqlRateLimitPlugin()]
+        validationRules: [boundedGraphqlDepthRule, rejectIntrospectionInProduction]
       }
     }
   })

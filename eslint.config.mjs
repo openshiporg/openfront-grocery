@@ -45,5 +45,6 @@ export default defineConfig([
     "build/**",
     "test-results/**",
     "next-env.d.ts",
+    "**/*.cjs",
   ]),
 ]);
