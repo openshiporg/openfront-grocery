@@ -13,7 +13,7 @@ export function refundedGoodsForLoyalty(sale:any,refunds:any[]) {
  const estimatedGoods=total?Number((BigInt(goods)*BigInt(unallocatedCash)+BigInt(Math.floor(total/2)))/BigInt(total)):0;
  return {netGoodsCents:Math.max(0,goods-knownGoods-estimatedGoods),fullyRefunded:total>0&&cash>=total,sourceId:'refund-ledger:'+payloadHash({refunds:relevant.map(r=>({id:r.id,amountCents:r.amountCents,commercial:r.providerData?.commercialAdjustments || null})).sort((a,b)=>a.id.localeCompare(b.id))}),policy:unallocatedCash?'Line evidence plus proportional allocation of amount-only goodwill to rewards; no inferred tax reversal.':'Final line commercial evidence',unallocatedCashCents:unallocatedCash};
 }
-/** Separate outbox step maintains Order -> Payment -> loyalty-account lock ordering. */
+/** Separate step maintains Order -> Payment -> loyalty-account lock ordering. */
 export async function applyRefundLoyalty(context:any,storeId:string,orderId:string) {
  return context.transaction(async(tc:any)=>{
   const tx=tc.prisma;await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id"=$1 FOR UPDATE',orderId);

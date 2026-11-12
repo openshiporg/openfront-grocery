@@ -4729,7 +4729,7 @@ input OrderItemSubstitutionRelateToManyForCreateInput {
 type OrderLineInventoryAllocation {
   id: ID!
   lineItem: OrderLineItem!
-  inventoryLot: InventoryLot!
+  inventoryLot: InventoryLot
   store: Store!
   quantity: Decimal
   provenance: JSON
@@ -6989,7 +6989,7 @@ type Subscription {
   consent: JSON
   events: JSON
   lastProcessedAt: DateTime
-  user: User!
+  user: User
   product: String
   productRef: Product!
   quantity: Int

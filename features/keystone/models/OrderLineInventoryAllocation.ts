@@ -20,7 +20,8 @@ export const OrderLineInventoryAllocation = list({
     inventoryLot: relationship({
       ref: 'InventoryLot.orderLineAllocations',
       db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
+      // Nullable on read: roles without InventoryLot access cannot resolve it.
+      graphql: { isNonNull: { create: true } },
       access: { create: () => false, update: () => false },
     }),
     store: relationship({

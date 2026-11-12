@@ -2,6 +2,7 @@
 
 import { useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { providerLabel } from '@/features/platform/lib/providerLabel';
 
 import { ChevronDown, Wallet } from 'lucide-react';
 import { PlatformFeedback, PlatformField } from '@/features/platform/components/PlatformForm';
@@ -149,7 +150,7 @@ export function OrderAfterSalesActions({
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="font-semibold tabular-nums">{formatMoney(payment.amountCents, currencyCode)}</p>
-                    <p className="truncate font-mono text-xs text-muted-foreground">{payment.providerCode}</p>
+                    <p className="truncate font-mono text-xs text-muted-foreground">{providerLabel(payment.providerCode)}</p>
                   </div>
                   <PlatformStatusBadge status={payment.status} />
                 </div>

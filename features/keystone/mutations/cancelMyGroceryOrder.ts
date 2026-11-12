@@ -50,6 +50,6 @@ export async function cancelMyGroceryOrder(_root: unknown, args: Args, context: 
     if (!['authorized', 'pending'].includes(payment.status)) continue;
     await voidGroceryPaymentAuthorizationForStore({ paymentId: payment.id, reason: CUSTOMER_CANCEL_REASON, idempotencyKey: `customer-cancel:${payment.id}` }, sudo, order.store, actorId);
   }
-  // Then the audited cancellation: stock back, slot capacity, coupon and loyalty released, outbox event.
+  // Then the audited cancellation: stock back, slot capacity, coupon and loyalty released.
   return cancelGroceryOrderForStore({ orderId, reason: CUSTOMER_CANCEL_REASON, idempotencyKey: `customer-cancel:${orderId}`, allowedStatuses: CUSTOMER_CANCELLABLE_STATUSES }, sudo, order.store, actorId);
 }

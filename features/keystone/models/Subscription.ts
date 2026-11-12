@@ -53,7 +53,8 @@ export const Subscription = list({
     // User who owns the subscription
     user: relationship({
       db: { extendPrismaSchema: requiredRelationshipPrisma },
-      graphql: { isNonNull: { read: true, create: true } },
+      // Nullable on read: staff cannot read other customers' User rows.
+      graphql: { isNonNull: { create: true } },
       access: { create: () => false, update: () => false },
       ref: "User",
       label: "User",

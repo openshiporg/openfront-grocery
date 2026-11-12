@@ -1,3 +1,4 @@
+import { providerLabel } from '@/features/platform/lib/providerLabel';
 import { ViewerTime } from '@/features/dashboard/components/ViewerTime';
 import { OrderLineRefundForm } from '../components/OrderLineRefundForm';
 import { VoidAuthorizationForm } from '../components/VoidAuthorizationForm';
@@ -79,8 +80,7 @@ export async function PaymentsPage({ searchParams }: { searchParams?: Promise<Pl
                 <div key={provider.id} className="flex items-start justify-between gap-3 bg-card px-4 py-3.5 md:px-5">
                   <div className="min-w-0">
                     <p className="text-sm font-medium">{provider.name}</p>
-                    <p className="truncate font-mono text-xs text-muted-foreground">{provider.code}</p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
                       <PlatformChip>{provider.isInstalled ? 'Installed' : 'Not installed'}</PlatformChip>
                       <PlatformChip>{provider.publicCheckout ? 'Offered at checkout' : 'Not offered at checkout'}</PlatformChip>
                     </div>
@@ -143,7 +143,7 @@ export async function PaymentsPage({ searchParams }: { searchParams?: Promise<Pl
                           <PlatformStatusBadge status={payment.status} />
                           {attention ? <PlatformChip icon={Flag} className="border-destructive/30 text-destructive">Review</PlatformChip> : null}
                         </div>
-                        <p className="truncate font-mono text-xs text-muted-foreground"><PlatformCellLabel>Provider reference</PlatformCellLabel>{payment.providerCode} · {payment.providerPaymentId || `payment …${payment.id.slice(-8)}`}</p>
+                        <p className="truncate font-mono text-xs text-muted-foreground"><PlatformCellLabel>Provider reference</PlatformCellLabel>{providerLabel(payment.providerCode)} · {payment.providerPaymentId || `payment …${payment.id.slice(-8)}`}</p>
                         <p className="text-sm font-semibold tabular-nums md:text-right"><PlatformCellLabel>Amount</PlatformCellLabel>{formatMoney(payment.amountCents, currencyCode)}</p>
                         <p className={`text-xs tabular-nums md:text-right ${succeededRefunds ? 'text-foreground' : 'text-muted-foreground'}`}><PlatformCellLabel>Refunded</PlatformCellLabel>{succeededRefunds ? `−${formatMoney(succeededRefunds, currencyCode)}` : '—'}<span className="md:hidden"> refunded</span></p>
                         <p className="hidden text-right text-xs text-muted-foreground md:block"><PlatformCellLabel>Created</PlatformCellLabel>{formatRelative(payment.createdAt)}</p>
