@@ -306,7 +306,7 @@ var init_inventoryMovements = __esm({
 
 // features/integrations/payment/stripeEnabled.ts
 function isPaymentProviderInstalled(provider) {
-  return Boolean(provider?.isInstalled || provider?.code === "pp_stripe_default" && process.env.STRIPE_USE_ENVIRONMENT_PROVIDER === "true" && process.env.STRIPE_ALLOW_TEST_MODE === "true" && stripeCheckoutActivated() && process.env.STRIPE_SECRET_KEY?.startsWith("sk_test_") && process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.startsWith("pk_test_") && process.env.STRIPE_WEBHOOK_SECRET);
+  return Boolean(provider?.isInstalled || provider?.code === "pp_stripe_default" && stripeConfigurationProblem() === null);
 }
 function stripeCheckoutActivated() {
   return process.env.STRIPE_ENABLED?.trim().toLowerCase() === "true";
@@ -316,10 +316,8 @@ function stripeConfigurationProblem() {
   const secretKey = process.env.STRIPE_SECRET_KEY?.trim() || "";
   const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim() || "";
   if (!secretKey || !publishableKey || !process.env.STRIPE_WEBHOOK_SECRET?.trim()) return "Stripe checkout is not fully configured";
-  if (process.env.NODE_ENV === "production") {
-    const mode = process.env.STRIPE_ALLOW_TEST_MODE === "true" ? "test" : "live";
-    if (!secretKey.startsWith(`sk_${mode}_`) || !publishableKey.startsWith(`pk_${mode}_`)) return `Stripe checkout requires ${mode}-mode keys`;
-  }
+  const mode = secretKey.startsWith("sk_live_") ? "live" : "test";
+  if (!secretKey.startsWith(`sk_${mode}_`) || !publishableKey.startsWith(`pk_${mode}_`)) return `Stripe checkout needs a matching ${mode}-mode key pair`;
   return null;
 }
 var init_stripeEnabled = __esm({
@@ -442,14 +440,14 @@ async function handleWebhookFunction({ rawBody, headers }) {
   if (!webhookSecret) {
     throw new Error("Stripe webhook secret is not configured");
   }
-  const signature2 = headers["stripe-signature"];
-  if (!signature2 || !rawBody) {
+  const signature = headers["stripe-signature"];
+  if (!signature || !rawBody) {
     throw new Error("Stripe webhook signature and raw body are required");
   }
   try {
     const stripeEvent = import_stripe.default.webhooks.constructEvent(
       rawBody,
-      signature2,
+      signature,
       webhookSecret
     );
     return {
@@ -480,129 +478,6 @@ var init_stripe = __esm({
   }
 });
 
-// features/integrations/payment/test.ts
-var test_exports = {};
-__export(test_exports, {
-  cancelPaymentFunction: () => cancelPaymentFunction2,
-  capturePaymentFunction: () => capturePaymentFunction2,
-  createPaymentFunction: () => createPaymentFunction2,
-  createTestPaymentWebhookSignature: () => createTestPaymentWebhookSignature,
-  generatePaymentLinkFunction: () => generatePaymentLinkFunction2,
-  getPaymentStatusFunction: () => getPaymentStatusFunction2,
-  getRefundStatusFunction: () => getRefundStatusFunction2,
-  handleWebhookFunction: () => handleWebhookFunction2,
-  refundPaymentFunction: () => refundPaymentFunction2
-});
-function secret() {
-  const value = process.env[TEST_PROVIDER_SECRET_ENV];
-  if (!value) throw new Error(`${TEST_PROVIDER_SECRET_ENV} is required for the local payment adapter`);
-  return value;
-}
-function signature(rawBody) {
-  return (0, import_node_crypto4.createHmac)("sha256", secret()).update(rawBody).digest("hex");
-}
-async function createPaymentFunction2({ amount, currency, idempotencyKey, captureMethod = "automatic" }) {
-  secret();
-  const paymentIntentId = `test_pi_${Buffer.from(idempotencyKey || `${currency}:${amount}:${Date.now()}`).toString("base64url")}`;
-  if (!paymentStates.has(paymentIntentId)) paymentStates.set(paymentIntentId, { status: captureMethod === "manual" ? "requires_capture" : "succeeded", amount, amountCents: amount, currency: currency.toLowerCase(), authorizedAmountCents: amount, capturedAmountCents: captureMethod === "manual" ? 0 : amount, capturableAmountCents: captureMethod === "manual" ? amount : 0, captureMethod });
-  return { clientSecret: `${paymentIntentId}_secret`, paymentIntentId, amount, currency: currency.toLowerCase() };
-}
-async function capturePaymentFunction2({ paymentId, amount, amountCents }) {
-  secret();
-  const current = await getPaymentStatusFunction2({ paymentId });
-  const captured2 = amountCents ?? amount ?? current.authorizedAmountCents;
-  if (!Number.isInteger(captured2) || captured2 < 1 || captured2 > current.authorizedAmountCents) throw new Error("Capture exceeds authorized amount");
-  if (current.status === "canceled" || current.status === "succeeded" && current.capturedAmountCents !== captured2) throw new Error("Payment cannot be recaptured");
-  const result = { ...current, status: "succeeded", amount: captured2, amountCents: captured2, capturedAmountCents: captured2, capturableAmountCents: 0, data: { id: paymentId, status: "succeeded" } };
-  paymentStates.set(paymentId, result);
-  return result;
-}
-async function refundPaymentFunction2({ paymentId, amount, idempotencyKey }) {
-  secret();
-  if (process.env.GROCERY_TEST_PROVIDER_TIMEOUT === "true") await new Promise((resolve) => setTimeout(resolve, 250));
-  if (!paymentId) throw new Error("Test payment id is required");
-  const refundedAmount = amount ?? Number((await getPaymentStatusFunction2({ paymentId })).amount || 0);
-  const refundId = `test_re_${Buffer.from(idempotencyKey || paymentId).toString("base64url")}`;
-  if (refundStates.has(refundId)) return refundStates.get(refundId);
-  const payment = await getPaymentStatusFunction2({ paymentId });
-  const result = {
-    status: "succeeded",
-    amount: refundedAmount,
-    currency: payment.currency,
-    paymentId,
-    data: { id: refundId, payment_intent: paymentId, amount: refundedAmount, currency: payment.currency, fullRefund: amount === void 0, metadata: { groceryRefundKey: idempotencyKey } }
-  };
-  refundStates.set(refundId, result);
-  return result;
-}
-async function getPaymentStatusFunction2({ paymentId }) {
-  secret();
-  if (paymentStates.has(paymentId)) return paymentStates.get(paymentId);
-  let amount = 0;
-  let currency = "usd";
-  if (paymentId.startsWith("test_pi_")) {
-    try {
-      const decoded = Buffer.from(paymentId.slice("test_pi_".length), "base64url").toString("utf8");
-      const last = decoded.split(":").at(-1);
-      if (last && /^\d+$/.test(last)) amount = Number(last);
-    } catch {
-    }
-  }
-  return { status: "succeeded", amount, amountCents: amount, currency, authorizedAmountCents: amount, capturedAmountCents: amount, capturableAmountCents: 0, captureMethod: "automatic", data: { id: paymentId, status: "succeeded", amount, currency } };
-}
-async function getRefundStatusFunction2({ refundId }) {
-  secret();
-  const refund = refundStates.get(refundId);
-  if (!refund) throw new Error("Test refund not found");
-  return refund;
-}
-async function cancelPaymentFunction2({ paymentId }) {
-  secret();
-  const current = await getPaymentStatusFunction2({ paymentId });
-  if (current.status === "succeeded") throw new Error("Captured payment requires refund");
-  const result = { ...current, status: "canceled", capturableAmountCents: 0 };
-  paymentStates.set(paymentId, result);
-  return result;
-}
-async function generatePaymentLinkFunction2({ paymentId }) {
-  secret();
-  return `https://test-payments.local/payments/${encodeURIComponent(paymentId)}`;
-}
-async function handleWebhookFunction2({ rawBody, headers }) {
-  const expected = signature(rawBody);
-  const received = headers["x-grocery-test-signature"];
-  if (!received || received.length !== expected.length || !(0, import_node_crypto4.timingSafeEqual)(Buffer.from(received), Buffer.from(expected))) {
-    throw new Error("Test payment webhook signature verification failed");
-  }
-  let payload;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    throw new Error("Test payment webhook body must be JSON");
-  }
-  if (!payload?.id || !payload?.type) throw new Error("Test payment webhook event id and type are required");
-  return {
-    isValid: true,
-    event: payload,
-    eventId: payload.id,
-    type: payload.type,
-    resource: payload.data?.object || payload.data || null
-  };
-}
-function createTestPaymentWebhookSignature(rawBody) {
-  return signature(rawBody);
-}
-var import_node_crypto4, TEST_PROVIDER_SECRET_ENV, paymentStates, refundStates;
-var init_test = __esm({
-  "features/integrations/payment/test.ts"() {
-    "use strict";
-    import_node_crypto4 = require("node:crypto");
-    TEST_PROVIDER_SECRET_ENV = "GROCERY_PAYMENT_TEST_SECRET";
-    paymentStates = /* @__PURE__ */ new Map();
-    refundStates = /* @__PURE__ */ new Map();
-  }
-});
-
 // features/integrations/payment/index.ts
 function getPaymentProviderDefinition(providerCode) {
   const definition = paymentProviderDefinitions[providerCode];
@@ -617,9 +492,6 @@ function configuredSelector(provider, operation) {
   }
   if (definition && selector !== definition.adapterKey) {
     throw new Error(`Built-in payment provider ${provider.code} cannot change its server-owned adapter`);
-  }
-  if (selector === "test" && process.env.NODE_ENV === "production") {
-    throw new Error("The local test payment adapter is not available in production");
   }
   if (LOCAL_ADAPTER_CODES.has(selector)) return selector;
   let url;
@@ -638,7 +510,7 @@ function getConfiguredPaymentAdapterSelector(provider, operation) {
   return configuredSelector(provider, operation);
 }
 async function getLocalPaymentProviderAdapter(selector) {
-  if (selector === "stripe" || selector === "test") return paymentProviderAdapters[selector]();
+  if (selector === "stripe") return paymentProviderAdapters[selector]();
   throw new Error("Unknown registered payment adapter");
 }
 function projectRemoteProviderCredentials(provider) {
@@ -669,12 +541,6 @@ function assertProviderCredentials(providerOrCode, operation) {
     const required2 = definition?.credentialEnv || ["STRIPE_SECRET_KEY", ...operation === "handleWebhookFunction" ? ["STRIPE_WEBHOOK_SECRET"] : []];
     const missing = required2.filter((name) => !process.env[name]);
     if (missing.length) throw new Error(`Payment provider ${provider?.code || providerOrCode} is not configured for ${operation}: missing ${missing.join(", ")}`);
-    return;
-  }
-  if (selector === "test") {
-    if (!process.env.GROCERY_PAYMENT_TEST_SECRET || process.env.NODE_ENV === "production") {
-      throw new Error(`Payment provider ${provider?.code || providerOrCode} is not configured for ${operation}`);
-    }
     return;
   }
   if (!provider || !isPaymentProviderInstalled(provider)) throw new Error("External payment provider is not installed");
@@ -744,17 +610,15 @@ function assertPublicPaymentProvider(providerOrCode) {
     assertIdempotentCaptureProvider(provider);
   }
 }
-var STRIPE_PROVIDER_CODE, TEST_PROVIDER_CODE, paymentProviderAdapters, paymentProviderDefinitions, PAYMENT_OPERATIONS, LOCAL_ADAPTER_CODES;
+var STRIPE_PROVIDER_CODE, paymentProviderAdapters, paymentProviderDefinitions, PAYMENT_OPERATIONS, LOCAL_ADAPTER_CODES;
 var init_payment = __esm({
   "features/integrations/payment/index.ts"() {
     "use strict";
     init_stripeEnabled();
     init_stripeEnabled();
     STRIPE_PROVIDER_CODE = "pp_stripe_default";
-    TEST_PROVIDER_CODE = "pp_test_default";
     paymentProviderAdapters = {
-      stripe: () => Promise.resolve().then(() => (init_stripe(), stripe_exports)),
-      test: () => Promise.resolve().then(() => (init_test(), test_exports))
+      stripe: () => Promise.resolve().then(() => (init_stripe(), stripe_exports))
     };
     paymentProviderDefinitions = {
       [STRIPE_PROVIDER_CODE]: {
@@ -762,12 +626,6 @@ var init_payment = __esm({
         publicCheckout: true,
         supportsIdempotentCapture: true,
         credentialEnv: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY"]
-      },
-      [TEST_PROVIDER_CODE]: {
-        adapterKey: "test",
-        publicCheckout: false,
-        supportsIdempotentCapture: false,
-        credentialEnv: ["GROCERY_PAYMENT_TEST_SECRET"]
       }
     };
     PAYMENT_OPERATIONS = [
@@ -780,7 +638,7 @@ var init_payment = __esm({
       "generatePaymentLinkFunction",
       "handleWebhookFunction"
     ];
-    LOCAL_ADAPTER_CODES = /* @__PURE__ */ new Set(["stripe", "test"]);
+    LOCAL_ADAPTER_CODES = /* @__PURE__ */ new Set(["stripe"]);
   }
 });
 
@@ -1344,6 +1202,83 @@ function s3ForcePathStyle(endpoint2) {
 var import_auth = require("@keystone-6/auth");
 var import_core66 = require("@keystone-6/core");
 var import_config = require("dotenv/config");
+
+// features/keystone/models/filterAccess.ts
+init_access();
+var NEVER = /* @__PURE__ */ new Set([
+  "password",
+  "tokenHash",
+  "claimToken",
+  "reconciliationToken",
+  "reconciliationLastError",
+  "passwordResetToken",
+  "passwordResetIssuedAt",
+  "passwordResetRedeemedAt",
+  "providerData",
+  "providerEvidence",
+  "credentials",
+  "verifiedPayload",
+  "replayAudit",
+  "skuIdentity",
+  "sessionKey"
+]);
+var USER_PERSONAL = /* @__PURE__ */ new Set(["name", "email", "onboardingStatus", "privacyErasedAt"]);
+async function passes(rule, args) {
+  if (typeof rule === "boolean") return rule;
+  if (typeof rule !== "function") return true;
+  try {
+    return Boolean(await rule(args));
+  } catch {
+    return false;
+  }
+}
+function hardenFilterAccess(lists) {
+  const readableRelation = async (target, ctx) => {
+    const t = lists[target];
+    if (!t) return false;
+    const args = { session: ctx.session, context: ctx, listKey: target, operation: "query" };
+    if (!await passes(t.access?.operation?.query ?? t.access?.operation, args)) return false;
+    if (target === "User") return true;
+    const f = t.access?.filter?.query;
+    if (typeof f !== "function") return true;
+    let result;
+    try {
+      result = await f(args);
+    } catch {
+      return false;
+    }
+    if (result === false) return false;
+    return !(ctx.session?.itemId && JSON.stringify(result ?? {}).includes(String(ctx.session.itemId)));
+  };
+  const backRef = (kind) => async (args) => {
+    const m = /^from_([A-Za-z]+)_/.exec(String(args.fieldKey || ""));
+    return m ? readableRelation(m[1], args.context) : true;
+  };
+  for (const [listKey, list65] of Object.entries(lists)) {
+    list65.isFilterable = backRef("filter");
+    list65.isOrderable = backRef("order");
+    const fields = list65.fields;
+    if (!fields || typeof fields !== "object") continue;
+    for (const [fieldKey, factory] of Object.entries(fields)) {
+      if (typeof factory !== "function") continue;
+      fields[fieldKey] = (data) => {
+        const config2 = factory(data);
+        const prior = { filter: config2.isFilterable, order: config2.isOrderable };
+        const guard = (kind) => async (args) => {
+          if (NEVER.has(fieldKey)) return false;
+          if (prior[kind] !== void 0 && !await passes(prior[kind], args)) return false;
+          const read = config2.access && typeof config2.access === "object" ? config2.access.read : config2.access;
+          if (!await passes(read, { ...args, operation: "read" })) return false;
+          if (listKey === "User" && USER_PERSONAL.has(fieldKey) && !await permissions.canManageUsers(args)) return false;
+          if (config2.dbField?.kind === "relation") return readableRelation(config2.dbField.list, args.context);
+          return true;
+        };
+        return { ...config2, isFilterable: guard("filter"), isOrderable: guard("order") };
+      };
+    }
+  }
+  return lists;
+}
 
 // features/keystone/models/InventoryConversion.ts
 var import_core = require("@keystone-6/core");
@@ -7642,7 +7577,7 @@ var Supplier = (0, import_core63.list)({
 
 // features/keystone/models/User.ts
 var import_core64 = require("@keystone-6/core");
-var import_access57 = require("@keystone-6/core/access");
+var import_access58 = require("@keystone-6/core/access");
 var import_fields64 = require("@keystone-6/core/fields");
 init_access();
 var User = (0, import_core64.list)({
@@ -7722,7 +7657,7 @@ var User = (0, import_core64.list)({
         length: { min: 8, max: 128 }
       },
       access: {
-        read: import_access57.denyAll,
+        read: import_access58.denyAll,
         // Password changes go through updateActiveUserPassword (current password
         // required) or the emailed reset token.
         update: () => false
@@ -7839,7 +7774,7 @@ var UserCoupon = (0, import_core65.list)({
 });
 
 // features/keystone/models/index.ts
-var models = {
+var rawModels = {
   InventoryConversion,
   CatalogImport,
   CustomerPrivacyRequest,
@@ -7905,6 +7840,7 @@ var models = {
   User,
   UserCoupon
 };
+var models = hardenFilterAccess(rawModels);
 
 // features/keystone/index.ts
 var import_session = require("@keystone-6/core/session");
@@ -8067,7 +8003,7 @@ async function convertInventoryCases(_root, args, context) {
 }
 
 // features/keystone/mutations/recoverGroceryPaymentCreation.ts
-var import_node_crypto10 = require("node:crypto");
+var import_node_crypto9 = require("node:crypto");
 init_access();
 init_storeScope();
 
@@ -8259,7 +8195,7 @@ init_storeScope();
 
 // features/keystone/lib/loyaltyAccounting.ts
 init_publicError();
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 function pointsInteger(value) {
   const valueNumber = Number(value);
   if (!Number.isSafeInteger(valueNumber) || Math.abs(valueNumber) > 2147483647) throw new Error("Loyalty points must fit an integer journal amount");
@@ -8329,7 +8265,7 @@ async function restoreLoyaltyRedemptionForOrder(tx, input) {
     await tx.coupon.update({ where: { id: redemption.couponId }, data: { isActive: false } });
   }
 }
-var loyaltyCouponCode = (key2) => `REWARD-${(0, import_node_crypto5.createHash)("sha256").update(key2).digest("hex").slice(0, 24).toUpperCase()}`;
+var loyaltyCouponCode = (key2) => `REWARD-${(0, import_node_crypto4.createHash)("sha256").update(key2).digest("hex").slice(0, 24).toUpperCase()}`;
 
 // features/keystone/lib/recurringOrders.ts
 init_inventoryMovements();
@@ -8568,10 +8504,10 @@ function isCouponLineEligible(product, coupon) {
 }
 
 // features/keystone/mutations/submitGroceryOrder.ts
-var import_node_crypto9 = require("node:crypto");
+var import_node_crypto8 = require("node:crypto");
 
 // features/keystone/utils/guestOrderToken.ts
-var import_node_crypto6 = require("node:crypto");
+var import_node_crypto5 = require("node:crypto");
 var TOKEN_VERSION = "v2";
 var LEGACY_TOKEN_VERSION = "v1";
 var DEFAULT_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
@@ -8584,15 +8520,15 @@ function maxAgeSeconds() {
   return Number.isSafeInteger(configured) && configured > 0 ? configured : DEFAULT_MAX_AGE_SECONDS;
 }
 function v2Signature(orderId, sessionId, issuedAtSeconds) {
-  return (0, import_node_crypto6.createHmac)("sha256", tokenSecret()).update(`${TOKEN_VERSION}:${orderId}:${sessionId}:${issuedAtSeconds}`).digest("base64url");
+  return (0, import_node_crypto5.createHmac)("sha256", tokenSecret()).update(`${TOKEN_VERSION}:${orderId}:${sessionId}:${issuedAtSeconds}`).digest("base64url");
 }
 function v1Signature(orderId, sessionId) {
-  return (0, import_node_crypto6.createHmac)("sha256", tokenSecret()).update(`${LEGACY_TOKEN_VERSION}:${orderId}:${sessionId}`).digest("base64url");
+  return (0, import_node_crypto5.createHmac)("sha256", tokenSecret()).update(`${LEGACY_TOKEN_VERSION}:${orderId}:${sessionId}`).digest("base64url");
 }
 function signaturesMatch(expectedSignature, suppliedSignature) {
   const expected = Buffer.from(expectedSignature);
   const supplied = Buffer.from(suppliedSignature);
-  return expected.length === supplied.length && (0, import_node_crypto6.timingSafeEqual)(expected, supplied);
+  return expected.length === supplied.length && (0, import_node_crypto5.timingSafeEqual)(expected, supplied);
 }
 function createGuestOrderToken(orderId, sessionId, issuedAtSeconds = Math.floor(Date.now() / 1e3)) {
   const normalizedSessionId = sessionId.trim();
@@ -8721,7 +8657,7 @@ async function requireSellableStoreProduct(context, productId, storeId, now = /*
 }
 
 // features/keystone/utils/checkoutAttemptLease.ts
-var import_node_crypto7 = require("node:crypto");
+var import_node_crypto6 = require("node:crypto");
 var CHECKOUT_RECONCILIATION_LEASE_MS = 3e4;
 function boundedLeaseMs(value) {
   if (value === void 0) return CHECKOUT_RECONCILIATION_LEASE_MS;
@@ -8754,7 +8690,7 @@ var RETURNING = `
   ca."order" AS "orderId", ca."fencingToken", ca."leaseToken"
 `;
 async function claimCheckoutAttempt(db, attemptId, action, options = {}) {
-  const leaseToken = (0, import_node_crypto7.randomUUID)();
+  const leaseToken = (0, import_node_crypto6.randomUUID)();
   const leaseMs = boundedLeaseMs(options.leaseMs);
   const nextStatus = action === "finalize" ? "finalizing" : "compensation_processing";
   let rows;
@@ -8914,7 +8850,7 @@ function checkoutContactProblem(input) {
 }
 
 // features/keystone/lib/materialInformation.ts
-var import_node_crypto8 = require("node:crypto");
+var import_node_crypto7 = require("node:crypto");
 var MATERIAL_INFORMATION_FIELDS = "allergens nutrition variantLabel packBaseUnitsMilli informationSource";
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -8929,7 +8865,7 @@ function materialInformationSnapshot(product, versionId) {
     packBaseUnitsMilli: Number(product?.packBaseUnitsMilli ?? 1e3),
     informationSource: String(product?.informationSource || "")
   };
-  return { ...content, versionId, fingerprint: (0, import_node_crypto8.createHash)("sha256").update(JSON.stringify(canonical(content))).digest("hex") };
+  return { ...content, versionId, fingerprint: (0, import_node_crypto7.createHash)("sha256").update(JSON.stringify(canonical(content))).digest("hex") };
 }
 async function latestInformationVersionIds(prisma, productIds) {
   const versions = productIds.length ? await prisma.productInformationVersion.findMany({
@@ -8958,7 +8894,7 @@ async function ensureCheckoutAttempt(context, data, cart, session, providerPayme
        ON CONFLICT ("idempotencyKey") DO UPDATE
          SET "idempotencyKey" = "CheckoutAttempt"."idempotencyKey"
        RETURNING "id", "status"::text AS "status", "order" AS "orderId"`,
-      (0, import_node_crypto9.randomUUID)(),
+      (0, import_node_crypto8.randomUUID)(),
       idempotencyKey,
       session.paymentProvider.code,
       providerPaymentId,
@@ -9629,7 +9565,6 @@ async function submitGroceryOrder(_root, { data }, context) {
     throw new Error("Settled payment amount or currency does not match the checkout session");
   }
   const settledPayment = { providerCode: paymentProvider.code, providerPaymentId, status: normalizedStatus, amountCents: settledAmountCents, currency: settledCurrency };
-  if (process.env.GROCERY_TEST_CRASH_AFTER_SETTLEMENT === "true" && process.env.NODE_ENV !== "production" && process.env.DATABASE_URL?.includes("_ephemeral_")) process.exitCode = 137, process.exit();
   await markCheckoutAttemptSettled(context, attempt.id, settledPayment);
   const finalizationLease = await context.transaction(async (transactionContext) => claimCheckoutAttempt(transactionContext.prisma, attempt.id, "finalize"));
   if (!finalizationLease) throw new Error("Checkout attempt is already being finalized by another worker");
@@ -9650,7 +9585,7 @@ async function submitGroceryOrder(_root, { data }, context) {
 // features/keystone/mutations/recoverGroceryPaymentCreation.ts
 init_payment();
 init_stripeEnabled();
-var defaults = { requireFreshCapability, requireSessionStore, getPaymentStatus, ensureCheckoutAttempt, now: Date.now, token: import_node_crypto10.randomUUID };
+var defaults = { requireFreshCapability, requireSessionStore, getPaymentStatus, ensureCheckoutAttempt, now: Date.now, token: import_node_crypto9.randomUUID };
 var reviewMessage = "Payment remains held. The provider reference could not be safely attached; review its original metadata and checkout evidence.";
 async function recoverPaymentCreationWithDependencies(_root, input, context, ports = defaults) {
   const args = { paymentSessionId: input.paymentSessionId.trim(), providerPaymentId: input.providerPaymentId.trim(), reason: input.reason.trim() };
@@ -9959,9 +9894,9 @@ init_access();
 init_storeScope();
 
 // features/keystone/lib/catalogImport.ts
-var import_node_crypto11 = require("node:crypto");
+var import_node_crypto10 = require("node:crypto");
 var CATALOG_IMPORT_COLUMNS = ["sku", "title", "priceCents", "unitOfMeasure", "pricingMethod", "departmentId", "supplierId", "taxRateBasisPoints"];
-var catalogHash = (value) => (0, import_node_crypto11.createHash)("sha256").update(JSON.stringify(value)).digest("hex");
+var catalogHash = (value) => (0, import_node_crypto10.createHash)("sha256").update(JSON.stringify(value)).digest("hex");
 function parseCatalogCsv(csv, schemaVersion) {
   if (schemaVersion !== 1) throw new Error("Unsupported catalog schemaVersion; use version 1");
   if (typeof csv !== "string" || Buffer.byteLength(csv, "utf8") > 1e6) throw new Error("Catalog CSV must be at most 1 MB");
@@ -10118,7 +10053,7 @@ async function importGroceryCatalog(_root, args, context) {
 
 // features/keystone/mutations/handlePaymentProviderWebhook.ts
 init_refundAllocations();
-var import_node_crypto12 = require("node:crypto");
+var import_node_crypto11 = require("node:crypto");
 init_access();
 init_paymentProviderAdapter();
 
@@ -10251,7 +10186,7 @@ async function processPaymentProviderWebhook({ providerCode, rawBody, headers },
   const createdSeconds = Number(verified.event?.created || 0);
   if (createdSeconds && createdSeconds * 1e3 - Date.now() > 60 * 60 * 1e3) throw new Error("Payment webhook event time is invalid");
   const historic = Boolean(createdSeconds && Date.now() - createdSeconds * 1e3 > 7 * 24 * 60 * 60 * 1e3);
-  return processVerifiedPaymentEvent(providerCode, verified, (0, import_node_crypto12.createHash)("sha256").update(rawBody).digest("hex"), context, void 0, { historic });
+  return processVerifiedPaymentEvent(providerCode, verified, (0, import_node_crypto11.createHash)("sha256").update(rawBody).digest("hex"), context, void 0, { historic });
 }
 function isSupportedEventType(eventType) {
   return normalizePaymentStatus(eventType) !== null || REFUND_EVENT_TYPES.includes(eventType) || eventType === "charge.refunded";
@@ -10264,7 +10199,7 @@ async function processVerifiedPaymentEvent(providerCode, verified, payloadHash2,
   const status = eventType === "charge.succeeded" && verified.resource?.captured === false ? null : normalizePaymentStatus(eventType);
   const refundStatus = normalizeRefundStatus(eventType, verified.resource);
   const replayKey = `${providerCode}:${providerEventId}`;
-  const claimToken = (0, import_node_crypto12.randomUUID)();
+  const claimToken = (0, import_node_crypto11.randomUUID)();
   const refundEventOrder = providerEventOrder(verified.event, verified.resource, providerEventId);
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
@@ -10472,7 +10407,7 @@ var VERIFIED_REFUND_TYPES = [
 ];
 var VERIFIED_EVENT_MAX_ATTEMPTS = 5;
 async function reconcileOneVerifiedEvent(context, storeId, eventId) {
-  const token = (0, import_node_crypto12.randomUUID)();
+  const token = (0, import_node_crypto11.randomUUID)();
   const claim = await context.transaction(async (tc) => {
     const tx = tc.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "PaymentWebhookEvent" WHERE "id"=$1 FOR UPDATE', eventId);
@@ -10532,7 +10467,7 @@ async function handlePaymentProviderWebhook(_root, args, context) {
 }
 
 // features/keystone/mutations/manageCustomerPrivacy.ts
-var import_node_crypto13 = require("node:crypto");
+var import_node_crypto12 = require("node:crypto");
 init_access();
 init_storeScope();
 
@@ -10745,12 +10680,12 @@ async function reviewGroceryCustomerErasure(_root, args, context) {
     await tx.shoppingListItem.deleteMany({ where: { listId: { in: lists.map((list65) => list65.id) } } });
     await tx.shoppingList.deleteMany({ where: { userId: user.id } });
     await tx.cartItem.deleteMany({ where: { cartId: { in: carts.map((cart) => cart.id) } } });
-    for (const cart of carts) await tx.cart.update({ where: { id: cart.id }, data: { customerId: null, sessionId: (0, import_node_crypto13.randomBytes)(32).toString("hex"), subtotal: 0, subtotalCents: 0, itemCount: 0 } });
+    for (const cart of carts) await tx.cart.update({ where: { id: cart.id }, data: { customerId: null, sessionId: (0, import_node_crypto12.randomBytes)(32).toString("hex"), subtotal: 0, subtotalCents: 0, itemCount: 0 } });
     await tx.notificationPreference.deleteMany({ where: { userId: user.id } });
     await tx.favoriteProduct.deleteMany({ where: { userId: user.id } });
     await tx.priceAlert.deleteMany({ where: { userId: user.id } });
     await tx.backInStockAlert.deleteMany({ where: { userId: user.id } });
-    await transactionContext.sudo().db.User.updateOne({ where: { id: user.id }, data: { name: "Erased customer", email: `erased-${user.id}@invalid.local`, password: (0, import_node_crypto13.randomBytes)(48).toString("base64url") } });
+    await transactionContext.sudo().db.User.updateOne({ where: { id: user.id }, data: { name: "Erased customer", email: `erased-${user.id}@invalid.local`, password: (0, import_node_crypto12.randomBytes)(48).toString("base64url") } });
     await tx.user.update({ where: { id: user.id }, data: { privacyErasedAt: /* @__PURE__ */ new Date() } });
     await tx.customerPrivacyRequest.update({ where: { id: request.id }, data: { ...review, status: "completed", completedAt: /* @__PURE__ */ new Date(), resultSummary: { retained: "Pseudonymous transaction, inventory and audit identifiers; monetary records unchanged", erased: "Account identity, addresses, nested order/fulfillment/delivery contact, checkout data, message content, reusable lists and notification preferences", policyVersion: CUSTOMER_PRIVACY_POLICY.version } } });
     return { success: true, status: "completed" };
@@ -10870,7 +10805,7 @@ async function revokeGroceryStaffInvitation(_root, args, context) {
 }
 
 // features/keystone/mutations/voidGroceryPaymentAuthorization.ts
-var import_node_crypto14 = require("node:crypto");
+var import_node_crypto13 = require("node:crypto");
 init_access();
 init_storeScope();
 init_paymentProviderAdapter();
@@ -10888,7 +10823,7 @@ async function voidGroceryPaymentAuthorizationForStore(args, context, store, act
   const reason = args.reason.trim();
   const key2 = args.idempotencyKey.trim();
   if (reason.length < 3 || reason.length > 470 || key2.length < 12 || key2.length > 180) throw publicError("A reason and stable authorization void key are required", "VOID_REFUSED");
-  const token = (0, import_node_crypto14.randomUUID)();
+  const token = (0, import_node_crypto13.randomUUID)();
   const claim = await withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     const identity2 = await tx.payment.findUnique({ where: { id: args.paymentId }, select: { orderId: true, storeId: true } });
@@ -10977,7 +10912,7 @@ async function voidGroceryPaymentAuthorizationForStore(args, context, store, act
 
 // features/keystone/mutations/refundGroceryOrderLines.ts
 init_publicError();
-var import_node_crypto15 = require("node:crypto");
+var import_node_crypto14 = require("node:crypto");
 init_access();
 init_storeScope();
 init_refundAllocations();
@@ -11010,7 +10945,7 @@ async function refundGroceryOrderLinesWithDependencies(args, context, dependenci
   const reason = args.reason?.trim(), requestKey2 = args.idempotencyKey?.trim();
   if (!reason || reason.length < 3 || reason.length > 500 || !requestKey2 || requestKey2.length < 12 || requestKey2.length > 150 || !Array.isArray(args.lines)) throw publicError("Line refund requires a reason, idempotency key and explicit lines");
   const fingerprint = canonicalPayload({ orderId: args.orderId, paymentId: args.paymentId, reason, lines: [...args.lines].sort((a, b) => a.lineItemId.localeCompare(b.lineItemId)).map((line) => ({ ...line, conditionNote: line.conditionNote?.trim() || "", returnedLots: [...line.returnedLots || []].sort((a, b) => a.lotId.localeCompare(b.lotId)) })) });
-  const providerRefundKey = `line-refund:${(0, import_node_crypto15.createHash)("sha256").update(`${store.id}:${args.orderId}:${requestKey2}`).digest("hex")}`;
+  const providerRefundKey = `line-refund:${(0, import_node_crypto14.createHash)("sha256").update(`${store.id}:${args.orderId}:${requestKey2}`).digest("hex")}`;
   const claim = await withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', args.orderId);
@@ -11160,7 +11095,7 @@ init_access();
 init_storeScope();
 
 // features/keystone/lib/reportingClose.ts
-var import_node_crypto16 = require("node:crypto");
+var import_node_crypto15 = require("node:crypto");
 init_inventoryMovements();
 function closePeriod(startDate, endDate, timezone, cutoff = /* @__PURE__ */ new Date()) {
   function dateKey(value) {
@@ -11523,7 +11458,7 @@ function compileFinancialClose(storeId, currencyCode, period, sources) {
     exceptions
   };
 }
-var reportHash = (value) => (0, import_node_crypto16.createHash)("sha256").update(canonicalPayload(value)).digest("hex");
+var reportHash = (value) => (0, import_node_crypto15.createHash)("sha256").update(canonicalPayload(value)).digest("hex");
 
 // features/keystone/mutations/groceryFinancialClose.ts
 init_serializableTransaction();
@@ -11808,7 +11743,7 @@ async function processDueGrocerySubscriptions(_root, args, context) {
 }
 
 // features/keystone/mutations/manageSupplierSettlement.ts
-var import_node_crypto17 = require("node:crypto");
+var import_node_crypto16 = require("node:crypto");
 init_access();
 init_storeScope();
 init_inventoryMovements();
@@ -11850,7 +11785,7 @@ function supplierMatchedQuantity(receiptId, invoices, cutoff = /* @__PURE__ */ n
 
 // features/keystone/mutations/manageSupplierSettlement.ts
 init_serializableTransaction();
-var identity = (...parts) => (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify(parts)).digest("hex");
+var identity = (...parts) => (0, import_node_crypto16.createHash)("sha256").update(JSON.stringify(parts)).digest("hex");
 var requiredText = (value, label) => {
   if (typeof value !== "string" || !value.trim() || value.length > 1e3) throw new Error(`${label} is required`);
   return value.trim();
@@ -12452,13 +12387,13 @@ async function updateProductInformation(_root, { productId, input, idempotencyKe
 }
 
 // features/keystone/mutations/authorizeOrderAdjustment.ts
-var import_node_crypto18 = require("node:crypto");
+var import_node_crypto17 = require("node:crypto");
 init_payment();
 init_paymentProviderAdapter();
 init_serializableTransaction();
 init_stripeEnabled();
 function adjustmentFingerprint(settlement, payment) {
-  return (0, import_node_crypto18.createHash)("sha256").update(JSON.stringify([
+  return (0, import_node_crypto17.createHash)("sha256").update(JSON.stringify([
     settlement.id,
     settlement.actualsHash,
     settlement.totalCents,
@@ -12468,7 +12403,7 @@ function adjustmentFingerprint(settlement, payment) {
     payment.paymentProviderId
   ])).digest("hex");
 }
-var defaults2 = { createPayment, verifyGuestOrderToken, now: () => Date.now(), token: import_node_crypto18.randomUUID };
+var defaults2 = { createPayment, verifyGuestOrderToken, now: () => Date.now(), token: import_node_crypto17.randomUUID };
 function makeAuthorizeOrderAdjustment(overrides = {}) {
   const deps = { ...defaults2, ...overrides };
   return async function authorizeOrderAdjustment2(_root, { orderId, sessionId, token }, context) {
@@ -12565,7 +12500,7 @@ async function resumeGroceryCheckout(_root, { paymentSessionId, sessionId }, con
 init_storeScope();
 
 // features/keystone/mutations/initiatePaymentSession.ts
-var import_node_crypto19 = require("node:crypto");
+var import_node_crypto18 = require("node:crypto");
 init_storeScope();
 init_payment();
 init_paymentProviderAdapter();
@@ -12602,7 +12537,6 @@ async function bindRestartChild(tx, source, childPaymentSessionId) {
   }
 }
 async function initiatePaymentSessionWithDependencies(root, { cartId, paymentProviderId, deliverySlotId, pickupSlotId, sessionId, couponCode, recovery }, context, dependencies = { createPayment, ensureCheckoutAttempt }, restartSource) {
-  if (paymentProviderId === TEST_PROVIDER_CODE) assertIdempotentCaptureProvider(paymentProviderId);
   if (context.session?.itemId) await requireSessionStore(context);
   const sudoContext = context.sudo();
   if (Boolean(deliverySlotId) === Boolean(pickupSlotId)) {
@@ -12850,7 +12784,7 @@ async function initiatePaymentSessionWithDependencies(root, { cartId, paymentPro
         return { session: existing, shouldCreate: false, terminalReplay: true };
       }
       const now2 = Date.now();
-      const creation = claimPaymentCreationData(existing?.data, { ...claimData, checkoutFingerprint, cartFingerprint }, (0, import_node_crypto19.randomUUID)(), now2);
+      const creation = claimPaymentCreationData(existing?.data, { ...claimData, checkoutFingerprint, cartFingerprint }, (0, import_node_crypto18.randomUUID)(), now2);
       if (creation.action !== "create") {
         await bindRestartChild(transactionContext.prisma, restartSource, existing.id);
         return { session: existing, shouldCreate: false };
@@ -13255,11 +13189,11 @@ async function manageInventorySafety(_root, args, context) {
 }
 
 // features/keystone/mutations/finalizeGroceryOrderActuals.ts
-var import_node_crypto21 = require("node:crypto");
+var import_node_crypto20 = require("node:crypto");
 init_payment();
 
 // features/keystone/lib/finalSaleIdentity.ts
-var import_node_crypto20 = require("node:crypto");
+var import_node_crypto19 = require("node:crypto");
 function canonical2(value) {
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(canonical2);
@@ -13267,7 +13201,7 @@ function canonical2(value) {
   return value;
 }
 function finalSaleSnapshotHash(snapshot) {
-  return (0, import_node_crypto20.createHash)("sha256").update(JSON.stringify(canonical2(snapshot))).digest("hex");
+  return (0, import_node_crypto19.createHash)("sha256").update(JSON.stringify(canonical2(snapshot))).digest("hex");
 }
 
 // features/keystone/mutations/finalizeGroceryOrderActuals.ts
@@ -13677,7 +13611,7 @@ var defaults3 = {
   reconcileOrderLoyalty,
   refundPaymentForOrder,
   now: () => Date.now(),
-  token: import_node_crypto21.randomUUID
+  token: import_node_crypto20.randomUUID
 };
 function makeFinalizeGroceryOrderActuals(overrides = {}) {
   const deps = { ...defaults3, ...overrides };
@@ -13942,7 +13876,7 @@ var import_graphql3 = require("graphql");
 function isSecretFieldImpl(value) {
   return Boolean(value && typeof value.compare === "function" && typeof value.generateHash === "function");
 }
-async function verifyCurrentPassword(context, userId, secret2) {
+async function verifyCurrentPassword(context, userId, secret) {
   const field = (0, import_graphql3.assertObjectType)(context.graphql.schema.getType("User")).getFields().password;
   const impl = field?.extensions?.keystoneSecretField;
   if (!isSecretFieldImpl(impl)) throw new Error("Password verification is unavailable");
@@ -13951,7 +13885,7 @@ async function verifyCurrentPassword(context, userId, secret2) {
     await impl.generateHash("simulated-password-to-counter-timing-attack");
     return false;
   }
-  return impl.compare(secret2, user.password);
+  return impl.compare(secret, user.password);
 }
 
 // features/keystone/mutations/updateActiveUser.ts
@@ -14203,7 +14137,7 @@ function assertProductStore(product, storeId) {
 
 // features/keystone/mutations/cartOperations.ts
 init_publicError();
-var import_node_crypto22 = require("node:crypto");
+var import_node_crypto21 = require("node:crypto");
 var DELIVERY_FEE = 0;
 var GUEST_SESSION_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 function requireGuestSessionId(sessionId) {
@@ -14454,7 +14388,7 @@ async function batchLines(transactionContext, source, sourceId, storeId) {
   return order.lineItems.map((line) => ({ title: line.title, productId: line.productId, quantity: line.quantity }));
 }
 async function addCartBatch(context, { requestKey: requestKey2, source, sourceId, sessionId }) {
-  const key2 = requestKey2?.trim() || `once:${(0, import_node_crypto22.randomUUID)()}`;
+  const key2 = requestKey2?.trim() || `once:${(0, import_node_crypto21.randomUUID)()}`;
   if (!/^[A-Za-z0-9:_-]{8,120}$/.test(key2)) throw publicError("This request could not be identified. Refresh and try again.");
   const ownerKey = context.session?.itemId ? `user:${context.session.itemId}` : `guest:${requireGuestSessionId(sessionId)}`;
   const identityCart = await getOrCreateCart(context, sessionId);
@@ -16981,7 +16915,7 @@ async function runGroceryOnboarding(_root, args, context) {
 }
 
 // features/keystone/mutations/managePurchaseOrderReceiving.ts
-var import_node_crypto23 = require("node:crypto");
+var import_node_crypto22 = require("node:crypto");
 init_inventoryMovements();
 init_access();
 init_storeScope();
@@ -17158,7 +17092,7 @@ async function receivePurchaseOrder(_root, { purchaseOrderId, receipts }, contex
         batchRecalls.push(...page.filter((recall) => recall.scope?.productId === item.product.id || (recall.scope?.lots || []).some((lot2) => lot2.productId === item.product.id && lot2.supplierId === (purchaseOrder.supplier?.id || null) && lot2.supplierLotNumber === supplierLotNumber)));
         if (page.length < 100) break;
       }
-      const lotNumber = `R-${(0, import_node_crypto23.createHash)("sha256").update(`${store.id}:${receiptKey}`).digest("hex").slice(0, 32)}`;
+      const lotNumber = `R-${(0, import_node_crypto22.createHash)("sha256").update(`${store.id}:${receiptKey}`).digest("hex").slice(0, 32)}`;
       const lot = await sudoContext.db.InventoryLot.createOne({
         data: {
           store: { connect: { id: store.id } },
@@ -17978,7 +17912,7 @@ async function reconcileCheckoutAttempts(_root, { limit = 20 }, context) {
 
 // features/keystone/mutations/reconcilePaymentRefunds.ts
 init_refundAllocations();
-var import_node_crypto24 = require("node:crypto");
+var import_node_crypto23 = require("node:crypto");
 init_access();
 init_storeScope();
 init_paymentProviderAdapter();
@@ -17996,7 +17930,7 @@ function providerDeadlineMs() {
   return Math.min(configured, REFUND_RECONCILIATION_LEASE_MS - 5e3);
 }
 async function claimNextRefund(context, owner, storeId, currencyCode) {
-  const token = (0, import_node_crypto24.randomUUID)();
+  const token = (0, import_node_crypto23.randomUUID)();
   await context.prisma.$executeRawUnsafe(
     `UPDATE "PaymentRefund" r
         SET "reconciliationDeadLetterAt" = NOW(), "reconciliationOwner" = NULL, "reconciliationToken" = NULL,
@@ -18319,7 +18253,7 @@ async function recordOrderItemSubstitution(_root, rawArgs, context) {
 }
 
 // features/keystone/mutations/manageSubstitutionProposals.ts
-var import_node_crypto25 = require("node:crypto");
+var import_node_crypto24 = require("node:crypto");
 init_access();
 init_publicError();
 init_storeScope();
@@ -18372,7 +18306,7 @@ async function proposeOrderLineSubstitution(_root, args, context) {
     const materialInformation = materialInformationSnapshot(product, informationVersions.get(product.id) || null);
     const { previous: earlier = [], ...prior } = existing || {};
     const proposal = {
-      id: (0, import_node_crypto25.randomUUID)(),
+      id: (0, import_node_crypto24.randomUUID)(),
       lineItemId,
       originalTitle: line.title,
       productId: product.id,
@@ -18384,7 +18318,7 @@ async function proposeOrderLineSubstitution(_root, args, context) {
       estimatedSubtotalCents: measuredSubtotalCents(unitPriceCents, quantityMilli2),
       taxRateBasisPoints,
       materialInformation,
-      offerFingerprint: (0, import_node_crypto25.createHash)("sha256").update(JSON.stringify([store.id, order.id, lineItemId, product.id, quantityMilli2, product.unitOfMeasure, reason, unitPriceCents, taxRateBasisPoints, materialInformation.fingerprint])).digest("hex"),
+      offerFingerprint: (0, import_node_crypto24.createHash)("sha256").update(JSON.stringify([store.id, order.id, lineItemId, product.id, quantityMilli2, product.unitOfMeasure, reason, unitPriceCents, taxRateBasisPoints, materialInformation.fingerprint])).digest("hex"),
       reason,
       status: "pending",
       proposedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -18423,10 +18357,10 @@ async function respondToOrderLineSubstitution(_root, args, context) {
 }
 
 // features/keystone/mutations/submitGroceryContactMessage.ts
-var import_node_crypto28 = require("node:crypto");
+var import_node_crypto27 = require("node:crypto");
 
 // features/keystone/lib/graphqlRateLimit.ts
-var import_node_crypto27 = require("node:crypto");
+var import_node_crypto26 = require("node:crypto");
 var import_graphql5 = require("graphql");
 
 // features/keystone/lib/graphqlSecurity.ts
@@ -18450,24 +18384,24 @@ function edgeClientIp(getHeader, peer) {
 }
 
 // features/keystone/security/internalIdentity.ts
-var import_node_crypto26 = require("node:crypto");
+var import_node_crypto25 = require("node:crypto");
 var INTERNAL_IDENTITY_MAX_AGE_MS = 9e4;
 function safeEqual(left, right) {
   const leftBuffer = Buffer.from(left);
   const rightBuffer = Buffer.from(right);
-  return leftBuffer.length === rightBuffer.length && (0, import_node_crypto26.timingSafeEqual)(leftBuffer, rightBuffer);
+  return leftBuffer.length === rightBuffer.length && (0, import_node_crypto25.timingSafeEqual)(leftBuffer, rightBuffer);
 }
-function verifiedInternalIdentity(headers, socketAddress, secret2, now) {
+function verifiedInternalIdentity(headers, socketAddress, secret, now) {
   const loopback = /^(?:127\.|::1$|::ffff:127\.)/.test(String(socketAddress || ""));
-  if (!loopback || secret2.length < 32) return null;
+  if (!loopback || secret.length < 32) return null;
   const identity2 = String(headers["x-openfront-client-identity"] || "");
   const timestamp40 = String(headers["x-openfront-client-timestamp"] || "");
-  const signature2 = String(headers["x-openfront-client-signature"] || "");
-  if (!/^[a-f0-9]{64}$/.test(identity2) || !/^\d{10}$/.test(timestamp40) || !/^[a-f0-9]{64}$/.test(signature2)) return null;
+  const signature = String(headers["x-openfront-client-signature"] || "");
+  if (!/^[a-f0-9]{64}$/.test(identity2) || !/^\d{10}$/.test(timestamp40) || !/^[a-f0-9]{64}$/.test(signature)) return null;
   const age = Math.abs(now - Number(timestamp40) * 1e3);
   if (!Number.isFinite(age) || age > INTERNAL_IDENTITY_MAX_AGE_MS) return null;
-  const expected = (0, import_node_crypto26.createHmac)("sha256", secret2).update(`${timestamp40}:${identity2}`).digest("hex");
-  return safeEqual(signature2, expected) ? `forwarded:${identity2}` : null;
+  const expected = (0, import_node_crypto25.createHmac)("sha256", secret).update(`${timestamp40}:${identity2}`).digest("hex");
+  return safeEqual(signature, expected) ? `forwarded:${identity2}` : null;
 }
 
 // features/keystone/lib/graphqlSecurity.ts
@@ -18570,7 +18504,7 @@ function abuseActor(context) {
   return `ip:${ip}`;
 }
 function bucketKey(action, kind, value) {
-  return `${action}:${kind}:${(0, import_node_crypto27.createHash)("sha256").update(value).digest("hex").slice(0, 32)}`;
+  return `${action}:${kind}:${(0, import_node_crypto26.createHash)("sha256").update(value).digest("hex").slice(0, 32)}`;
 }
 async function consumeActionBuckets(context, action, { target, targetLimit, actorLimit }) {
   await context.prisma.$executeRawUnsafe(
@@ -18620,7 +18554,7 @@ async function submitGroceryContactMessage(_root, { data }, context) {
   } catch {
     referenceDay = now.toISOString().slice(0, 10);
   }
-  const reference = `JUN-${referenceDay.replace(/-/g, "")}-${(0, import_node_crypto28.randomBytes)(4).toString("hex").toUpperCase()}`;
+  const reference = `JUN-${referenceDay.replace(/-/g, "")}-${(0, import_node_crypto27.randomBytes)(4).toString("hex").toUpperCase()}`;
   await context.sudo().db.ContactMessage.createOne({
     data: {
       store: { connect: { id: store.id } },

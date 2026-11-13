@@ -4,10 +4,9 @@ import { stripeConfigurationProblem } from './stripeEnabled';
 import type { PaymentProviderAdapter, PaymentProviderOperation, PaymentProviderRecord } from './types';
 
 export const STRIPE_PROVIDER_CODE = 'pp_stripe_default' as const;
-export const TEST_PROVIDER_CODE = 'pp_test_default' as const;
 
 export type PaymentProviderDefinition = {
-  adapterKey: 'stripe' | 'test';
+  adapterKey: 'stripe';
   publicCheckout: boolean;
   /** Stripe's server-owned contract admits stable idempotent final capture. */
   supportsIdempotentCapture: boolean;
@@ -20,7 +19,6 @@ export type PaymentProviderDefinition = {
 // lazily, so a provider SDK is only imported when that provider is used.
 export const paymentProviderAdapters = {
   stripe: () => import('./stripe'),
-  test: () => import('./test'),
 } satisfies Record<string, () => Promise<PaymentProviderAdapter>>;
 
 export const paymentProviderDefinitions = {
@@ -29,12 +27,6 @@ export const paymentProviderDefinitions = {
     publicCheckout: true,
     supportsIdempotentCapture: true,
     credentialEnv: ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY'],
-  },
-  [TEST_PROVIDER_CODE]: {
-    adapterKey: 'test',
-    publicCheckout: false,
-    supportsIdempotentCapture: false,
-    credentialEnv: ['GROCERY_PAYMENT_TEST_SECRET'],
   },
 } satisfies Record<string, PaymentProviderDefinition>;
 
@@ -45,7 +37,7 @@ const PAYMENT_OPERATIONS: readonly PaymentProviderOperation[] = [
   'getPaymentStatusFunction', 'getRefundStatusFunction', 'cancelPaymentFunction',
   'generatePaymentLinkFunction', 'handleWebhookFunction',
 ];
-const LOCAL_ADAPTER_CODES = new Set(['stripe', 'test']);
+const LOCAL_ADAPTER_CODES = new Set(['stripe']);
 
 export function getPaymentProviderDefinition(providerCode: string): PaymentProviderDefinition {
   const definition = paymentProviderDefinitions[providerCode as SupportedPaymentProviderCode];
@@ -61,9 +53,6 @@ function configuredSelector(provider: PaymentProviderRecord, operation: PaymentP
   }
   if (definition && selector !== definition.adapterKey) {
     throw new Error(`Built-in payment provider ${provider.code} cannot change its server-owned adapter`);
-  }
-  if (selector === 'test' && process.env.NODE_ENV === 'production') {
-    throw new Error('The local test payment adapter is not available in production');
   }
   if (LOCAL_ADAPTER_CODES.has(selector)) return selector;
 
@@ -81,7 +70,7 @@ export function getConfiguredPaymentAdapterSelector(provider: PaymentProviderRec
 }
 
 export async function getLocalPaymentProviderAdapter(selector: string): Promise<PaymentProviderAdapter> {
-  if (selector === 'stripe' || selector === 'test') return paymentProviderAdapters[selector]();
+  if (selector === 'stripe') return paymentProviderAdapters[selector]();
   throw new Error('Unknown registered payment adapter');
 }
 
@@ -123,12 +112,6 @@ export function assertProviderCredentials(providerOrCode: PaymentProviderRecord 
     const required = definition?.credentialEnv || ['STRIPE_SECRET_KEY', ...(operation === 'handleWebhookFunction' ? ['STRIPE_WEBHOOK_SECRET'] : [])];
     const missing = required.filter((name) => !process.env[name]);
     if (missing.length) throw new Error(`Payment provider ${provider?.code || providerOrCode} is not configured for ${operation}: missing ${missing.join(', ')}`);
-    return;
-  }
-  if (selector === 'test') {
-    if (!process.env.GROCERY_PAYMENT_TEST_SECRET || process.env.NODE_ENV === 'production') {
-      throw new Error(`Payment provider ${provider?.code || providerOrCode} is not configured for ${operation}`);
-    }
     return;
   }
   // configuredSelector already checks the deployment allowlist and forbids

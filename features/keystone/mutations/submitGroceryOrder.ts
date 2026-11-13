@@ -854,7 +854,6 @@ export default async function submitGroceryOrder(
   }
 
   const settledPayment = { providerCode: paymentProvider.code, providerPaymentId, status: normalizedStatus, amountCents: settledAmountCents, currency: settledCurrency };
-  if (process.env.GROCERY_TEST_CRASH_AFTER_SETTLEMENT === 'true' && process.env.NODE_ENV !== 'production' && process.env.DATABASE_URL?.includes('_ephemeral_')) process.exitCode = 137, process.exit();
   await markCheckoutAttemptSettled(context, attempt.id, settledPayment);
   const finalizationLease = await context.transaction(async (transactionContext) => claimCheckoutAttempt(transactionContext.prisma, attempt.id, 'finalize'));
   if (!finalizationLease) throw new Error('Checkout attempt is already being finalized by another worker');

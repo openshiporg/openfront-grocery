@@ -10,7 +10,6 @@ import type { Context } from '.keystone/types';
 import {
   assertIdempotentCaptureProvider,
   assertPublicPaymentProvider,
-  TEST_PROVIDER_CODE,
   type PaymentProviderRecord,
 } from '../../integrations/payment';
 import { createPayment } from '../utils/paymentProviderAdapter';
@@ -99,9 +98,6 @@ export async function initiatePaymentSessionWithDependencies(
   dependencies = { createPayment, ensureCheckoutAttempt },
   restartSource?: CheckoutRestartSource,
 ) {
-  // Preserve the server-owned test-adapter prohibition before any context read;
-  // configurable providers are evaluated against their fetched protected record below.
-  if (paymentProviderId === TEST_PROVIDER_CODE) assertIdempotentCaptureProvider(paymentProviderId);
   if (context.session?.itemId) await requireSessionStore(context);
   const sudoContext = context.sudo();
 
