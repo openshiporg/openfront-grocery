@@ -1,3 +1,4 @@
+import { hardenFilterAccess } from "./filterAccess";
 import { InventoryConversion } from "./InventoryConversion";
 import { CatalogImport } from "./CatalogImport";
 import { CustomerPrivacyRequest } from "./CustomerPrivacyRequest";
@@ -63,7 +64,7 @@ import { Supplier } from "./Supplier";
 import { User } from "./User";
 import { UserCoupon } from "./UserCoupon";
 
-export const models = {
+const rawModels = {
   InventoryConversion,
   CatalogImport,
   CustomerPrivacyRequest,
@@ -129,5 +130,7 @@ export const models = {
   User,
   UserCoupon,
 };
+
+export const models = hardenFilterAccess(rawModels as any) as typeof rawModels;
 
 export default models;
