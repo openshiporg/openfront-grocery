@@ -41,7 +41,7 @@ export async function restartGroceryCheckout(_root: unknown, args: RestartArgs, 
     }
 
     if (attempt.status !== 'compensated' || attempt.orderId || !attempt.compensationAt
-      || sessionData.compensationStatus !== 'refunded' || !sessionData.compensationProviderRefundId) {
+      || sessionData.compensationStatus !== 'refunded') {
       throw new Error('A fresh checkout is available only after payment compensation is confirmed');
     }
     if (sessionData.status === 'completed' || !sessionData.paymentIntentId
