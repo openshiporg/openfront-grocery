@@ -1,6 +1,6 @@
 import { list } from '@keystone-6/core';
 import { decimal, json, relationship } from '@keystone-6/core/fields';
-import { isSignedIn } from '../access';
+import { isSignedIn, permissions } from '../access';
 import { requiredRelationshipPrisma } from './relationshipConfig';
 import { trackingFields } from './trackingFields';
 import { nestedRelatedStoreScopedFilter } from '../lib/storeAccess';
@@ -8,7 +8,16 @@ import { nestedRelatedStoreScopedFilter } from '../lib/storeAccess';
 export const OrderLineInventoryAllocation = list({
   access: {
     operation: { query: isSignedIn, create: () => false, update: () => false, delete: () => false },
-    filter: { query: nestedRelatedStoreScopedFilter('lineItem', 'order') },
+    filter: {
+      // Staff see the store's allocations; a shopper sees only allocations on their own orders.
+      query: async ({ session, context }) => {
+        const store = await nestedRelatedStoreScopedFilter('lineItem', 'order')({ session, context });
+        if (store === false) return false;
+        if (await permissions.canAccessDashboard({ session, context })) return store;
+        if (session?.itemId) return { AND: [store, { lineItem: { order: { user: { id: { equals: session.itemId } } } } }] };
+        return false;
+      },
+    },
   },
   fields: {
     lineItem: relationship({
