@@ -5,7 +5,7 @@ import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
 import { canonicalPayload } from '../lib/payloadHash';
-import { allocateFinalSaleRefund, commercialAdjustmentsForRefund, reconcileOrderLineRefundRows, unlinkedLineRefundReservedCents, type RefundLineInput } from '../lib/refundAllocations';
+import { allocateFinalSaleRefund, withSettlementLots, commercialAdjustmentsForRefund, reconcileOrderLineRefundRows, unlinkedLineRefundReservedCents, type RefundLineInput } from '../lib/refundAllocations';
 import { appendInventoryMovement, quantityMilli } from '../lib/inventoryMovements';
 import { isInventoryLotEligible } from '../lib/inventorySafety';
 import { withSerializableRetry } from '../utils/serializableTransaction';
@@ -64,7 +64,7 @@ export async function refundGroceryOrderLinesWithDependencies(args: Args, contex
     if (!settlement || settlement.orderId !== order.id || settlement.status !== 'finalized' || (payment.providerData?.finalSettlementId !== settlement.id && settlement.providerEvidence?.originalPaymentId !== payment.id)) throw publicError('Finalize the actual sale and select its settled payment before refunding items');
     if (!order.currencyCode || settledCurrency !== String(order.currencyCode).toUpperCase()) throw publicError('Refund payment currency differs from the finalized order');
     const prior = await tx.orderLineRefund.findMany({ where: { orderId: order.id }, orderBy: { createdAt: 'asc' } });
-    const allocations = allocateFinalSaleRefund(order.metadata?.finalSale, args.lines, prior);
+    const allocations = allocateFinalSaleRefund(withSettlementLots(order.metadata?.finalSale, settlement), args.lines, prior);
     const amountCents = allocations.reduce((sum, line) => sum + line.totalCents, 0);
     if (!Number.isSafeInteger(amountCents) || amountCents < 1 || amountCents > 2147483647) throw publicError('Selected line quantities must allocate a positive supported refund amount');
     const existingRefunds = await tx.paymentRefund.aggregate({ where: { paymentId: payment.id, status: { in: ['processing', 'succeeded'] } }, _sum: { amountCents: true } });
@@ -105,8 +105,11 @@ export async function getGroceryOrderRefundLines(_root: unknown, { orderId }: { 
   const tx: any = context.prisma;
   const order = await tx.order.findUnique({ where: { id: orderId }, select: { id: true, storeId: true, currencyCode: true, metadata: true } });
   if (!order || order.storeId !== store.id) throw publicError('Order not found in active store');
-  const finalSale = order.metadata?.finalSale;
+  let finalSale = order.metadata?.finalSale;
   if (finalSale?.status !== 'finalized') return { orderId, currencyCode: order.currencyCode, lines: [], requests: [], message: 'Finalize actual goods before issuing a line refund.' };
+  const settlement = await tx.orderSettlement.findUnique({ where: { id: finalSale.settlementId } });
+  if (!settlement || settlement.orderId !== order.id) return { orderId, currencyCode: order.currencyCode, lines: [], requests: [], message: 'Finalize actual goods before issuing a line refund.' };
+  finalSale = withSettlementLots(finalSale, settlement);
   const prior = await tx.orderLineRefund.findMany({ where: { orderId }, orderBy: { createdAt: 'asc' } });
   return { orderId, currencyCode: order.currencyCode, finalSale, settlementId: finalSale.settlementId, lines: finalSale.actuals.map((actual: any) => ({ lineItemId: actual.lineItemId, productTitle: actual.productTitle, quantityMilli: actual.quantityMilli, unitOfMeasure: actual.unitOfMeasure, reservedQuantityMilli: prior.filter((row: any) => row.lineItemId === actual.lineItemId).reduce((sum: number, row: any) => sum + row.quantityMilli, 0), allocations: actual.allocations, commercial: finalSale.lines.find((line: any) => line.id === actual.lineItemId) })), requests: prior.map((row: any) => ({ id: row.id, requestKey: row.requestKey, lineItemId: row.lineItemId, quantityMilli: row.quantityMilli, totalCents: row.totalCents, status: row.status, failureMessage: row.failureMessage, disposition: row.disposition, conditionNote: row.conditionNote, returnedLots: row.returnedLots, reason: row.reason, paymentId: row.paymentId })) };
 }

@@ -5,6 +5,13 @@ const integer = (value: unknown, label: string) => { const amount = Number(value
 export type RefundLineInput = { lineItemId: string; quantityMilli: number; disposition: string; conditionNote?: string; returnedLots?: Array<{ lotId: string; quantityMilli: number }> };
 function cumulativeShare(total: number, quantity: number, basis: number) { return Number((BigInt(total) * BigInt(quantity) + BigInt(Math.floor(basis / 2))) / BigInt(basis)); }
 
+/** The customer receipt omits lot allocations; staff refunds read them from the settlement snapshot of the same sale. */
+export function withSettlementLots(finalSale: any, settlement: any) {
+  if (!finalSale || !Array.isArray(finalSale.actuals)) return finalSale;
+  const lots = new Map<string, any[]>((settlement?.snapshot?.actuals || []).map((line: any) => [line.lineItemId, line.allocations || []]));
+  return { ...finalSale, actuals: finalSale.actuals.map((line: any) => ({ ...line, allocations: lots.get(line.lineItemId) || [] })) };
+}
+
 /** Net goods, discount and tax each round cumulatively; full reversal reproduces every penny. */
 export function allocateFinalSaleRefund(finalSale: any, requested: RefundLineInput[], prior: any[]) {
   if (finalSale?.status !== 'finalized' || !finalSale.settlementId || !Array.isArray(finalSale.lines) || !Array.isArray(finalSale.actuals)) throw publicError('Line refunds require an immutable finalized sale snapshot');
