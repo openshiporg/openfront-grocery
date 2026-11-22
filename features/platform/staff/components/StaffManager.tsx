@@ -21,8 +21,8 @@ import {
 import { PlatformTime } from '@/features/platform/components/PlatformTime';
 import { formatRelative } from '@/features/platform/lib/format';
 
-const caps = ['canAccessDashboard','canManageOrders','canManageInventory','canManageDelivery','canManagePayments','canManageProducts','canManageSuppliers','canManageUsers','canManageOnboarding'];
-const labels: Record<string,string> = { canAccessDashboard:'Dashboard access',canManageOrders:'Orders',canManageInventory:'Inventory',canManageDelivery:'Delivery',canManagePayments:'Payments',canManageProducts:'Products',canManageSuppliers:'Suppliers',canManageUsers:'Staff and customers',canManageOnboarding:'Store setup' };
+const caps = ['canAccessDashboard','canFulfillOrders','canManageOrders','canManageInventory','canManageDelivery','canManagePayments','canManageProducts','canManageSuppliers','canManageUsers','canManageOnboarding'];
+const labels: Record<string,string> = { canAccessDashboard:'Dashboard access',canFulfillOrders:'Pick, pack & handoff',canManageOrders:'Orders',canManageInventory:'Inventory',canManageDelivery:'Delivery',canManagePayments:'Payments',canManageProducts:'Products',canManageSuppliers:'Suppliers',canManageUsers:'Staff and customers',canManageOnboarding:'Store setup' };
 
 function CapabilityFields({ role }: { role?: any }) {
   return <PlatformFieldset legend="Permissions" hint="Permissions cannot exceed your own access.">

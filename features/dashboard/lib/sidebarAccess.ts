@@ -21,7 +21,7 @@ export function visibleSidebarLists<T extends SidebarList>(lists: T[], user: Sid
  * A link also follows the capability its page checks server-side. A platform page whose first segment is a list path follows that list's visibility;
  * pages that are not tied to one list stay visible to dashboard users.
  */
-export function visiblePlatformItems<T extends { href: string; capability?: string }>(
+export function visiblePlatformItems<T extends { href: string; capability?: string; alsoCapability?: string }>(
   items: T[],
   lists: SidebarList[],
   user: SidebarUser
@@ -30,7 +30,7 @@ export function visiblePlatformItems<T extends { href: string; capability?: stri
   const hiddenPaths = new Set(lists.filter((list) => list.isHidden).map((list) => list.path))
   return items.filter((item) => {
     // Hide a link the role's own capability would refuse; only an explicit false hides it.
-    if (item.capability && user?.role && user.role[item.capability] === false) return false
+    if (item.capability && user?.role && user.role[item.capability] === false && !(item.alsoCapability && user.role[item.alsoCapability] === true)) return false
     const slug = item.href.split('/platform/')[1]?.split(/[/?#]/)[0]
     return !slug || !hiddenPaths.has(slug)
   })

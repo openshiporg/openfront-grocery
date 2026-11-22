@@ -203,7 +203,7 @@ export async function getAvailableParkingSpots(
 }
 
 async function completePickupHandoff(context: Context, orderId: string, expectedParkingSpotId?: string) {
-  const { storeId } = await assertCanManageDelivery(context);
+  const { storeId } = await requireFreshCapability(context, ['canManageDelivery', 'canFulfillOrders']);
   return withSerializableRetry(() => context.transaction(async (transactionContext) => {
     const tx = transactionContext.prisma;
     await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', orderId);

@@ -1,3 +1,4 @@
+import { sendOrderEmail } from '../lib/orderEmails';
 import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
@@ -125,6 +126,7 @@ export async function reconcileCheckoutAttempts(_root: unknown, { limit = 20 }: 
         lease,
       );
       results.push({ id: lease.id, status: 'finalized', orderId: committed.orderId, action: 'finalize' });
+      await sendOrderEmail(context, committed.orderId, 'confirmed');
     } catch (error) {
       const compensation = await compensateFailedCheckout({
         context,

@@ -52,7 +52,7 @@ export function substitutionProposals(metadata: any): Record<string, Substitutio
 type ProposeArgs = { orderId: string; lineItemId: string; productId: string; quantity: string; unitOfMeasure: string; reason: string; idempotencyKey: string };
 
 export async function proposeOrderLineSubstitution(_root: unknown, args: ProposeArgs, context: Context) {
-  await requireFreshCapability(context, 'canManageOrders');
+  await requireFreshCapability(context, ['canManageOrders', 'canFulfillOrders']);
   const store = await requireSessionStore(context);
   const orderId = args.orderId?.trim(), lineItemId = args.lineItemId?.trim(), productId = args.productId?.trim();
   const reason = args.reason?.trim() || '', idempotencyKey = args.idempotencyKey?.trim() || '';

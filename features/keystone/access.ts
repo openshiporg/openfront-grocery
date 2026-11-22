@@ -15,6 +15,7 @@ export type Session = {
       canManageUsers: boolean
       canManagePayments: boolean
       canManageOnboarding: boolean
+      canFulfillOrders: boolean
       canAccessDashboard: boolean
     }
   }
@@ -27,10 +28,13 @@ type AccessArgs = {
 
 export type Capability = keyof Pick<Session['data']['role'],
   'canManageProducts' | 'canManageOrders' | 'canManageInventory' | 'canManageSuppliers' |
-  'canManageDelivery' | 'canManageUsers' | 'canManagePayments' | 'canManageOnboarding' | 'canAccessDashboard'
+  'canManageDelivery' | 'canManageUsers' | 'canManagePayments' | 'canManageOnboarding' | 'canFulfillOrders' | 'canAccessDashboard'
 >
 
-export async function requireFreshCapability(context: { session?: Session; sudo(): any; prisma?: any }, capability: Capability) {
+/** Pass several capabilities to accept any one of them (e.g. order desk or floor picker). */
+export async function requireFreshCapability(context: { session?: Session; sudo(): any; prisma?: any }, required: Capability | Capability[]) {
+  const accepted = Array.isArray(required) ? required : [required];
+  const capability = accepted.join(' or ');
   const session = context.session;
   if (!session?.itemId) throw new Error('Authentication required');
   const sudoContext = context.sudo();
@@ -39,9 +43,9 @@ export async function requireFreshCapability(context: { session?: Session; sudo(
   }
   const user = await sudoContext.query.User.findOne({
     where: { id: session.itemId },
-    query: `id privacyErasedAt store { id isActive } role { ${capability} }`,
+    query: `id privacyErasedAt store { id isActive } role { ${accepted.join(' ')} }`,
   });
-  if (user?.privacyErasedAt || !user?.store?.isActive || !user.role?.[capability]) throw new Error(`Missing current capability: ${capability}`);
+  if (user?.privacyErasedAt || !user?.store?.isActive || !accepted.some((key) => user.role?.[key])) throw new Error(`Missing current capability: ${capability}`);
   return { user, storeId: user.store.id };
 }
 
@@ -86,6 +90,7 @@ export const permissions = {
   canManageUsers: currentPermission('canManageUsers'),
   canManagePayments: currentPermission('canManagePayments'),
   canManageOnboarding: currentPermission('canManageOnboarding'),
+  canFulfillOrders: currentPermission('canFulfillOrders'),
   canAccessDashboard: currentPermission('canAccessDashboard'),
 }
 

@@ -75,7 +75,7 @@ export const StoreSettings = list({
         'Seasonal produce, pantry staples, and household essentials selected for everyday shopping.',
       ui: { displayMode: 'textarea' },
     }),
-    contactEmail: text({ defaultValue: 'hello@junipermarket.example' }),
+    contactEmail: text({ defaultValue: '' }),
     contactPhone: text({ defaultValue: '(415) 555-0148' }),
     address: text({ defaultValue: '184 Juniper Street, San Francisco, CA 94107' }),
     // Merchant-written terms shown on the storefront Policies page above the standard

@@ -1,6 +1,7 @@
 'use server'
 
-import { createTransport, getTestMessageUrl } from "nodemailer";
+import { getTestMessageUrl } from "nodemailer";
+import { transport } from "./mailTransport";
 import { developmentSiteOrigin } from "./runtimeConfig";
 import { emailButton, emailLayout, emailMuted, emailParagraph } from "./email-layout";
 
@@ -18,20 +19,7 @@ function getBaseUrlForEmails(): string {
   return developmentSiteOrigin();
 }
 
-const transport = createTransport({
-  // @ts-ignore
-  host: process.env.SMTP_HOST,
-  port: process.env.SMTP_PORT,
-  // Same bounds as the customer-message transport: an unreachable SMTP host fails the
-  // request within seconds instead of holding it for nodemailer's multi-minute defaults.
-  connectionTimeout: 15000,
-  greetingTimeout: 15000,
-  socketTimeout: 30000,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASSWORD,
-  },
-});
+
 
 function passwordResetEmail({ url }: { url: string }): string {
   return emailLayout({

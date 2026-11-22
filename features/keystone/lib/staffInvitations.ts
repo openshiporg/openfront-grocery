@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getSessionSecret } from './runtimeConfig';
-export const STAFF_CAPABILITIES = ['canManageProducts', 'canManageOrders', 'canManageInventory', 'canManageSuppliers', 'canManageDelivery', 'canManageUsers', 'canManagePayments', 'canManageOnboarding', 'canAccessDashboard'] as const;
+export const STAFF_CAPABILITIES = ['canManageProducts', 'canManageOrders', 'canManageInventory', 'canManageSuppliers', 'canManageDelivery', 'canManageUsers', 'canManagePayments', 'canManageOnboarding', 'canFulfillOrders', 'canAccessDashboard'] as const;
 export type StaffCapabilities = Record<typeof STAFF_CAPABILITIES[number], boolean>;
 export function normalizeStaffCapabilities(input: unknown, actor: Record<string, unknown>): StaffCapabilities {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('An explicit capability map is required');

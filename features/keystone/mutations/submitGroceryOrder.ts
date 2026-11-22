@@ -10,6 +10,7 @@ import { priceCommercialLines, isCouponLineEligible } from '../lib/commercialPri
 import { randomUUID } from 'node:crypto';
 import type { Context } from '.keystone/types';
 import { createGuestOrderToken } from '../utils/guestOrderToken';
+import { sendOrderEmail } from '../lib/orderEmails';
 import { getPaymentStatus, getRefundStatus, refundPayment, cancelPayment } from '../utils/paymentProviderAdapter';
 import { assertRefundCreationWindow, normalizeProviderRefund } from '../lib/refundRecovery';
 import { withSerializableRetry } from '../utils/serializableTransaction';
@@ -864,6 +865,7 @@ export default async function submitGroceryOrder(
     await compensateFailedCheckout({ context, attemptId: attempt.id, provider: paymentProvider as any, cause: error, finalizationLease });
     throw new Error('Checkout could not be finalized; payment compensation was recorded');
   }
+  await sendOrderEmail(context, committed.orderId, 'confirmed');
   return {
     success: true,
     ...committed,

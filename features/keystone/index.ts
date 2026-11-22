@@ -63,6 +63,7 @@ const { withAuth } = createAuth({
           canManageUsers: true,
           canManagePayments: true,
           canManageOnboarding: true,
+          canFulfillOrders: true,
           canAccessDashboard: true,
         },
       },
@@ -95,6 +96,7 @@ const { withAuth } = createAuth({
       canManageUsers
       canManagePayments
       canManageOnboarding
+      canFulfillOrders
       canAccessDashboard
     }
   `,

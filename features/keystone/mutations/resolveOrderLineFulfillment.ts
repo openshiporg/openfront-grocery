@@ -4,7 +4,7 @@ import { resolveActualInTransaction, type FulfillmentActualInput } from '../lib/
 import { withSerializableRetry } from '../utils/serializableTransaction';
 
 export async function resolveOrderLineFulfillment(_root: unknown, input: FulfillmentActualInput, context: Context) {
-  const { storeId } = await requireFreshCapability(context, 'canManageOrders');
+  const { storeId } = await requireFreshCapability(context, ['canManageOrders', 'canFulfillOrders']);
   if (!storeId || !context.session?.itemId) throw new Error('An active staff store is required');
   return withSerializableRetry(() => context.transaction(async tx => {
     const actual = await resolveActualInTransaction(tx, { storeId, userId: context.session!.itemId }, input);

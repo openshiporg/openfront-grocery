@@ -24,7 +24,8 @@ export type GroceryPlatformCapability =
   | 'canManageDelivery'
   | 'canManageUsers'
   | 'canManagePayments'
-  | 'canManageOnboarding';
+  | 'canManageOnboarding'
+  | 'canFulfillOrders';
 export type GroceryPlatformCapabilities = Partial<Record<GroceryPlatformCapability, boolean>>;
 
 export interface GroceryPlatformNavItem {
@@ -34,6 +35,8 @@ export interface GroceryPlatformNavItem {
   icon: LucideIcon;
   group: GroceryPlatformNavGroupId;
   capability: GroceryPlatformCapability;
+  /** A second capability that also opens the page (floor staff on Pick & pack and Pickup). */
+  alsoCapability?: GroceryPlatformCapability;
 }
 
 export interface GroceryPlatformNavGroup {
@@ -63,6 +66,7 @@ export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
     icon: PackageCheck,
     group: 'standalone',
     capability: 'canManageOrders',
+    alsoCapability: 'canFulfillOrders',
   },
   {
     title: 'Delivery',
@@ -79,6 +83,7 @@ export const groceryPlatformNavItems: GroceryPlatformNavItem[] = [
     icon: Store,
     group: 'standalone',
     capability: 'canManageDelivery',
+    alsoCapability: 'canFulfillOrders',
   },
   {
     title: 'Payments',
@@ -170,7 +175,7 @@ export const platformNavGroups = groceryPlatformNavGroups;
 
 export function getPlatformNavItemsForCapabilities(capabilities?: GroceryPlatformCapabilities | null) {
   if (!capabilities) return [];
-  return groceryPlatformNavItems.filter((item) => capabilities[item.capability] === true);
+  return groceryPlatformNavItems.filter((item) => capabilities[item.capability] === true || (item.alsoCapability ? capabilities[item.alsoCapability] === true : false));
 }
 
 // Same contract as Openfront E-commerce: the shared Sidebar lists every platform entry; each page

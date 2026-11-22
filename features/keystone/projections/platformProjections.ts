@@ -8,7 +8,7 @@ import { requireFreshCapability, type Capability } from '../access';
 import { requireSessionStore } from '../lib/storeScope';
 import { zonedDateKeyOffset, zonedStartOfDateKey, zonedStartOfDay } from '../lib/storeTime';
 
-function requirePermission(context: Context, capability: Capability, message: string) {
+function requirePermission(context: Context, capability: Capability | Capability[], message: string) {
   return requireFreshCapability(context, capability).catch(() => { throw new Error(message); });
 }
 
@@ -272,7 +272,7 @@ async function ordersByStatus(context: Context, where: any, orderBy: any[], pagi
 }
 
 export async function groceryPlatformFulfillment(_root: unknown, args: ProjectionPageInput, context: Context) {
-  await requirePermission(context, 'canManageOrders', 'Fulfillment projection requires order-management permission');
+  await requirePermission(context, ['canManageOrders', 'canFulfillOrders'], 'Fulfillment projection requires order-management permission');
   const store = await requireSessionStore(context);
   const pagination = pageArgs(args);
   // Search, view and sort run here, before each lane is paged: order number,
@@ -434,7 +434,7 @@ function likePattern(search: string) {
  * customer is never hidden behind staged orders on another page.
  */
 export async function groceryPlatformPickup(_root: unknown, args: PickupProjectionInput, context: Context) {
-  await requirePermission(context, 'canManageDelivery', 'Pickup projection requires delivery-management permission');
+  await requirePermission(context, ['canManageDelivery', 'canFulfillOrders'], 'Pickup projection requires delivery-management permission');
   const store = await requireSessionStore(context);
   const base = pageArgs(args);
   const arrivalPaging = pageArgs({ ...args, page: args.arrivalPage ?? 1 });

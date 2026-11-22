@@ -130,6 +130,10 @@ export const Role = list({
       defaultValue: false,
       label: "Can Manage Onboarding",
     }),
+    canFulfillOrders: checkbox({
+      defaultValue: false,
+      label: "Can Pick, Pack and Hand Off Orders",
+    }),
     canAccessDashboard: checkbox({
       defaultValue: false,
       label: "Can Access Dashboard",

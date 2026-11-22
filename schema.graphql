@@ -6725,6 +6725,7 @@ type Role {
   canManageDelivery: Boolean
   canManageUsers: Boolean
   canManageOnboarding: Boolean
+  canFulfillOrders: Boolean
   canAccessDashboard: Boolean
   store: Store!
   assignedTo(where: UserWhereInput! = {}, orderBy: [UserOrderByInput!]! = [], take: Int, skip: Int! = 0, cursor: UserWhereUniqueInput): [User!]
@@ -6751,6 +6752,7 @@ input RoleWhereInput {
   canManageDelivery: BooleanFilter
   canManageUsers: BooleanFilter
   canManageOnboarding: BooleanFilter
+  canFulfillOrders: BooleanFilter
   canAccessDashboard: BooleanFilter
   store: StoreWhereInput
   assignedTo: UserManyRelationFilter
@@ -6775,6 +6777,7 @@ input RoleOrderByInput {
   canManageDelivery: OrderDirection
   canManageUsers: OrderDirection
   canManageOnboarding: OrderDirection
+  canFulfillOrders: OrderDirection
   canAccessDashboard: OrderDirection
   createdAt: OrderDirection
   updatedAt: OrderDirection
@@ -6790,6 +6793,7 @@ input RoleUpdateInput {
   canManageDelivery: Boolean
   canManageUsers: Boolean
   canManageOnboarding: Boolean
+  canFulfillOrders: Boolean
   canAccessDashboard: Boolean
   store: StoreRelateToOneForUpdateInput
   assignedTo: UserRelateToManyForUpdateInput
@@ -6819,6 +6823,7 @@ input RoleCreateInput {
   canManageDelivery: Boolean
   canManageUsers: Boolean
   canManageOnboarding: Boolean
+  canFulfillOrders: Boolean
   canAccessDashboard: Boolean
   store: StoreRelateToOneForCreateInput
   assignedTo: UserRelateToManyForCreateInput

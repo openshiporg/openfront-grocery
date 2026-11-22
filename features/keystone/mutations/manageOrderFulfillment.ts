@@ -6,6 +6,7 @@ import type { Context } from '.keystone/types';
 import { requireFreshCapability } from '../access';
 import { withSerializableRetry } from '../utils/serializableTransaction';
 import { getFulfillmentActualLines } from '../lib/fulfillmentActuals';
+import { sendOrderEmail } from '../lib/orderEmails';
 
 type FulfillmentTarget = 'picking' | 'packed' | 'ready_for_pickup';
 
@@ -20,7 +21,7 @@ const NEXT_STATUS: Record<string, FulfillmentTarget | undefined> = {
 };
 
 async function assertCanManageOrders(context: Context) {
-  return requireFreshCapability(context, 'canManageOrders');
+  return requireFreshCapability(context, ['canManageOrders', 'canFulfillOrders']);
 }
 
 export async function advanceOrderFulfillment(
@@ -33,7 +34,7 @@ export async function advanceOrderFulfillment(
     throw publicError('Unsupported fulfillment target');
   }
 
-  return withSerializableRetry(() => context.transaction(async (transactionContext) => {
+  const result = await withSerializableRetry(() => context.transaction(async (transactionContext) => {
     await transactionContext.prisma.$queryRawUnsafe(
       'SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE',
       orderId
@@ -132,4 +133,6 @@ export async function advanceOrderFulfillment(
         : `Order #${order.displayId} moved to ${target}.`,
     };
   }, { isolationLevel: 'ReadCommitted' as any }));
+  if (target === 'ready_for_pickup' && !result.reused) await sendOrderEmail(context.sudo(), orderId, 'ready_for_pickup');
+  return result;
 }

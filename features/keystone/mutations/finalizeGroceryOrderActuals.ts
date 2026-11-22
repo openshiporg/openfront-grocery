@@ -95,8 +95,12 @@ const defaults = { requireFreshCapability, requireSessionStore, getFulfillmentAc
 export function makeFinalizeGroceryOrderActuals(overrides: Partial<typeof defaults> = {}) {
   const deps = { ...defaults, ...overrides };
   return async function finalizeGroceryOrderActuals(_root: unknown, { orderId }: { orderId: string }, context: any): Promise<{ status: string; totalCents: number; message: string }> {
-    await deps.requireFreshCapability(context, 'canManageOrders');
-    await deps.requireFreshCapability(context, 'canManagePayments');
+    // A floor picker finalizes the pick they just recorded (capture within the shopper's hold);
+    // otherwise the order desk needs both orders and payments.
+    try { await deps.requireFreshCapability(context, 'canFulfillOrders'); } catch {
+      await deps.requireFreshCapability(context, 'canManageOrders');
+      await deps.requireFreshCapability(context, 'canManagePayments');
+    }
     const store = await deps.requireSessionStore(context);
     const transaction = (operation: (tc: any) => Promise<any>) => withSerializableRetry<any>(() => context.transaction(operation));
     const claim = await transaction(async (tc: any) => {

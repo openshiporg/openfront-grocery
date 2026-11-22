@@ -14,7 +14,7 @@ export function gatePlatformPage<P extends object>(slug: string, Page: Component
     if (item) {
       const response = await getAuthenticatedUser()
       const role = response.success ? (response.data as any)?.authenticatedItem?.role : null
-      if (role && role[item.capability] === false) notFound()
+      if (role && role[item.capability] === false && !(item.alsoCapability && role[item.alsoCapability] === true)) notFound()
     }
     const Component = Page as any
     return <Component {...props} />
