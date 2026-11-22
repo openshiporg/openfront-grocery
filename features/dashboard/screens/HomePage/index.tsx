@@ -9,7 +9,8 @@ import { PlusIcon, Database } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { PageContainer } from '../../components/PageContainer'
-import { getAdminMetaAction, getListCounts } from '../../actions'
+import { getAdminMetaAction, getListCounts, getAuthenticatedUser } from '../../actions'
+import { getPlatformNavItemsWithBasePath } from '@/features/platform/lib/navigation'
 import { cn } from '@/lib/utils'
 
 interface ListCardProps {
@@ -91,6 +92,11 @@ export async function HomePage() {
     )
   }
 
+  // Lead with the store's work pages this role can open (Shopify/Instacart Storefront Pro admins open on
+  // orders and tasks, not on tables); the raw data models stay below for managers who need them.
+  const userResponse = await getAuthenticatedUser()
+  const role = userResponse.success ? (userResponse.data as any)?.authenticatedItem?.role : null
+  const workPages = role ? getPlatformNavItemsWithBasePath('/dashboard', role) : []
   const adminMeta = adminMetaResponse.data
   const lists = adminMeta?.lists || []
   // Lists are already enhanced with gqlNames from getAdminMetaAction
@@ -129,6 +135,25 @@ export async function HomePage() {
   return (
     <PageContainer title="Dashboard" header={header} breadcrumbs={breadcrumbs}>
       <div className="w-full max-w-4xl p-4 md:p-6 flex flex-col gap-4">
+        {workPages.length > 0 && (
+          <div className="mb-4">
+            <h2 className="tracking-wide uppercase font-medium mb-2 text-muted-foreground text-sm">Store work</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2 md:gap-4">
+              {workPages.map((item) => {
+                const Icon = item.icon
+                return (
+                  <Link key={item.href} href={item.href} className="flex min-h-11 items-start gap-3 rounded-xl border bg-background p-4 shadow-xs transition-colors hover:bg-muted">
+                    <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-foreground">{item.title}</span>
+                      <span className="mt-1 block text-xs text-muted-foreground">{item.description}</span>
+                    </span>
+                  </Link>
+                )
+              })}
+            </div>
+          </div>
+        )}
         <div className="mb-4">
           <h2 className="tracking-wide uppercase font-medium mb-2 text-muted-foreground text-sm">
             Data Models
