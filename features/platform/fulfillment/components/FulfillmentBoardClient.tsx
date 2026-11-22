@@ -565,7 +565,7 @@ export default function FulfillmentBoardClient({ lanes: incomingLanes, laneTotal
               </div>
             </header>
             <div className={styles.lineList}>
-              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><ListChecks className="size-3.5" aria-hidden="true" />{selectedOrder.lineItems.length} {selectedOrder.lineItems.length === 1 ? 'line' : 'lines'} to resolve</p>
+              <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><ListChecks className="size-3.5" aria-hidden="true" />{(() => { const open = selectedOrder.lineItems.filter((line: any) => !line.fulfillment).length; return open ? `${open} of ${selectedOrder.lineItems.length} ${selectedOrder.lineItems.length === 1 ? 'line' : 'lines'} to resolve` : `All ${selectedOrder.lineItems.length} ${selectedOrder.lineItems.length === 1 ? 'line' : 'lines'} resolved`; })()}</p>
               {selectedOrder.lineItems.map((item) => {
                 const existing = substitutionMap.get(item.id);
                 const proposal = ((selectedOrder.metadata?.substitutionProposals as Record<string, SubstitutionProposalView> | undefined) || {})[item.id] || null;
