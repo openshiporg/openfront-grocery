@@ -30,10 +30,10 @@ export function platformButton(variant: PlatformButtonVariant = 'secondary', siz
 }
 
 const control =
-  'w-full min-w-0 rounded-md border border-input bg-background text-sm text-foreground shadow-xs outline-none transition-[color,box-shadow,border-color] placeholder:text-muted-foreground/80 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive';
+  'w-full min-w-0 rounded-md border border-input bg-background text-base text-foreground md:text-sm shadow-xs outline-none transition-[color,box-shadow,border-color] placeholder:text-muted-foreground/80 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive';
 
-export const platformInput = `${control} h-9 px-3`;
-export const platformSelect = `${control} h-9 px-2.5 pr-8`;
+export const platformInput = `${control} h-11 px-3 md:h-9`;
+export const platformSelect = `${control} h-11 px-2.5 pr-8 md:h-9`;
 export const platformTextarea = `${control} min-h-20 px-3 py-2 leading-relaxed`;
 export const platformCheckbox = 'size-4 shrink-0 rounded border-input accent-primary';
 export const platformNumberInput = `${platformInput} tabular-nums`;

@@ -26,8 +26,8 @@ export default async function UrbanFooter() {
             {store.homepageDescription ? <p className="mt-5 max-w-md text-[0.9375rem] leading-7 text-[var(--sf-header-ink-muted)]">{store.homepageDescription}</p> : null}
             <address className="mt-6 grid gap-1 text-[0.9375rem] not-italic leading-7">
               {store.address ? <span>{store.address}</span> : null}
-              {store.contactPhone ? <a href={`tel:${store.contactPhone}`} className="w-fit underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">{store.contactPhone}</a> : null}
-              {store.contactEmail ? <a href={`mailto:${store.contactEmail}`} className="w-fit underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">{store.contactEmail}</a> : null}
+              {store.contactPhone ? <a href={`tel:${store.contactPhone}`} className="inline-flex min-h-11 w-fit items-center underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">{store.contactPhone}</a> : null}
+              {store.contactEmail ? <a href={`mailto:${store.contactEmail}`} className="inline-flex min-h-11 w-fit items-center underline decoration-[var(--sf-header-ink-muted)] underline-offset-4 hover:decoration-[var(--sf-header-ink)]">{store.contactEmail}</a> : null}
             </address>
           </div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-10 text-sm sm:grid-cols-3">

@@ -105,6 +105,9 @@ test('form errors show Keystone validation text, never Prisma, stack or GraphQL 
     extensions: { code: 'KS_VALIDATION_FAILURE' } }), 'The coupon must end after it starts.');
   assert.equal(of({ message: 'Prisma error: Unique constraint failed on the fields: (`email`)', extensions: { code: 'KS_PRISMA_ERROR' } }),
     'A record with this email already exists.');
+  assert.equal(of({ message: 'Resolve every order line before finalizing or packing', extensions: { code: 'BAD_USER_INPUT', public: true } }),
+    'Resolve every order line before finalizing or packing');
+  assert.equal(of({ message: 'Invalid `prisma.order.update()` invocation', extensions: { code: 'BAD_USER_INPUT', public: true } }), PUBLIC_REQUEST_ERROR);
   for (const leak of [
     { message: 'Prisma error: \nInvalid `prisma.user.create()` invocation: secret', extensions: { code: 'KS_PRISMA_ERROR' } },
     { message: 'An error occurred while running "resolveInput".\n  - Order.hooks: Invalid `prisma.order.update()` invocation', extensions: { code: 'KS_EXTENSION_ERROR' } },

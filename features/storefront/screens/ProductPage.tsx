@@ -85,13 +85,15 @@ export async function ProductPage(props: Props) {
       </section>
     </div>
 
-    <section className="grid items-start gap-10 border-t border-[var(--sf-rule)] pt-10 lg:grid-cols-[minmax(0,1fr)_22rem] lg:gap-16">
+    <section className={`grid items-start gap-10 border-t border-[var(--sf-rule)] pt-10 lg:gap-16 ${nutrition ? 'lg:grid-cols-[minmax(0,1fr)_22rem]' : ''}`}>
       <div className="min-w-0 space-y-10">
-        <div>
-          <h2 className="sf-subtitle">About this product</h2>
-          <p className="mt-3 max-w-2xl whitespace-pre-line text-[0.9375rem] leading-7 text-[var(--sf-ink-muted)]">{description || 'A description has not been provided for this product.'}</p>
-          {product.sku ? <p className="mt-4 text-xs text-[var(--sf-ink-faint)]">Product code <span className="sf-mono font-medium text-[var(--sf-ink-muted)]">{product.sku}</span></p> : null}
-        </div>
+        {description || product.sku ? (
+          <div>
+            <h2 className="sf-subtitle">About this product</h2>
+            {description ? <p className="mt-3 max-w-2xl whitespace-pre-line text-[0.9375rem] leading-7 text-[var(--sf-ink-muted)]">{description}</p> : null}
+            {product.sku ? <p className="mt-4 text-xs text-[var(--sf-ink-faint)]">Product code <span className="sf-mono font-medium text-[var(--sf-ink-muted)]">{product.sku}</span></p> : null}
+          </div>
+        ) : null}
         <div>
           <h2 className="sf-subtitle">Allergens & ingredients</h2>
           {product.allergens?.length ? (
@@ -107,9 +109,7 @@ export async function ProductPage(props: Props) {
           <p className="py-1.5 text-xs">As provided by the store. Check packaging for serving details.</p>
           <dl className="border-t-[4px] border-[var(--sf-ink)]">{nutrition.map(([key, value]) => <div key={key}><dt>{key.replace(/([A-Z])/g, ' $1').replaceAll('_', ' ')}</dt><dd className="tabular-nums">{String(value)}</dd></div>)}</dl>
         </aside>
-      ) : (
-        <aside className="sf-note">Nutrition details have not been provided for this product.</aside>
-      )}
+      ) : null}
     </section>
   </UrbanContainer></UrbanPageShell>;
 }

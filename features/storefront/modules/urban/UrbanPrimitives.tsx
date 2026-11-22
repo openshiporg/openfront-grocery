@@ -275,7 +275,7 @@ export function UrbanSearchStrip({
         defaultValue={defaultValue}
         placeholder={placeholder}
         enterKeyHint="search"
-        className={`w-full min-w-0 rounded-full border border-transparent ${tone === 'raised' ? 'bg-[var(--sf-card)] shadow-[var(--sf-shadow-1)]' : 'bg-[var(--sf-paper-2)]'} pl-11 pr-[5.5rem] text-[0.9375rem] text-[var(--sf-ink)] outline-none transition-[background-color,border-color,box-shadow] duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] placeholder:text-[var(--sf-ink-faint)] hover:border-[var(--sf-rule-strong)] focus:border-[var(--sf-ink)] focus:bg-[var(--sf-card)] focus:shadow-[0_0_0_3px_color-mix(in_oklch,var(--sf-focus)_20%,transparent)] focus-visible:outline-none ${tall ? 'h-14' : 'h-12'}`}
+        className={`w-full min-w-0 rounded-full border border-transparent ${tone === 'raised' ? 'bg-[var(--sf-card)] shadow-[var(--sf-shadow-1)]' : 'bg-[var(--sf-paper-2)]'} pl-11 pr-[5.5rem] text-base text-[var(--sf-ink)] outline-none transition-[background-color,border-color,box-shadow] duration-[var(--sf-dur-fast)] ease-[var(--sf-ease-out)] placeholder:text-[var(--sf-ink-faint)] hover:border-[var(--sf-rule-strong)] focus:border-[var(--sf-ink)] focus:bg-[var(--sf-card)] focus:shadow-[0_0_0_3px_color-mix(in_oklch,var(--sf-focus)_20%,transparent)] focus-visible:outline-none ${tall ? 'h-14' : 'h-12'}`}
       />
       <button
         type="submit"

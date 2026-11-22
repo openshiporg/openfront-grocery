@@ -147,7 +147,7 @@
 /* ── Forms ────────────────────────────────────────────────────────────── */
 .storefront-ui .sf-label { display: grid; gap: .45rem; font-size: .875rem; font-weight: 600; color: var(--sf-ink); }
 .storefront-ui .sf-label > :where(span.sf-hint) { font-weight: 400; color: var(--sf-ink-faint); font-size: .8125rem; }
-.storefront-ui .sf-field { height: 3rem; width: 100%; border: 1px solid var(--sf-rule-strong); background: var(--sf-card); border-radius: var(--sf-radius-md); padding-inline: .9rem; font-size: .9375rem; color: var(--sf-ink); transition: border-color var(--sf-dur-fast) var(--sf-ease-out), box-shadow var(--sf-dur-fast) var(--sf-ease-out); }
+.storefront-ui .sf-field { height: 3rem; width: 100%; border: 1px solid var(--sf-rule-strong); background: var(--sf-card); border-radius: var(--sf-radius-md); padding-inline: .9rem; font-size: 1rem; color: var(--sf-ink); transition: border-color var(--sf-dur-fast) var(--sf-ease-out), box-shadow var(--sf-dur-fast) var(--sf-ease-out); }
 .storefront-ui textarea.sf-field { height: auto; padding-block: .75rem; line-height: 1.5; }
 .storefront-ui select.sf-field { appearance: none; padding-right: 2.5rem; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 1.15rem) 52%, calc(100% - .85rem) 52%; background-size: .3rem .3rem; background-repeat: no-repeat; }
 .storefront-ui .sf-field::placeholder { color: var(--sf-ink-faint); }
@@ -246,6 +246,10 @@
   .storefront-ui dialog.sf-sheet.sf-sheet-bottom { margin: auto 0 0; width: 100vw; max-width: 100vw; height: auto; max-height: 88dvh; border-radius: var(--sf-radius-lg) var(--sf-radius-lg) 0 0; }
   .storefront-ui dialog.sf-sheet.sf-sheet-bottom[open] { animation-name: sf-sheet-up; }
 }
+
+/* Links inside a sentence keep their place in the line but take a 44px-tall touch area:
+   block padding on an inline box widens what a finger can hit without moving any text. */
+@media (pointer: coarse) { .storefront-ui :where(p, li, dd, span, label, address) > a:where(.underline) { padding-block: .8rem; } }
 
 /* Basket count bump when the server confirms a change */
 .storefront-ui .sf-bump { animation: sf-bump var(--sf-dur-slow) var(--sf-ease-out); }

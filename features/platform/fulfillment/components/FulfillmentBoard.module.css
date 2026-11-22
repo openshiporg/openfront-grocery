@@ -643,6 +643,8 @@ select.control { width: auto; }
   .filterButton,
   .stageButton,
   .cardButton { min-height: 44px; }
+  /* 16px keeps iOS from zooming the board when a picker taps search or a filter. */
+  .control { font-size: 16px; }
 
   .iconButton {
     width: 44px;

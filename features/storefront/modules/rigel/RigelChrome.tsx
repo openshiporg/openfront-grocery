@@ -270,23 +270,16 @@ export function RigelPhoneCartBar() {
   const count = itemCount(items);
   const needsReview = items.some((item) => !item.product.inStock);
   return <>
-    <div aria-hidden="true" className="h-[9.5rem] lg:hidden" />
+    <div aria-hidden="true" className="h-[5.25rem] lg:hidden" />
     <div className="fixed inset-x-0 z-40 px-3 lg:hidden" style={{ bottom: 'calc(var(--sf-tabbar-height) + 0.5rem)' }}>
       <div className="mx-auto max-w-lg overflow-hidden rounded-[22px] bg-[var(--sf-card)] shadow-[0_10px_36px_-10px_oklch(23%_0.012_160/0.35),0_0_0_1px_oklch(23%_0.012_160/0.06)]">
         <div className="flex items-center gap-3 px-4 py-2.5">
           <ShoppingCart className="h-6 w-6 shrink-0 text-[var(--sf-accent)]" aria-hidden="true" />
-          <p className="min-w-0 flex-1 truncate text-[1.0625rem]"><span>{count} {count === 1 ? 'item' : 'items'}</span> <span className="font-semibold tabular-nums text-[var(--sf-accent-hover)]">{formatMoney(cart?.subtotal)}</span></p>
+          <Link prefetch={false} href="/cart" aria-label={`View cart, ${count} ${count === 1 ? 'item' : 'items'}`} className="flex min-h-11 min-w-0 flex-1 items-center truncate text-[1.0625rem]"><span>{count} {count === 1 ? 'item' : 'items'}</span>&nbsp; <span className="font-semibold tabular-nums text-[var(--sf-accent-hover)]">{formatMoney(cart?.subtotal)}</span></Link>
           <Link prefetch={false} href={needsReview ? '/cart' : checkoutHref} className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-full bg-[var(--sf-accent)] px-4 text-[0.9375rem] font-medium text-[var(--sf-accent-ink)] hover:bg-[var(--sf-accent-hover)]">
             {needsReview ? 'Review cart' : 'Go to checkout'}<ChevronRight className="h-4 w-4" aria-hidden="true" />
           </Link>
         </div>
-        <Link prefetch={false} href="/cart" className="flex items-start gap-3 border-t border-[var(--sf-rule)] px-4 py-2.5">
-          <Leaf className="mt-0.5 h-5 w-5 shrink-0 fill-[var(--sf-accent)] text-[var(--sf-accent)]" aria-hidden="true" />
-          <span className="min-w-0">
-            <span className="block text-[0.9375rem] font-medium">Substitutions</span>
-            <span className="block truncate text-[0.75rem] text-[var(--sf-ink-muted)]">{substitutionSummary(items)}</span>
-          </span>
-        </Link>
       </div>
     </div>
   </>;

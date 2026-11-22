@@ -55,7 +55,8 @@ export function publicGraphQLErrorMessage(error: unknown): string {
       if (names?.length) messages.push(`A record with this ${names.join(' and ')} already exists.`);
       continue;
     }
-    if (typeof code !== 'string' || !USER_FACING_CODES.has(code)) continue;
+    // Store rules raised with publicError carry public: true; their text is the reason staff need to see.
+    if (typeof code !== 'string' || !(USER_FACING_CODES.has(code) || entry?.extensions?.public === true)) continue;
     const cleaned = cleanMessage(message);
     if (cleaned) messages.push(cleaned);
   }

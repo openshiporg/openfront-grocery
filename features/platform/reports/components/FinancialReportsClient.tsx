@@ -77,7 +77,7 @@ export function FinancialReportsClient({ data, statementTemplate }: { data: any;
       <div className="min-w-0 space-y-5">
         <PlatformSurface icon={FolderArchive} title="Saved closes" count={data.total ?? closes.length} description="Trading days are inclusive and shown in each close's timezone. An export reproduces the saved close exactly.">
           {closes.length === 0 ? <PlatformEmptyState compact icon={FolderArchive} title="No saved closes yet" description="Create a financial close to save your first trading period." /> : (
-            <div className="overflow-x-auto">
+            <div className="relative overflow-x-auto">
               <table className={`${platformTable.table} min-w-[40rem]`}>
                 <thead className={platformTable.head}><tr><th className={`${platformTable.th} md:pl-5`}>Trading days</th><th className={platformTable.th}>Status</th><th className={platformTable.th}>Cutoff · snapshot</th><th className={`${platformTable.th} text-right md:pr-5`}><span className="sr-only">Export</span></th></tr></thead>
                 <tbody>{closes.map((record: any) => <tr key={record.id} className={platformTable.row}>

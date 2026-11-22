@@ -8,5 +8,8 @@ export const PLACEHOLDER_EMAIL = 'replace-with-your-store-email@example.com';
 export function isOnboardingPlaceholder(value: unknown) {
   if (typeof value !== 'string') return false;
   const text = value.trim();
-  return /^replace with your\b/i.test(text) || text.toLowerCase() === PLACEHOLDER_EMAIL;
+  // Addresses on the reserved example domains (RFC 2606) can never receive mail, so they are
+  // never a store's real contact: this covers the model default as well as the seeded value.
+  return /^replace with your\b/i.test(text) || text.toLowerCase() === PLACEHOLDER_EMAIL
+    || /^[^@\s]+@(?:[^@\s]+\.)?(?:example\.(?:com|org|net)|[^@\s.]+\.example)$/i.test(text);
 }

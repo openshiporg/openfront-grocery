@@ -6,11 +6,12 @@ import { usePathname } from 'next/navigation';
 import { LogOut, Menu, X } from 'lucide-react';
 import { signOutShopper } from '@/features/storefront/modules/account/auth/actions';
 import { UrbanStoreLogo, type UrbanStoreLogoProps } from './UrbanStoreLogo';
+import { UrbanSearchStrip } from './UrbanPrimitives';
 
 type NavLink = { href: string; label: string };
 
 const groups: Array<{ title: string; links: NavLink[] }> = [
-  { title: 'Shop', links: [{ href: '/products', label: 'Shop all groceries' }, { href: '/deals', label: 'Specials & coupons' }, { href: '/departments', label: 'Every aisle' }, { href: '/fulfillment', label: 'Delivery & pickup times' }] },
+  { title: 'Shop', links: [{ href: '/', label: 'Home' }, { href: '/products', label: 'Shop all groceries' }, { href: '/deals', label: 'Specials & coupons' }, { href: '/departments', label: 'Every aisle' }, { href: '/fulfillment', label: 'Delivery & pickup times' }] },
   { title: 'Your shopping', links: [{ href: '/lists', label: 'Shopping lists' }, { href: '/favorites', label: 'Favorites' }, { href: '/subscriptions', label: 'Recurring & rewards' }, { href: '/account/orders', label: 'Your orders' }, { href: '/account', label: 'Account' }] },
   { title: 'Help', links: [{ href: '/order-access', label: 'Find a guest order' }, { href: '/support', label: 'Help & contact' }, { href: '/policies', label: 'How orders work' }] },
 ];
@@ -47,6 +48,8 @@ export default function UrbanMobileMenu({ departments, storeName, logoUrl, logoI
         <h2 id="market-menu-title" className="flex min-w-0 items-center gap-2.5 text-xl font-bold"><UrbanStoreLogo name={storeName || 'Menu'} logoUrl={logoUrl} logoIcon={logoIcon} logoColor={logoColor} /><span className="truncate">{storeName || 'Menu'}</span></h2>
         <button type="button" onClick={close} autoFocus aria-label="Close shopping menu" className="-mr-2 flex h-11 w-11 items-center justify-center rounded-full hover:bg-[var(--sf-paper-2)]"><X className="h-5 w-5" aria-hidden="true" /></button>
       </div>
+      {/* Phones have no search box in the header, so the menu carries it. A search on the page already open does not change the path, so the form closes the menu itself. */}
+      <div onSubmit={close} className="border-b border-[var(--sf-rule)] px-4 py-3"><UrbanSearchStrip id="market-menu-search" placeholder="Search groceries" /></div>
       <nav aria-label="Shopping menu" className="flex-1 space-y-6 overflow-y-auto px-2 py-4">
         {departments.length ? (
           <div>
